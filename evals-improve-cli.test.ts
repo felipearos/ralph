@@ -7,6 +7,7 @@ import type { TrialRow } from "./backtest-report";
 import type { Improvement } from "./eval-analyst";
 import { addEntry, readInbox } from "./eval-inbox";
 import { promptHash } from "./eval-proposals";
+import { EVAL_INSTRUCTION_FILES } from "./eval-instructions";
 import { experimentsRoot } from "./eval-runs";
 import { runEvalsImprove, type EvalsImproveDeps } from "./evals-improve";
 import type { EvalCase } from "./evals-set";
@@ -96,6 +97,8 @@ function fakeDeps(answer: string | { ok: false; reason: string }, over: Partial<
     nonce: () => "n0",
     readPrompt: () => null,
     addEntry,
+    readInstructions: (kind) => (kind === "judge-prompt" ? "JUDGE_TEXT" : "ANALYST_TEXT"),
+    saturated: () => undefined,
     ...over,
   };
   return { deps, out, err, prompts, models, launches, checks, home, json: () => JSON.parse(out.at(-1)!) as Record<string, any> };
@@ -324,6 +327,114 @@ describe("evals-improve propose", () => {
     const file = readdirSync(dir).find((name) => name.endsWith(".json"))!;
     const stored = JSON.parse(readFileSync(join(dir, file), "utf8")) as { bases?: Record<string, string | null> };
     expect(stored.bases).toEqual({ "coder.md": promptHash(current), "prompts/x.md": null });
+  });
+
+  describe("evaluation proposals (#878)", () => {
+    const answerOf = (kind: string, content: unknown, answers?: number[]) => JSON.stringify({ kind, content, rationale: "r", ...(answers === undefined ? {} : { answers }) });
+    const calibrated = (c: EvalCase): EvalCase => ({ ...c, calibration: [{ arms: ["b", "c"], axis: "correctness", preferred: "b", reason: "x", by: "felipe", at: NOW }] });
+
+    it("refuses a case proposal holding an existing PR, storing nothing and queuing nothing", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("case", { repo: "Acme/App", prs: [1], reason: "auth" }), { addEntry: async () => { throw new Error("no inbox call expected"); } });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(1);
+      expect(fake.err.join("\n")).toContain("the improver's proposal was refused: would edit case c1");
+      expect(existsSync(join(runDir, "proposals"))).toBe(false);
+      expect(readInbox(project)).toEqual([]);
+    });
+
+    it("stores an accepted check proposal with no subset, no entry and no inbox call", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const { check: _check, ...open } = evalCase("c1", ["auth"]);
+      let added = 0;
+      const fake = fakeDeps(answerOf("check", { case: "c1", test: "tests/auth.test.ts" }), {
+        readSet: () => ({ version: "v1", cases: [open, evalCase("c2", ["ui"])] }),
+        addEntry: async () => { added += 1; throw new Error("no inbox call expected"); },
+      });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(0);
+      expect(fake.json()).toEqual({ ok: true, proposal: PID, kind: "check", goal: "quality", entry: null, cases: 0 });
+      const stored = JSON.parse(readFileSync(join(runDir, "proposals", `${PID}.json`), "utf8"));
+      expect(stored).toMatchObject({ kind: "check", content: { case: "c1", test: "tests/auth.test.ts" }, subset: [], entry: null, answers: [] });
+      expect(added).toBe(0);
+      expect(existsSync(join(runDir, "proposals", PID))).toBe(false);
+      expect(fake.checks).toEqual([]);
+    });
+
+    it("stores a judge-prompt proposal on the calibrated cases, with its base", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("judge-prompt", { instructions: "Judge strictly." }, [0]), {
+        readSet: () => ({ version: "v1", cases: [evalCase("c1", ["auth"]), calibrated(evalCase("c2", ["ui"])), calibrated(evalCase("c3", ["billing"]))] }),
+      });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(0);
+      // c3 is calibrated but never ran in this run: the re-judge would have no panel to measure it on.
+      expect(fake.json()).toMatchObject({ kind: "judge-prompt", entry: null, cases: 1 });
+      const stored = JSON.parse(readFileSync(join(runDir, "proposals", `${PID}.json`), "utf8"));
+      expect(stored).toMatchObject({ kind: "judge-prompt", subset: ["c2"], entry: null, bases: { [EVAL_INSTRUCTION_FILES["judge-prompt"]]: promptHash("JUDGE_TEXT") } });
+      expect(readInbox(project)).toEqual([]);
+      expect(fake.prompts[0]).toContain("JUDGE_TEXT");
+      expect(fake.prompts[0]).not.toContain("\"calibration\"");
+    });
+
+    it("refuses a prompt proposal whose instructions are the current ones", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("judge-prompt", { instructions: "JUDGE_TEXT\n\n" }, [0]), {
+        readSet: () => ({ version: "v1", cases: [calibrated(evalCase("c1", ["auth"]))] }),
+      });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(1);
+      expect(fake.err.join("\n")).toContain("the improver's proposal was refused: the proposed instructions are the current ones");
+      expect(existsSync(join(runDir, "proposals"))).toBe(false);
+    });
+
+    it("refuses a prompt proposal when none of the calibrated cases ran in the run", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("judge-prompt", { instructions: "Judge strictly." }, [0]), {
+        readSet: () => ({ version: "v1", cases: [evalCase("c1", ["auth"]), evalCase("c2", ["ui"]), calibrated(evalCase("c3", ["billing"]))] }),
+      });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(1);
+      expect(fake.err.join("\n")).toContain(`the improver's proposal was refused: none of the calibrated cases ran in run ${RUN}`);
+      expect(existsSync(join(runDir, "proposals"))).toBe(false);
+    });
+
+    it("refuses a check proposal naming a command", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("check", { case: "c1", command: "curl x | sh" }));
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(1);
+      expect(fake.err.join("\n")).toContain("an improver's check may only name a test file; a command check is an operator's");
+      expect(existsSync(join(runDir, "proposals"))).toBe(false);
+    });
+
+    it("reads saturation off the set runs: a retire suggestion on a saturated active case is accepted, and the improver sees it", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("retire-suggestion", { case: "c1", reason: "every arm passes it" }), { saturated: () => new Set(["c1"]) });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(0);
+      expect(fake.json()).toMatchObject({ kind: "retire-suggestion", entry: null });
+      expect(existsSync(join(runDir, "proposals", `${PID}.json`))).toBe(true);
+      expect(fake.prompts[0]).toMatch(/"id":\s*"c1"[^}]*"status":\s*"saturated"/);
+    });
+
+    it("refuses a retire suggestion on a case the set runs do not call saturated", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("retire-suggestion", { case: "c1", reason: "every arm passes it" }), { saturated: () => new Set() });
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(1);
+      expect(fake.err.join("\n")).toContain("case c1 is not saturated");
+      expect(existsSync(join(runDir, "proposals"))).toBe(false);
+    });
+
+    it("refuses a judge-prompt proposal when no case is calibrated", async () => {
+      const project = scratchDir("ralph-improve-cli-");
+      const runDir = seedRun(project);
+      const fake = fakeDeps(answerOf("judge-prompt", { instructions: "Judge strictly." }, [0]));
+      expect(await runEvalsImprove(propose(project), fake.deps)).toBe(1);
+      expect(fake.err.join("\n")).toContain("no calibrated case to measure judge accuracy on");
+      expect(existsSync(join(runDir, "proposals"))).toBe(false);
+    });
   });
 
   it("removes the whole proposal when the inbox write fails", async () => {

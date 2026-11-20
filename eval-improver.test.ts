@@ -49,11 +49,12 @@ function run(): ImproverRun {
 }
 
 const CASES = [evalCase("c1", ["auth"]), evalCase("c2", ["ui"]), evalCase("unrun", ["auth"])];
+const INSTRUCTIONS = { judge: "You are a judge. JUDGE_NOW", analyst: "You are the analyst. ANALYST_NOW" };
 const LINEUP = { executor: { runner: "claude", model: "claude-sonnet-5-5" }, "review.spec": { runner: "opencode", model: "flash" } };
 
 describe("improverInput", () => {
   it("leaves out every graded-only field, the reference diff and the run's costs", () => {
-    const input = improverInput(run(), CASES, LINEUP);
+    const input = improverInput(run(), CASES, LINEUP, INSTRUCTIONS);
     const texts = [JSON.stringify(input), improverPrompt(input, "quality"), improverPrompt(input, "cost")];
     const forbidden = [
       "HELD_OUT_SENTINEL", "NOTE_SENTINEL", "CHECK_SENTINEL", "REASON_SENTINEL", "COMMENT_SENTINEL", "PRS_SENTINEL", "BASE_SENTINEL",
@@ -64,11 +65,11 @@ describe("improverInput", () => {
 
   it("takes no report scores: a scores field on the run never reaches the input", () => {
     const withScores = { ...run(), scores: [{ ticket: "c1", heldOut: "SCORES_SENTINEL" }] } as ImproverRun;
-    expect(JSON.stringify(improverInput(withScores, CASES, LINEUP))).not.toContain("SCORES_SENTINEL");
+    expect(JSON.stringify(improverInput(withScores, CASES, LINEUP, INSTRUCTIONS))).not.toContain("SCORES_SENTINEL");
   });
 
   it("carries the allowed material", () => {
-    const input = improverInput(run(), CASES, LINEUP);
+    const input = improverInput(run(), CASES, LINEUP, INSTRUCTIONS);
     const json = JSON.stringify(input);
     expect(json).toContain("Run the tests before pushing");
     expect(json).toContain("PATCH_B");
@@ -76,7 +77,7 @@ describe("improverInput", () => {
     expect(json).toContain("Title of c1");
     expect(input.arms).toEqual([{ name: "b", lineup: "opus", overlay: "tight-coder" }, { name: "c", lineup: "cheap", overlay: null }]);
     expect(input.cases.map((c) => c.id)).toEqual(["c1", "c2"]);
-    expect(input.cases[0]).toEqual({ id: "c1", tags: ["auth"], ticket: { ref: "REF-c1", title: "Title of c1", body: "Body of c1" } });
+    expect(input.cases[0]).toEqual({ id: "c1", tags: ["auth"], status: "active", ticket: { ref: "REF-c1", title: "Title of c1", body: "Body of c1" } });
     expect(input.trials).toHaveLength(3);
     expect(input.trials[0]).toEqual({ ticket: "c1", arm: "b", outcome: "failed", gates: [{ name: "ci", conclusion: "SUCCESS" }], reviewRounds: 1, reviewThreads: 0 });
     const long = input.patches.find((patch) => patch.ticket === "c2")!.diff;
@@ -85,7 +86,7 @@ describe("improverInput", () => {
   });
 
   it("leaves the reference arm's trials out", () => {
-    const input = improverInput({ ...run(), rows: [...run().rows, row("c1", "a", "green-pr")] }, CASES, LINEUP);
+    const input = improverInput({ ...run(), rows: [...run().rows, row("c1", "a", "green-pr")] }, CASES, LINEUP, INSTRUCTIONS);
     expect(input.trials.map((trial) => trial.arm)).not.toContain("a");
     expect(input.trials).toHaveLength(3);
   });
@@ -93,7 +94,7 @@ describe("improverInput", () => {
   it("keeps a log's tail and caps the total, counting what it dropped", () => {
     const big = (index: number): string => `START_${index}${"y".repeat(INPUT_TEXT_CAP * 2)}END_${index}`;
     const logs = Array.from({ length: 40 }, (_, index) => ({ ticket: "c1", arm: "b", text: big(index) }));
-    const input = improverInput({ ...run(), logs }, CASES, LINEUP);
+    const input = improverInput({ ...run(), logs }, CASES, LINEUP, INSTRUCTIONS);
     expect(input.logs[0]!.text).toContain("END_0");
     expect(input.logs[0]!.text).not.toContain("START_0");
     expect(input.logs.length).toBeLessThan(40);
@@ -107,7 +108,7 @@ describe("improverInput", () => {
       pr: 1, rounds: [], roundCount: 1, heads: [], unreviewedHeads: [], cappedHeads: [], cap: 5, capReached: false, note: "",
       threads: [thread], answered: { fix: 1, rebuttal: 0, unanswered: 0 },
     };
-    const input = improverInput({ ...run(), reviews: [{ ticket: "c1", arm: "b", review }, { ticket: "c1", arm: "a", review: { ...review, threads: [{ ...thread, title: "REFERENCE_THREAD" }] } }] }, CASES, LINEUP);
+    const input = improverInput({ ...run(), reviews: [{ ticket: "c1", arm: "b", review }, { ticket: "c1", arm: "a", review: { ...review, threads: [{ ...thread, title: "REFERENCE_THREAD" }] } }] }, CASES, LINEUP, INSTRUCTIONS);
     expect(input.threads).toEqual([{ ticket: "c1", arm: "b", threads: [{ title: "Missing null check", priority: "P1", answer: "fix" }] }]);
     const prompt = improverPrompt(input, "quality");
     expect(prompt).toContain("Missing null check");
@@ -116,7 +117,7 @@ describe("improverInput", () => {
 
   it("carries the targeted prompt files whole and offers only the live lineup's stages", () => {
     const text = `${"z".repeat(INPUT_TEXT_CAP * 2)} {{PROJECT_GATES}}`;
-    const input = improverInput({ ...run(), prompts: { "coder.md": text, "inspector.md": "not targeted" } }, CASES, LINEUP);
+    const input = improverInput({ ...run(), prompts: { "coder.md": text, "inspector.md": "not targeted" } }, CASES, LINEUP, INSTRUCTIONS);
     expect(input.prompts).toEqual({ "coder.md": text });
     const prompt = improverPrompt(input, "quality");
     expect(prompt).toContain("Stages: executor, review.spec.");
@@ -129,11 +130,11 @@ describe("improverInput", () => {
   });
 
   it("refuses a run with no analysis", () => {
-    expect(() => improverInput({ ...run(), analysis: { status: "unavailable", model: "m", reason: "timed out" } }, CASES, LINEUP)).toThrow(/no analysis/);
+    expect(() => improverInput({ ...run(), analysis: { status: "unavailable", model: "m", reason: "timed out" } }, CASES, LINEUP, INSTRUCTIONS)).toThrow(/no analysis/);
   });
 
   it("the prompt names the goal and the answer shape", () => {
-    const input = improverInput(run(), CASES, LINEUP);
+    const input = improverInput(run(), CASES, LINEUP, INSTRUCTIONS);
     expect(improverPrompt(input, "cost")).toContain("cheaper model");
     expect(improverPrompt(input, "quality")).toContain("Raise quality");
     expect(improverPrompt(input, "quality")).toContain("\"answers\"");
@@ -181,6 +182,55 @@ describe("parseProposal", () => {
     ["model not a string", JSON.stringify({ ...lineup, content: { stages: { executor: { model: 4 } } } }), /executor names no model/],
     ["runner unknown", JSON.stringify({ ...lineup, content: { stages: { executor: { model: "m", runner: "gemini" } } } }), /runner gemini is not one of/],
   ];
+  it("carries the current judge and analyst instructions and each case's status", () => {
+    const input = improverInput(run(), [evalCase("c1", ["auth"], "saturated"), evalCase("c2", ["ui"])], LINEUP, INSTRUCTIONS);
+    expect(input.instructions).toEqual(INSTRUCTIONS);
+    expect(input.cases.map((c) => c.status)).toEqual(["saturated", "active"]);
+    const prompt = improverPrompt(input, "quality");
+    for (const kind of ["judge-prompt", "analyst-prompt", "case", "check", "retire-suggestion"]) expect(prompt).toContain(`"${kind}"`);
+    expect(prompt).toContain("JUDGE_NOW");
+    expect(prompt).toContain("may only ADD a case or a check");
+    expect(prompt).toContain("A test file only, never a command");
+    expect(prompt).toContain("An analyst-prompt cannot pass yet");
+    expect(prompt).not.toContain("\"command\": \"<command>\"");
+  });
+
+  it("reports a case the set runs call saturated as saturated, never a retired one", () => {
+    const cases = [evalCase("c1", ["auth"]), evalCase("c2", ["ui"]), evalCase("c3", ["billing"], "retired")];
+    const input = improverInput({ ...run(), rows: [...run().rows, row("c3", "b", "green-pr")] }, cases, LINEUP, INSTRUCTIONS, new Set(["c1", "c3"]));
+    expect(Object.fromEntries(input.cases.map((c) => [c.id, c.status]))).toEqual({ c1: "saturated", c2: "active", c3: "retired" });
+    // Without the computed set, only the stored status shows.
+    expect(improverInput(run(), cases, LINEUP, INSTRUCTIONS).cases.map((c) => c.status)).toEqual(["active", "active"]);
+  });
+
+  it("accepts each evaluation kind; a test-set kind needs no answers", () => {
+    const accepted: [string, unknown, unknown][] = [
+      ["judge-prompt", { instructions: "Judge strictly." }, [0]],
+      ["analyst-prompt", { instructions: "Analyse." }, [1]],
+      ["case", { repo: "acme/app", prs: [12], reason: "covers auth", tags: ["auth"] }, undefined],
+      ["check", { case: "c1", test: "tests/auth.test.ts" }, []],
+      ["check", { case: "c2", test: "tests/ui.test.ts" }, undefined],
+      ["retire-suggestion", { case: "c1", reason: "every arm passes" }, [0]],
+    ];
+    for (const [kind, content, answers] of accepted) {
+      const parsed = parseProposal(JSON.stringify({ kind, content, rationale: "r", answers }), "quality", IMPROVEMENTS);
+      expect(parsed, kind).toEqual({ ok: true, proposal: { goal: "quality", kind, content, rationale: "r", answers: answers === undefined || (answers as number[]).length === 0 ? [] : [IMPROVEMENTS[(answers as number[])[0]!]] } });
+    }
+  });
+
+  const evaluationRefusals: [string, string, RegExp][] = [
+    ["case with notes", JSON.stringify({ kind: "case", content: { repo: "acme/app", prs: [12], reason: "r", notes: "the answer" }, rationale: "r" }), /may only add; it may not set notes/],
+    ["judge-prompt without answers", JSON.stringify({ kind: "judge-prompt", content: { instructions: "x" }, rationale: "r" }), /answers no analyst improvement/],
+    ["check with a bad index", JSON.stringify({ kind: "check", content: { case: "c1", test: "t.ts" }, rationale: "r", answers: [7] }), /answer 7 is not an analyst improvement/],
+    ["check with a command", JSON.stringify({ kind: "check", content: { case: "c1", command: "x" }, rationale: "r" }), /an improver's check may only name a test file; a command check is an operator's/],
+    ["check with both", JSON.stringify({ kind: "check", content: { case: "c1", command: "x", test: "t.ts" }, rationale: "r" }), /may only name a test file/],
+  ];
+  it.each(evaluationRefusals)("refuses: %s", (_, text, reason) => {
+    const parsed = parseProposal(text, "quality", IMPROVEMENTS);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.reason).toMatch(reason);
+  });
+
   it.each(refusals)("refuses: %s", (_, text, reason) => {
     const parsed = parseProposal(text, "quality", IMPROVEMENTS);
     expect(parsed.ok).toBe(false);

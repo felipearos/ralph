@@ -33,7 +33,7 @@ import { defaultBunPath, isRecord } from "./adapter";
 import type {
   Env, EvalAccuracyTallyView, EvalAxis, EvalCalibrationSuggestionView, EvalCalibrationVerdictView, EvalGoalVerdictView, EvalGuardrailConditionView, EvalGuardrailVerdictView, EvalJudgeAccuracyView, EvalPatchesView, EvalRunView, EvalNoiseStatusView, EvalSetCaseDetail, EvalSetGrader, EvalSaturationView, EvalSetRowView, EvalSetView, EvalSetWriteResult, EvalsView, EvalStartResult, EvalStopResult,
   EvalSuggestionsView, EvalSuggestionView, EvalInboxRowView, EvalInboxView, EvalInboxWriteResult, EvalImproveResult, EvalOpenPrResult,
-  EvalProposalRowView, EvalProposalsView,
+  EvalProposalRowView, EvalProposalSuggestionView, EvalProposalsView,
 } from "./contracts";
 import { EVAL_AXES } from "./contracts";
 import { guarded, type ExecResult, type Executor } from "./executor";
@@ -565,8 +565,12 @@ const proposalsWhy = (result: ExecResult, verb = "list"): string => {
   return said || `evals-proposals.ts ${verb} ${result.status === null ? "did not run" : `exited ${result.status}`} without saying why`;
 };
 
-const PROPOSAL_KINDS: readonly EvalProposalRowView["kind"][] = ["prompt-overlay", "lineup"];
-const PROPOSAL_STATUSES: readonly EvalProposalRowView["status"][] = ["proposed", "subset-run", "full-run", "passed", "failed"];
+const PROPOSAL_KINDS: readonly EvalProposalRowView["kind"][] = [
+  "prompt-overlay", "lineup", "judge-prompt", "analyst-prompt", "case", "check", "retire-suggestion",
+];
+const PROPOSAL_STATUSES: readonly EvalProposalRowView["status"][] = [
+  "proposed", "subset-run", "full-run", "passed", "failed", "suggested", "confirmed",
+];
 const runId = (value: unknown): value is string | null => value === null || typeof value === "string";
 
 /** A proposal's verdict, copied field by field; undefined when it does not parse, never a partial verdict. */
@@ -578,12 +582,43 @@ function proposalVerdict(value: unknown): EvalProposalRowView["verdict"] | undef
   return { pass: value.pass, conditions: conditions as EvalGuardrailConditionView[] };
 }
 
+const stringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * A test-set proposal's suggestion, copied field by field and only when it
+ * matches the row's kind; undefined when off, so the row stays without it.
+ */
+function proposalSuggestion(value: unknown, kind: EvalProposalRowView["kind"]): EvalProposalSuggestionView | undefined {
+  if (!isRecord(value) || value.kind !== kind) return undefined;
+  if (kind === "case") {
+    const { repo, prs, reason, tags } = value;
+    if (
+      typeof repo !== "string" || typeof reason !== "string" || !stringList(tags) || !Array.isArray(prs) || prs.length === 0 ||
+      !prs.every((pr) => Number.isInteger(pr) && (pr as number) > 0)
+    ) return undefined;
+    return { kind, repo, prs: [...(prs as number[])], reason, tags: [...tags] };
+  }
+  if (kind === "check") {
+    const { case: id, test, command } = value;
+    // A test file only: a suggestion naming a command would put a model-written command one Confirm away from the host.
+    if (typeof id !== "string" || typeof test !== "string" || command !== undefined) return undefined;
+    return { kind, case: id, test };
+  }
+  if (kind === "retire-suggestion") {
+    const { case: id, reason } = value;
+    if (typeof id !== "string" || typeof reason !== "string") return undefined;
+    return { kind, case: id, reason };
+  }
+  return undefined;
+}
+
 /**
  * One proposal row, copied field by field so nothing undeclared reaches the
  * remote store: content, an overlay path, files, a plan or a diff the CLI
- * printed beside it is left behind. Rationale and answers are copied only
- * when present and the print says the project relays patches (`details`), so
- * a CLI that over-shares on a summary-only project still relays a summary.
+ * printed beside it is left behind. Rationale, answers, a test-set target
+ * and its suggestion are copied only when present and the print says the
+ * project relays patches (`details`), so a CLI that over-shares on a
+ * summary-only project still relays a summary.
  * Null when a required field is off; the list drops it.
  */
 function proposalRow(value: unknown, details: boolean): EvalProposalRowView | null {
@@ -608,6 +643,10 @@ function proposalRow(value: unknown, details: boolean): EvalProposalRowView | nu
         isRecord(answer) && typeof answer.knob === "string" && typeof answer.target === "string" && typeof answer.change === "string")
       .map((answer) => ({ knob: answer.knob as string, target: answer.target as string, change: answer.change as string }));
   }
+  if (typeof value.target === "string") row.target = value.target;
+  // A malformed suggestion is dropped, not the row: the operator still sees the proposal, without a Confirm.
+  const suggestion = proposalSuggestion(value.suggestion, row.kind);
+  if (suggestion !== undefined) row.suggestion = suggestion;
   return row;
 }
 

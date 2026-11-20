@@ -19,16 +19,18 @@ import type { BacktestReport } from "./backtest-report";
 import { segment } from "./backtest-run";
 import { lineupPath } from "./backtest-trial";
 import type { Analysis } from "./eval-analyst";
+import { isPromptKind, isTestSetKind, testSetRefusal, type CaseContent, type CheckContent, type PromptContent, type PromptKind, type RetireContent } from "./eval-evaluation-proposals";
 import { gradeRun } from "./eval-grade";
 import { addEntry, type InboxEntry } from "./eval-inbox";
 import { proposedLineup } from "./eval-lineup";
-import { promptHash } from "./eval-proposals";
+import { promptHash, readSaturated } from "./eval-proposals";
 import {
   failedCases, GOALS, improverInput, improverPrompt, improverSettings, liveLineup, parseProposal, subsetCases,
   type Goal, type ImproverRun, type LineupContent, type OverlayContent,
 } from "./eval-improver";
+import { EVAL_INSTRUCTION_FILES, readEvalInstructions } from "./eval-instructions";
 import { checkStart, experimentsRoot, launch, readPatch, runSummary, type Launcher, type SetReader } from "./eval-runs";
-import { readSet as readEvalSet } from "./evals-set";
+import { readSet as readEvalSet, type EvalCase } from "./evals-set";
 import { loadConfig, validateConfig } from "./models";
 import { projectRoot } from "./paths";
 import { loadProjectConfig } from "./project-config";
@@ -66,6 +68,10 @@ export interface EvalsImproveDeps {
   readPrompt: (path: string) => string | null;
   /** Queues the recommended run in the inbox (`eval-inbox.ts`). */
   addEntry: typeof addEntry;
+  /** The judge panel's or the analyst's current opening instructions (#878): injected so a test never reads the harness's files. */
+  readInstructions: (kind: PromptKind) => string;
+  /** The set's saturated cases as its runs say (`readSaturated`, #878); undefined when unreadable, then only a stored status counts. */
+  saturated: (project: string, cases: readonly EvalCase[]) => ReadonlySet<string> | undefined;
 }
 
 const USAGE = "usage: evals-improve.ts propose --run <id> --goal quality|cost [--project <path>] [--model <id>] [--detach]";
@@ -225,7 +231,9 @@ export async function runEvalsImprove(argv: string[], deps: EvalsImproveDeps): P
     const run: ImproverRun = { id, analysis, arms, rows, patches, logs, reviews, prompts };
     const cases = deps.readSet(project).cases;
     const config = deps.loadConfig();
-    const input = improverInput(run, cases, liveLineup(config));
+    const instructions = { judge: deps.readInstructions("judge-prompt"), analyst: deps.readInstructions("analyst-prompt") };
+    const saturated = deps.saturated(project, cases) ?? new Set(cases.filter((c) => c.status === "saturated").map((c) => c.id));
+    const input = improverInput(run, cases, liveLineup(config), instructions, saturated);
 
     const session = sessionFlag ?? deps.nonce();
     const model = modelFlag ?? state?.config?.scoring?.analyst?.model ?? DEFAULT_JUDGE_MODEL;
@@ -243,6 +251,47 @@ export async function runEvalsImprove(argv: string[], deps: EvalsImproveDeps): P
         const missing = [...placeholders(current)].filter((token) => !kept.has(token));
         if (missing.length > 0) return refuse(`the improver's proposal was refused: overlay file ${path} drops ${missing.join(", ")}`);
       }
+    }
+
+    // An evaluation proposal (#878) queues no run: a test-set one waits on the operator, a prompt one on its re-judge.
+    if (isTestSetKind(proposal.kind) || isPromptKind(proposal.kind)) {
+      let subset: string[] = [];
+      let bases: Record<string, string> | undefined;
+      if (isTestSetKind(proposal.kind)) {
+        const why = testSetRefusal(proposal.kind, proposal.content as CaseContent | CheckContent | RetireContent, cases, saturated);
+        if (why !== null) return refuse(`the improver's proposal was refused: ${why}`);
+      } else {
+        // The CLI reads the calibration verdicts to name the cases; the improver never saw them.
+        const kind = proposal.kind;
+        const current = kind === "judge-prompt" ? instructions.judge : instructions.analyst;
+        // A no-op would re-judge twice under one prompt and measure only the judges' noise.
+        if ((proposal.content as PromptContent).instructions.trimEnd() === current.trimEnd()) {
+          return refuse("the improver's proposal was refused: the proposed instructions are the current ones");
+        }
+        subset = cases.filter((c) => (c.calibration ?? []).length > 0).map((c) => c.id);
+        if (subset.length === 0) return refuse("the improver's proposal was refused: no calibrated case to measure judge accuracy on");
+        // The re-judge rescores this run: a calibrated case it never ran has no panel to measure.
+        const ran = new Set(rows.map((row) => row.ticket));
+        subset = subset.filter((caseId) => ran.has(caseId));
+        if (subset.length === 0) return refuse(`the improver's proposal was refused: none of the calibrated cases ran in run ${id}`);
+        // The instructions it replaces, as read now: the PR path refuses when main's copy has moved since, as overlays do.
+        bases = { [EVAL_INSTRUCTION_FILES[kind]]: promptHash(current) };
+      }
+      const pid = deps.proposalId();
+      const proposalsDir = join(runDir, "proposals");
+      const proposalFile = join(proposalsDir, `${pid}.json`);
+      try {
+        writeAtomic(proposalFile, `${JSON.stringify({
+          v: 1, id: pid, run: id, goal, kind: proposal.kind, content: proposal.content, rationale: proposal.rationale,
+          answers: proposal.answers, model, createdAt: deps.now(), subset, entry: null, ...(bases === undefined ? {} : { bases }),
+        }, null, 2)}\n`);
+      } catch (error) {
+        rmSync(proposalFile, { force: true });
+        try { rmdirSync(proposalsDir); } catch { /* other proposals are there, or it never was */ }
+        return refuse(message(error));
+      }
+      deps.out(JSON.stringify({ ok: true, proposal: pid, kind: proposal.kind, goal, entry: null, cases: subset.length }));
+      return 0;
     }
 
     const pid = deps.proposalId();
@@ -366,6 +415,8 @@ export function realEvalsImproveDeps(): EvalsImproveDeps {
       try { return readFileSync(join(resolve(import.meta.dirname), path), "utf8"); } catch { return null; }
     },
     addEntry,
+    readInstructions: (kind) => readEvalInstructions(kind),
+    saturated: readSaturated,
   };
 }
 

@@ -12,7 +12,8 @@
  *
  * A passed proposal has one action, Open PR (#875): a command request that
  * opens a PR against ralph with the change and its evidence. A person merges
- * it there; nothing on this page merges or applies anything.
+ * it there; nothing on this page merges or applies anything. A test-set
+ * proposal (#878) never opens a PR: it is confirmed on the Test set screen.
  */
 import { CircleAlert } from "lucide-react";
 import { useState } from "react";
@@ -79,12 +80,13 @@ function OpenPr({ proposal }: { proposal: string }) {
 }
 
 function ProposalRow({ row, onOpenRun }: { row: EvalProposalRowView; onOpenRun: (id: string) => void }) {
-  const status = proposalStatus(row.status);
+  const status = proposalStatus(row.status, row.kind);
   const verdict = proposalVerdictSummary(row.verdict);
   return (
     <TableRow>
       <TableCell className="align-top">
         <div className="font-medium">{proposalLabel(row)}</div>
+        {row.target !== undefined && <div className="text-xs">{row.target}</div>}
         <div className="text-xs text-muted-foreground">{row.createdAt.slice(0, 16).replace("T", " ")}</div>
       </TableCell>
       <TableCell className="align-top">
@@ -120,7 +122,7 @@ function ProposalRow({ row, onOpenRun }: { row: EvalProposalRowView; onOpenRun: 
         {row.runs.full !== null && <RunLink label="Full set" id={row.runs.full} onOpenRun={onOpenRun} />}
       </TableCell>
       <TableCell className="align-top">
-        {proposalOpensPr(row.status) && <OpenPr proposal={row.id} />}
+        {proposalOpensPr(row) && <OpenPr proposal={row.id} />}
       </TableCell>
     </TableRow>
   );

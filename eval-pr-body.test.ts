@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { proposalCommitMessage, proposalPrBody, proposalPrTitle, qualityCostPoints } from "./eval-pr-body";
-import type { ProposalState, StoredProposal } from "./eval-proposals";
+import type { ProposalState, StoredPromptVerdict, StoredProposal } from "./eval-proposals";
 import type { EvalCaseArmView, EvalCaseView, EvalRunSummary } from "./eval-runs";
 
 const scores = (correctness: number | null, scope: number | null) =>
@@ -137,6 +137,47 @@ describe("proposalPrBody", () => {
   it("lists a lineup's stages", () => {
     const lineup = proposal("lineup", { stages: { coder: { model: "sonnet-z", runner: "claude" } } });
     expect(proposalPrBody({ proposal: lineup, state, run: fixtureRun(), marker: MARKER })).toContain("- coder → sonnet-z (claude)");
+  });
+});
+
+describe("proposalPrBody for a judge-prompt proposal", () => {
+  const tally = (agree: number, total: number) => ({ agree, total, accuracy: total === 0 ? null : agree / total });
+  const axes = (scope: number) => ({ correctness: tally(1, 1), scope: tally(scope, 1), tests: tally(0, 1), maintainability: tally(0, 0), review: tally(0, 0) });
+  const verdict: StoredPromptVerdict = {
+    v: 1, at: "2026-11-19T12:00:00Z", cases: ["c1", "c|2"], pass: true,
+    conditions: [
+      { id: "accuracy-up", pass: true, reason: "accuracy rose from 1 of 3 to 2 of 3" },
+      { id: "scores-alone", pass: true, reason: "the mean score is reported, never a condition" },
+    ],
+    current: { accuracy: tally(1, 3), axes: axes(0), objectives: {}, meanScore: 3.25, cases: 2, checked: [] },
+    proposed: { accuracy: tally(2, 3), axes: axes(1), objectives: {}, meanScore: 3.5, cases: 2, checked: [] },
+  };
+  const judge = proposal("judge-prompt", { instructions: "Judge with ```care```." });
+  const promptState: ProposalState = { status: "passed", verdict: { pass: true, conditions: verdict.conditions }, reason: null, runs: { subset: null, full: null }, promising: null };
+  const body = proposalPrBody({ proposal: judge, state: promptState, run: { ...fixtureRun(), id: "run-0" }, verdict, marker: MARKER });
+
+  it("shows the accuracy evidence in place of the scorecard and guardrails", () => {
+    expect(body.split("\n")[0]).toBe(MARKER);
+    for (const heading of ["## Summary", "## Proven against", "## Accuracy evidence", "## The change"]) expect(body).toContain(heading);
+    for (const heading of ["## Scorecard", "## Guardrail verdict", "## Quality vs cost", "## Contested cases"]) expect(body).not.toContain(heading);
+    expect(body).toContain("- Source run: run-0");
+    expect(body).toContain("Re-judged at 2026-11-19T12:00:00Z on 2 calibrated cases: c1, c|2.");
+    expect(body).toContain("| overall | 33% (1 of 3 verdicts) | 67% (2 of 3 verdicts) |");
+    expect(body).toContain("| scope | 0% (0 of 1 verdict) | 100% (1 of 1 verdict) |");
+    expect(body).toContain("| review | no calibration yet | no calibration yet |");
+    expect(body).toContain("Mean score: 3.25 → 3.50");
+    expect(body).toContain("raising scores alone never passes");
+    expect(body).toContain("- pass — accuracy-up: accuracy rose from 1 of 3 to 2 of 3");
+  });
+
+  it("names the file and shows the instructions in a fence they cannot close", () => {
+    expect(body).toContain("Replaces `eval-prompts/judge.md` whole with:");
+    expect(body).toContain("````markdown\nJudge with ```care```.\n````");
+  });
+
+  it("titles it under evals", () => {
+    expect(proposalPrTitle(judge)).toBe("evals: judge prompt from proposal p1 (#878)");
+    expect(proposalPrTitle(proposal("analyst-prompt", { instructions: "x" }))).toBe("evals: analyst prompt from proposal p1 (#878)");
   });
 });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EvalArmTotalView, EvalCaseArmView, EvalCaseView, EvalNoiseStatusView, EvalRunView, EvalSetRowView, EvalSetView } from "../contracts";
-import { proposalLabel, proposalOpensPr, proposalStatus, proposalVerdictSummary, accuracyAxisLines, judgeAccuracyHeadline, accuracyLabel, contestedExcludedLabel, armGapLabel, calibrationBody, calibrationCaseId, calibrationCountLabel, calibrationDefaults, calibrationVerdictLabel, goalVerdictLabel, guardrailConditionLabel, defaultNoiseFloorArms, floorRunLabel, gapLabel, noiseFloorForm, noiseFloorPlan, noiseStatusLabel, missingLine, suggestionAddForm, suggestionLabel, SUGGESTION_REASON_MAX, armLabel, armResolutionFor, caseHasGrade, graderLabel, judgeScoreLabel, judgeTotalLabel, objectiveLabel, objectiveTotalLabel, runHasGrades, buildCaseAdd, buildCaseCheck, buildCaseEdit, buildPlan, caseEditForm, caseLabel, defaultCaseRepo, lastRunLabel, saturationNote, parseTags, setVersionLabel, contestedFor, defaultForm, estimate, inboxCost, restoreForm, selectSetCases, setTagsOffered, firstTrialLabel, parsePrs, spreadLabel, modelsLabel, patchOpens, qualityCostPlot, rankingLabel, runConfigLabel, runStatus, sourceLabel, type RunForm } from "./evals-model";
+import { proposalLabel, proposalOpensPr, proposalStatus, proposalVerdictSummary, suggestionConfirm, suggestionLine, accuracyAxisLines, judgeAccuracyHeadline, accuracyLabel, contestedExcludedLabel, armGapLabel, calibrationBody, calibrationCaseId, calibrationCountLabel, calibrationDefaults, calibrationVerdictLabel, goalVerdictLabel, guardrailConditionLabel, defaultNoiseFloorArms, floorRunLabel, gapLabel, noiseFloorForm, noiseFloorPlan, noiseStatusLabel, missingLine, suggestionAddForm, suggestionLabel, SUGGESTION_REASON_MAX, armLabel, armResolutionFor, caseHasGrade, graderLabel, judgeScoreLabel, judgeTotalLabel, objectiveLabel, objectiveTotalLabel, runHasGrades, buildCaseAdd, buildCaseCheck, buildCaseEdit, buildPlan, caseEditForm, caseLabel, defaultCaseRepo, lastRunLabel, saturationNote, parseTags, setVersionLabel, contestedFor, defaultForm, estimate, inboxCost, restoreForm, selectSetCases, setTagsOffered, firstTrialLabel, parsePrs, spreadLabel, modelsLabel, patchOpens, qualityCostPlot, rankingLabel, runConfigLabel, runStatus, sourceLabel, type RunForm } from "./evals-model";
 
 const form = (over: Partial<RunForm> = {}): RunForm => ({ ...defaultForm(null), prs: "2731", ...over });
 
@@ -749,8 +749,17 @@ describe("calibration (#876)", () => {
 
 describe("proposalOpensPr", () => {
   it("offers Open PR on a passed proposal only (#875)", () => {
-    expect(proposalOpensPr("passed")).toBe(true);
-    for (const status of ["proposed", "subset-run", "full-run", "failed"] as const) expect(proposalOpensPr(status)).toBe(false);
+    expect(proposalOpensPr({ status: "passed", kind: "prompt-overlay" })).toBe(true);
+    for (const status of ["proposed", "subset-run", "full-run", "failed", "suggested", "confirmed"] as const) {
+      expect(proposalOpensPr({ status, kind: "prompt-overlay" })).toBe(false);
+    }
+  });
+
+  it("offers it on a passed lineup or prompt, never on a test-set kind (#878)", () => {
+    for (const kind of ["lineup", "judge-prompt", "analyst-prompt"] as const) expect(proposalOpensPr({ status: "passed", kind })).toBe(true);
+    for (const kind of ["case", "check", "retire-suggestion"] as const) {
+      for (const status of ["passed", "suggested", "confirmed"] as const) expect(proposalOpensPr({ status, kind })).toBe(false);
+    }
   });
 });
 
@@ -761,6 +770,15 @@ describe("proposalStatus", () => {
     expect(proposalStatus("full-run")).toEqual({ label: "Full-set run", tone: "neutral" });
     expect(proposalStatus("passed")).toEqual({ label: "Passed", tone: "good" });
     expect(proposalStatus("failed")).toEqual({ label: "Failed", tone: "bad" });
+    expect(proposalStatus("suggested")).toEqual({ label: "Suggested — confirm on Test set", tone: "neutral" });
+    expect(proposalStatus("confirmed")).toEqual({ label: "Confirmed in the set", tone: "good" });
+  });
+
+  it("says a fresh judge or analyst prompt awaits its re-judge, not a subset run (#878)", () => {
+    expect(proposalStatus("proposed", "judge-prompt").label).toBe("Awaiting its re-judge");
+    expect(proposalStatus("proposed", "analyst-prompt").label).toBe("Awaiting its re-judge");
+    expect(proposalStatus("proposed", "lineup").label).toBe("Subset run waiting in the Inbox");
+    expect(proposalStatus("passed", "judge-prompt")).toEqual({ label: "Passed", tone: "good" });
   });
 });
 
@@ -768,6 +786,36 @@ describe("proposalLabel", () => {
   it("names the goal and the kind", () => {
     expect(proposalLabel({ goal: "quality", kind: "prompt-overlay" })).toBe("Quality · Prompt overlay");
     expect(proposalLabel({ goal: "cost", kind: "lineup" })).toBe("Cost · Lineup");
+    expect(proposalLabel({ goal: "quality", kind: "judge-prompt" })).toBe("Quality · Judge prompt");
+    expect(proposalLabel({ goal: "quality", kind: "analyst-prompt" })).toBe("Quality · Analyst prompt");
+    expect(proposalLabel({ goal: "quality", kind: "case" })).toBe("Quality · New case");
+    expect(proposalLabel({ goal: "quality", kind: "check" })).toBe("Quality · New check");
+    expect(proposalLabel({ goal: "quality", kind: "retire-suggestion" })).toBe("Quality · Retire suggestion");
+  });
+});
+
+describe("suggestionConfirm", () => {
+  it("sends each suggestion through the set's existing command, and nothing without one (#878)", () => {
+    expect(suggestionConfirm({ kind: "case", repo: "acme/app", prs: [7], reason: "flaky", tags: [] }))
+      .toMatchObject({ path: "/api/evals/set/add", body: { repo: "acme/app", prs: [7], reason: "flaky" } });
+    expect(suggestionConfirm({ kind: "case", repo: "acme/app", prs: [7], reason: "flaky", tags: ["ui"] })!.body).toEqual({ repo: "acme/app", prs: [7], reason: "flaky", tags: ["ui"] });
+    expect(suggestionConfirm({ kind: "check", case: "c1", test: "a.test.ts" })).toMatchObject({ path: "/api/evals/set/check", body: { case: "c1", test: "a.test.ts" } });
+    // A test file only: even a suggestion that slipped a command in sends none.
+    const smuggled = { kind: "check", case: "c1", test: "a.test.ts", command: "rm -rf ~" } as unknown as Parameters<typeof suggestionConfirm>[0];
+    expect(suggestionConfirm(smuggled)!.body).toEqual({ case: "c1", test: "a.test.ts" });
+    expect(suggestionConfirm({ kind: "retire-suggestion", case: "c1", reason: "saturated" })).toMatchObject({ path: "/api/evals/set/retire", body: { case: "c1" } });
+    expect(suggestionConfirm(undefined)).toBeNull();
+  });
+});
+
+describe("suggestionLine", () => {
+  it("says what confirming a test-set suggestion does, or why there is nothing to confirm (#878)", () => {
+    expect(suggestionLine({ kind: "case", target: "add case acme/app#7", suggestion: { kind: "case", repo: "acme/app", prs: [7, 8], reason: "flaky", tags: ["ui"] } }))
+      .toBe("add case acme/app#7, #8 [ui] — flaky");
+    expect(suggestionLine({ kind: "check", suggestion: { kind: "check", case: "c1", test: "app.test.ts" } })).toBe("add check to c1: test app.test.ts");
+    expect(suggestionLine({ kind: "retire-suggestion", suggestion: { kind: "retire-suggestion", case: "c1", reason: "saturated" } })).toBe("retire c1 — saturated");
+    expect(suggestionLine({ kind: "retire-suggestion", target: "retire c1" })).toBe("retire c1");
+    expect(suggestionLine({ kind: "check" })).toBe("new check (no details on this project)");
   });
 });
 

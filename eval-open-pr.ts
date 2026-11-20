@@ -9,14 +9,16 @@
  * scratch worktree never touches the harness checkout (live loops read it)
  * and is always removed.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { isPromptKind, isTestSetKind, type PromptContent, type PromptKind } from "./eval-evaluation-proposals";
 import type { LineupContent } from "./eval-improver";
+import { EVAL_INSTRUCTION_FILES, readEvalInstructions } from "./eval-instructions";
 import { proposedLineup } from "./eval-lineup";
 import { proposalCommitMessage, proposalPrBody, proposalPrTitle } from "./eval-pr-body";
-import { promptHash, type ProposalState, type StoredProposal } from "./eval-proposals";
+import { promptHash, type ProposalState, type StoredPromptVerdict, type StoredProposal } from "./eval-proposals";
 import type { EvalRunSummary } from "./eval-runs";
 import { validateConfig } from "./models";
 import { applyOverlay, isPromptFile } from "./prompt-overlay";
@@ -40,8 +42,13 @@ export interface OpenProposalPrDeps {
 export interface OpenProposalPrInput {
   proposal: StoredProposal;
   state: ProposalState;
-  /** The full-set run the verdict was read from. */
+  /**
+   * The full-set run the verdict was read from; for a judge- or analyst-prompt
+   * proposal (#878), the source run it was made from, named for provenance.
+   */
   run: EvalRunSummary;
+  /** A prompt proposal's stored re-judge verdict, its accuracy evidence; required for those kinds. */
+  verdict?: StoredPromptVerdict;
 }
 
 export type OpenedProposalPr =
@@ -53,10 +60,18 @@ const failed = (what: string, result: { stderr: string; stdout: string }): Error
 
 export async function openProposalPr(deps: OpenProposalPrDeps, input: OpenProposalPrInput): Promise<OpenedProposalPr> {
   const { git, gh, harnessRoot, baseBranch } = deps;
-  const { proposal, state, run } = input;
-  // Only a verdict a full-set run earned ships: a subset run is a hint, not evidence.
+  const { proposal, state, run, verdict } = input;
+  const kind = proposal.kind;
+  // A test-set proposal changes the set, not the harness: no PR could carry it.
+  if (isTestSetKind(kind)) throw new Error(`a ${kind} proposal is a suggestion the operator confirms on the Test set screen; it never opens a PR`);
   if (state.status !== "passed") throw new Error(`proposal ${proposal.id} is ${state.status}, not passed: no PR is opened`);
-  if (state.runs.full !== run.id) {
+  if (isPromptKind(kind)) {
+    // A prompt proposal's evidence is its re-judge verdict on the calibrated cases, not a full-set run.
+    if (verdict === undefined) throw new Error(`proposal ${proposal.id} has no stored verdict: no PR is opened`);
+    if (!verdict.pass) throw new Error(`proposal ${proposal.id}'s verdict did not pass: no PR is opened`);
+    if (run.id !== proposal.run) throw new Error(`run ${run.id} is not proposal ${proposal.id}'s source run (${proposal.run}): no PR is opened`);
+  } else if (state.runs.full !== run.id) {
+    // Only a verdict a full-set run earned ships: a subset run is a hint, not evidence.
     throw new Error(`run ${run.id} is not proposal ${proposal.id}'s full-set run (${state.runs.full ?? "none"}): no PR is opened`);
   }
 
@@ -85,10 +100,15 @@ export async function openProposalPr(deps: OpenProposalPrDeps, input: OpenPropos
   let files: string[];
   try {
     await step(["worktree", "add", "--detach", tmp, `origin/${baseBranch}`], harnessRoot);
-    if (proposal.kind === "prompt-overlay") {
+    if (isPromptKind(kind)) {
+      refuseMovedInstructions(proposal, kind, tmp, baseBranch);
+      const file = EVAL_INSTRUCTION_FILES[kind];
+      mkdirSync(dirname(join(tmp, file)), { recursive: true });
+      writeFileSync(join(tmp, file), `${(proposal.content as PromptContent).instructions}\n`);
+    } else if (proposal.kind === "prompt-overlay") {
       await refuseMovedBase(proposal, tmp, baseBranch, step);
       applyOverlay(join(dirname(proposal.path), proposal.id, "overlay"), tmp);
-    } else {
+    } else if (proposal.kind === "lineup") {
       // Rebuilt over the base's CURRENT models.json rather than copied from the
       // trial's lineup file: that copy is a snapshot from when the proposal
       // ran, and shipping it would silently revert every later edit to models.json.
@@ -97,14 +117,19 @@ export async function openProposalPr(deps: OpenProposalPrDeps, input: OpenPropos
       const { problems } = validateConfig(proposed);
       if (problems.length > 0) throw new Error(`proposal ${proposal.id}'s lineup is not a valid models.json on origin/${baseBranch}: ${problems.join("; ")}`);
       writeFileSync(join(tmp, "models.json"), `${JSON.stringify(proposed, null, 2)}\n`);
+    } else {
+      // Any other kind must never fall into the lineup branch: it has no PR path.
+      throw new Error(`a ${proposal.kind} proposal has no PR path`);
     }
     await step(["add", "-A"], tmp);
     files = (await step(["diff", "--cached", "--name-only"], tmp)).split("\n").filter((line) => line !== "");
     // The fence on what was actually staged, not on what the proposal claims:
     // a PR that touched anything else would ship a change no eval measured.
-    const stray = proposal.kind === "prompt-overlay"
-      ? files.filter((file) => !isPromptFile(file))
-      : files.filter((file) => file !== "models.json");
+    const stray = isPromptKind(kind)
+      ? files.filter((file) => file !== EVAL_INSTRUCTION_FILES[kind])
+      : proposal.kind === "prompt-overlay"
+        ? files.filter((file) => !isPromptFile(file))
+        : files.filter((file) => file !== "models.json");
     if (stray.length > 0) throw new Error(`proposal ${proposal.id} would change ${stray.join(", ")}, which a ${proposal.kind} proposal may not touch`);
     if (files.length === 0) throw new Error(`origin/${baseBranch} already holds this change: proposal ${proposal.id} has nothing to open`);
     await step(["commit", "-m", proposalCommitMessage(proposal, run)], tmp);
@@ -127,7 +152,7 @@ export async function openProposalPr(deps: OpenProposalPrDeps, input: OpenPropos
       base: baseBranch,
       branch,
       title: proposalPrTitle(proposal),
-      body: proposalPrBody({ proposal, state, run, marker: proposalMarker(proposal.id) }),
+      body: proposalPrBody({ proposal, state, run, verdict, marker: proposalMarker(proposal.id) }),
     });
   } catch (error) {
     // Two clicks (local and relayed) can both pass the lookup above; the loser's create
@@ -168,4 +193,17 @@ async function refuseMovedBase(
   if (moved.length > 0) {
     throw new Error(`origin/${baseBranch} changed ${moved.join(", ")} since proposal ${proposal.id} was made: the overlay would revert that; propose again on the current prompts`);
   }
+}
+
+/**
+ * A prompt proposal replaces its instructions file whole and was measured
+ * against the instructions main held then: if main's moved since, the
+ * evidence compares against text no longer there, and the file would revert
+ * the later edit. Refuse; proposing again re-measures on the current text.
+ */
+function refuseMovedInstructions(proposal: StoredProposal, kind: PromptKind, tmp: string, baseBranch: string): void {
+  const file = EVAL_INSTRUCTION_FILES[kind];
+  const recorded = proposal.bases?.[file];
+  if (recorded !== undefined && recorded !== null && recorded === promptHash(readEvalInstructions(kind, tmp))) return;
+  throw new Error(`origin/${baseBranch} changed ${file} since proposal ${proposal.id} was measured: its accuracy evidence is stale; propose again on the current instructions`);
 }

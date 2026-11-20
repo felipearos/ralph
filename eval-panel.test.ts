@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { BacktestTicket } from "./backtest";
 import type { JudgeCall } from "./backtest-judge";
-import { AXES, aggregateRanking, contestedAxes, contestedRuleLabel, judgePanel, panelPrompt, parsePanelAnswer, type Axis, type JudgeSpec, type JudgeVerdict } from "./eval-panel";
+import { AXES, aggregateRanking, contestedAxes, contestedRuleLabel, JUDGE_INSTRUCTIONS, judgePanel, panelPrompt, parsePanelAnswer, type Axis, type JudgeSpec, type JudgeVerdict } from "./eval-panel";
 
 const ticket: BacktestTicket = {
   oaKey: "OA-7", intakeKey: null, movedAt: "2026-10-01T00:00:00Z", repo: "acme/app", humanPrs: [], mergeBase: "base",
@@ -44,6 +44,26 @@ describe("panelPrompt", () => {
     expect(prompt).toContain("+early");
     for (const axis of AXES) expect(prompt).toContain(`\`${axis}\``);
     expect(prompt).not.toMatch(/human|lineup|overlay|opus|\barm\b/i);
+  });
+
+  it("opens with today's instructions by default, byte for byte (#878)", () => {
+    const today = [
+      "You are one judge on a panel comparing candidate changes for one ticket. Read the ticket, then each",
+      "candidate's diffs: its final head, and its first head where it shows one. Judge only the diffs;",
+      "the order they are listed in means nothing, and nothing tells you who or what wrote them.",
+    ].join("\n");
+    expect(JUDGE_INSTRUCTIONS).toBe(today);
+    const shown = [{ label: "1", first: null, final: "diff\n+x" }, { label: "2", first: null, final: "diff\n+y" }];
+    expect(panelPrompt(ticket.frozen, shown)).toBe(panelPrompt(ticket.frozen, shown, today));
+    expect(panelPrompt(ticket.frozen, shown).startsWith(`${today}\n\n# Ticket\n`)).toBe(true);
+  });
+
+  it("replaces only the opening instructions with an override, keeping every other section (#878)", () => {
+    const shown = [{ label: "1", first: null, final: "diff\n+x" }, { label: "2", first: null, final: "diff\n+y" }];
+    const prompt = panelPrompt(ticket.frozen, shown, "Judge strictly.");
+    expect(prompt.startsWith("Judge strictly.\n\n# Ticket\n")).toBe(true);
+    expect(prompt).not.toContain("You are one judge on a panel");
+    expect(prompt.slice("Judge strictly.".length)).toBe(panelPrompt(ticket.frozen, shown).slice(JUDGE_INSTRUCTIONS.length));
   });
 });
 
@@ -149,6 +169,12 @@ describe("judgePanel", () => {
     if (verdict.status === "ok") expect(verdict.arms[first]!.axes.correctness.score).toBe(5);
     expect(panel.aggregate).toMatchObject({ status: "ok", winners: [first] });
     expect(panel.contested).toEqual([]);
+  });
+
+  it("asks every judge with the instructions it is given (#878)", async () => {
+    const one = answering([5, 2]);
+    await judgePanel({ ticket, candidates, seed: "seed-1", judges: [{ spec: claude, call: one.call }], instructions: "Judge strictly." });
+    expect(one.prompts[0]!.startsWith("Judge strictly.\n\n# Ticket\n")).toBe(true);
   });
 
   it("records a malformed answer as that judge abstaining, and still answers with the rest", async () => {

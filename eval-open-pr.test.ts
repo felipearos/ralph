@@ -4,8 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { builtInInstructions } from "./eval-instructions";
 import { openProposalPr, proposalMarker } from "./eval-open-pr";
-import { promptHash, type ProposalState, type StoredProposal } from "./eval-proposals";
+import { promptHash, type ProposalState, type StoredPromptVerdict, type StoredProposal } from "./eval-proposals";
 import type { EvalRunSummary } from "./eval-runs";
 import { subprocessSuite } from "./test-timeouts";
 import { scratchDir } from "./test-scratch";
@@ -162,6 +163,31 @@ const passed: ProposalState = {
 
 const BRANCH = "evals/proposal-p1";
 
+const tally = (agree: number, total: number) => ({ agree, total, accuracy: total === 0 ? null : agree / total });
+const evidence = (agree: number) => ({
+  accuracy: tally(agree, 3),
+  axes: { correctness: tally(agree > 1 ? 1 : agree, 1), scope: tally(agree > 2 ? 1 : 0, 1), tests: tally(1, 1), maintainability: tally(0, 0), review: tally(0, 0) },
+  objectives: {}, meanScore: 3.5, cases: 1, checked: [],
+});
+const VERDICT: StoredPromptVerdict = {
+  v: 1, at: "2026-11-19T12:00:00Z", cases: ["c1"], pass: true,
+  conditions: [{ id: "accuracy-up", pass: true, reason: "accuracy rose" }],
+  current: evidence(2), proposed: evidence(3),
+};
+
+/** A judge-prompt proposal from run-0, measured against the built-in judge instructions the seed falls back to. */
+function judgePrompt(root: string): StoredProposal {
+  return {
+    ...proposal(root, "judge-prompt", { instructions: "Judge the arms, citing the diff." }),
+    bases: { "eval-prompts/judge.md": promptHash(builtInInstructions("judge-prompt")) },
+  };
+}
+
+/** A prompt proposal has no subset or full run: its state is its verdict. */
+const promptPassed: ProposalState = { status: "passed", verdict: { pass: true, conditions: VERDICT.conditions }, reason: null, runs: { subset: null, full: null }, promising: null };
+
+const sourceRun = (): EvalRunSummary => ({ ...fixtureRun(), id: "run-0" });
+
 const deps = (h: Harness) => ({ git: h.git, gh: h.gh, harnessRoot: h.clone, baseBranch: "main", tmpRoot: h.root });
 
 const pushed = (h: Harness): string => sh(h.clone, "ls-remote", "origin", `refs/heads/${BRANCH}`).trim();
@@ -274,6 +300,58 @@ describe("openProposalPr", () => {
     const files = { "coder.md": "the coder, tighter\n" };
     const stored = proposal(h.root, "prompt-overlay", { files }, files);
     expect(await openProposalPr(deps(h), { proposal: stored, state: passed, run: fixtureRun() })).toEqual({ kind: "exists", number: 9, url: "https://github.com/o/ralph/pull/9" });
+  });
+
+  it("opens a passed judge-prompt proposal as a PR that changes only eval-prompts/judge.md", async () => {
+    const h = harness();
+    const stored = judgePrompt(h.root);
+    const opened = await openProposalPr(deps(h), { proposal: stored, state: promptPassed, run: sourceRun(), verdict: VERDICT });
+
+    expect(opened).toMatchObject({ kind: "opened", branch: BRANCH, files: ["eval-prompts/judge.md"] });
+    sh(h.clone, "fetch", "origin");
+    expect(sh(h.clone, "diff", "--name-only", "origin/main", `origin/${BRANCH}`).trim()).toBe("eval-prompts/judge.md");
+    expect(sh(h.clone, "show", `origin/${BRANCH}:eval-prompts/judge.md`)).toBe("Judge the arms, citing the diff.\n");
+    const body = h.bodies[0]!;
+    expect(body).toContain("## Accuracy evidence");
+    expect(body).not.toContain("## Scorecard");
+    expect(sh(h.clone, "worktree", "list").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("refuses a judge-prompt proposal whose instructions on main moved since it was measured", async () => {
+    const h = harness();
+    const stored = judgePrompt(h.root);
+    // Someone else edits the judge instructions on origin after the proposal was made.
+    const other = join(h.root, "other");
+    sh(h.root, "clone", join(h.root, "origin.git"), other);
+    mkdirSync(join(other, "eval-prompts"));
+    writeFileSync(join(other, "eval-prompts", "judge.md"), "A later edit.\n");
+    sh(other, "add", "-A");
+    sh(other, "commit", "-m", "edit judge");
+    sh(other, "push", "origin", "main");
+    await expect(openProposalPr(deps(h), { proposal: stored, state: promptPassed, run: sourceRun(), verdict: VERDICT }))
+      .rejects.toThrow(/changed eval-prompts\/judge\.md since proposal p1/);
+    expect(pushed(h)).toBe("");
+    expect(h.ghCalls.filter((argv) => argv[1] === "create")).toEqual([]);
+  });
+
+  it("refuses a judge-prompt proposal whose verdict failed, or that has none, without touching git", async () => {
+    const h = harness();
+    const stored = judgePrompt(h.root);
+    await expect(openProposalPr(deps(h), { proposal: stored, state: promptPassed, run: sourceRun(), verdict: { ...VERDICT, pass: false } }))
+      .rejects.toThrow(/verdict did not pass/);
+    await expect(openProposalPr(deps(h), { proposal: stored, state: promptPassed, run: sourceRun() })).rejects.toThrow(/no stored verdict/);
+    await expect(openProposalPr(deps(h), { proposal: stored, state: promptPassed, run: fixtureRun(), verdict: VERDICT })).rejects.toThrow(/source run/);
+    expect(h.gitCalls).toEqual([]);
+    expect(h.ghCalls).toEqual([]);
+  });
+
+  it("never opens a PR for a check proposal: the operator confirms it on the Test set screen", async () => {
+    const h = harness();
+    const stored = proposal(h.root, "check", { case: "c1", command: "true" });
+    await expect(openProposalPr(deps(h), { proposal: stored, state: passed, run: fixtureRun() }))
+      .rejects.toThrow("a check proposal is a suggestion the operator confirms on the Test set screen; it never opens a PR");
+    expect(h.gitCalls).toEqual([]);
+    expect(h.ghCalls).toEqual([]);
   });
 
   it("never names a merge to gh in its source", () => {

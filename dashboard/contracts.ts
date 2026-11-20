@@ -3618,8 +3618,26 @@ export type EvalOpenPrResult =
   | { ok: true; kind: "opened" | "exists"; number: number; url: string; proposal: string; autoMerge: boolean }
   | { ok: false; why: string };
 
-/** Mirror of `eval-proposals.ts`'s ProposalStatus (#874): where an improver proposal stands, following its runs. */
-export type EvalProposalStatus = "proposed" | "subset-run" | "full-run" | "passed" | "failed";
+/**
+ * Mirror of `eval-proposals.ts`'s ProposalStatus (#874): where an improver
+ * proposal stands, following its runs. A test-set proposal (#878) is
+ * `suggested` until an operator acts on it in the set, then `confirmed`.
+ */
+export type EvalProposalStatus = "proposed" | "subset-run" | "full-run" | "passed" | "failed" | "suggested" | "confirmed";
+
+/** Mirror of `eval-proposals.ts`'s proposal kinds (#874, #878): the run-config kinds, the prompt kinds and the test-set kinds. */
+export type EvalProposalKind =
+  | "prompt-overlay" | "lineup" | "judge-prompt" | "analyst-prompt" | "case" | "check" | "retire-suggestion";
+
+/**
+ * Mirror of `eval-proposals.ts`'s ProposalSuggestion (#878): what the Test set
+ * screen's Confirm sends to the existing set command (add, check, retire).
+ */
+export type EvalProposalSuggestionView =
+  | { kind: "case"; repo: string; prs: number[]; reason: string; tags: string[] }
+  // A test file only: an improver's check never names a command, which Confirm would run on the host.
+  | { kind: "check"; case: string; test: string }
+  | { kind: "retire-suggestion"; case: string; reason: string };
 
 /**
  * One improver proposal (#874): a mirror of `evals-proposals.ts list`'s rows,
@@ -3632,7 +3650,7 @@ export interface EvalProposalRowView {
   /** The run the improver read. */
   run: string;
   goal: "quality" | "cost";
-  kind: "prompt-overlay" | "lineup";
+  kind: EvalProposalKind;
   status: EvalProposalStatus;
   /** The goal's guardrail verdict on the run that settled it; null until one did. */
   verdict: { pass: boolean; conditions: EvalGuardrailConditionView[] } | null;
@@ -3642,6 +3660,10 @@ export interface EvalProposalRowView {
   runs: { subset: string | null; full: string | null };
   rationale?: string;
   answers?: { knob: string; target: string; change: string }[];
+  /** A test-set proposal's one-line target, e.g. "retire c1" (#878); with details only. */
+  target?: string;
+  /** What confirming a test-set proposal sends (#878); with details only. */
+  suggestion?: EvalProposalSuggestionView;
 }
 
 /**

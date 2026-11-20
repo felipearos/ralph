@@ -4570,7 +4570,8 @@ is read off the runs that carry the proposal's arm (lineup
 | `proposed`   | its subset run waits in the inbox |
 | `subset-run` | the subset run is running, or finished promising and its full-set run is not yet recommended |
 | `full-run`   | the full-set run is recommended in the inbox, or running |
-| `passed` / `failed` | the guardrail verdict (#871) on the full-set run, per condition |
+| `passed` / `failed` | the guardrail verdict (#871) on the full-set run, per condition; for a prompt proposal, its `rejudge` verdict (#878) |
+| `suggested` / `confirmed` | a test-set proposal (#878) waiting on the operator's Confirm, or one the set now shows done |
 
 A subset run is **promising** when every condition of the proposal's goal
 passes except the noise-floor ones (`objective-up`, `judge-within-floor`):
@@ -4618,6 +4619,58 @@ Nothing merges it: no code path calls `gh pr merge`, and a test pins that.
 `evalsImprover.autoMerge` parses and defaults off but changes nothing. A store
 created before this needs
 `dashboard/remote/migrations/20261120-eval-proposal-open-pr-command.sql`.
+
+### Evaluation proposals: judges, analyst and the test set (#878)
+
+The improver may also propose a change to the evaluation itself, under rules
+that keep it from grading itself up. Five more kinds:
+
+| Kind | Content | Settled by |
+| ---- | ------- | ---------- |
+| `judge-prompt` | new opening instructions for the judge panel | `rejudge` |
+| `analyst-prompt` | new opening instructions for the analyst | `rejudge` (always fails today) |
+| `case` | a new case from merged PRs no case holds | the operator, on Test set |
+| `check` | a test file as the check for a case that has none | the operator, on Test set |
+| `retire-suggestion` | retire a case its set runs show saturated | the operator, on Test set |
+
+The judges' and the analyst's opening instructions live in
+`eval-prompts/judge.md` and `eval-prompts/analyst.md`. Every scoring pass reads
+them, so a file there changes all judging. When a file is missing or empty, the
+text built into `eval-panel.ts` and `eval-analyst.ts` is used, which is the
+normal case.
+
+A **prompt proposal** queues no subset run. Instead,
+`bun evals-proposals.ts rejudge <prop-id>` scores the run the improver read
+twice, in scratch copies (the source run is never written), on the cases that
+carry calibration verdicts: once with the current instructions and once with
+the proposed ones. It passes only when judge accuracy against the operators'
+calibration verdicts rises AND no arm's objective outcome changes. The mean
+score is reported, but raising scores alone never passes. The verdict is stored
+once, in `proposals/<prop-id>/verdict.json`, and is final: to try again,
+propose again. Accuracy is compared only on the same verdicts (the
+`same-verdicts` condition), so a prompt cannot gain by contesting the ones it
+would get wrong. A `rejudge.lock` beside the verdict fences two re-judges of
+one proposal; if a re-judge died, remove the lock it names. An analyst prompt
+is not rescored: its instructions never reach the judges, so it fails at once
+on `measurable` until an analyst-accuracy measure exists. A passed one has **Open PR**. The PR changes only its
+`eval-prompts/` file, is refused when `origin/main`'s copy has moved since the
+proposal was measured, and carries an **Accuracy evidence** section (current
+vs proposed accuracy per axis, the conditions, the mean score) in place of the
+scorecard.
+
+A **test-set proposal** only adds a case or a check, or suggests a retirement.
+One that would edit or remove an existing case, its held-out tests, its check
+or its notes is refused when proposed, with the reason. An accepted one is
+`suggested`. It is listed under **Suggested by the improver** on the Test set
+screen, and nothing reaches the set until the operator presses **Confirm**.
+Confirm sends the screen's own add, check or retire command, so a suggested
+check still has to fail on the base and pass on the reference (`evals-set.ts
+check`). An improver's check names a test file only, never a command: a
+model-written command would run on the host after one click, so a command
+check stays an operator's. Once the set shows the change, the proposal reads `confirmed`; if the
+set has moved so that it would now edit something, it reads `failed`. A
+test-set proposal never opens a PR. On a summary-only project, the row shows
+no content and no Confirm.
 
 ## Keep the backtest results
 

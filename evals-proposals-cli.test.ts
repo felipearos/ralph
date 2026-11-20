@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,13 +6,17 @@ import { describe, expect, test } from "vitest";
 
 import type { ArmConfig } from "./backtest";
 import type { BacktestReport } from "./backtest-report";
+import type { ArmScore, TicketScore } from "./backtest-score";
 import type { OpenProposalPrInput } from "./eval-open-pr";
 import { RALPH_HOME } from "./paths";
 import { DEFAULT_MAX_COST_RISE, DEFAULT_MIN_TOKEN_CUT } from "./eval-guardrails";
 import { addEntry, readInbox } from "./eval-inbox";
-import type { AdvanceDeps } from "./eval-proposals";
+import { AXES, type Axis, type AxisScore, type PanelResult } from "./eval-panel";
+import { readPromptVerdict, type AdvanceDeps, type StoredProposal } from "./eval-proposals";
+import type { RejudgeInput, RejudgeResult } from "./eval-rejudge";
 import { experimentsRoot, type EvalRunSummary } from "./eval-runs";
 import { runEvalsProposals } from "./evals-proposals";
+import type { CalibrationVerdict, EvalCase } from "./evals-set";
 import { guardrailReport, tokens, type GuardrailCase } from "./fixtures/evals/guardrail-arms";
 import { scratchDir } from "./test-scratch";
 
@@ -69,11 +73,16 @@ function fullRun(root: string, pass: boolean): EvalRunSummary {
   };
 }
 
-function cli(root: string, options: { details?: boolean; runs?: EvalRunSummary[]; reports?: Record<string, BacktestReport>; autoMerge?: boolean; openFails?: string } = {}) {
+function cli(root: string, options: {
+  details?: boolean; runs?: EvalRunSummary[]; reports?: Record<string, BacktestReport>; autoMerge?: boolean; openFails?: string;
+  cases?: EvalCase[]; rejudge?: (input: RejudgeInput) => Promise<RejudgeResult>;
+} = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const opened: OpenProposalPrInput[] = [];
+  const rejudged: RejudgeInput[] = [];
   const advance: AdvanceDeps = {
+    ...(options.cases === undefined ? {} : { cases: options.cases }),
     runs: () => options.runs ?? [],
     readReport: (dir) => options.reports?.[dir] ?? null,
     readPlan: () => ({
@@ -97,8 +106,14 @@ function cli(root: string, options: { details?: boolean; runs?: EvalRunSummary[]
       return { kind: "opened", number: 901, url: "https://github.com/o/ralph/pull/901", branch: `evals/proposal-${input.proposal.id}`, files: ["coder.md"] };
     },
     config: () => (options.autoMerge === undefined ? {} : { evalsImprover: { autoMerge: options.autoMerge } }),
+    rejudge: async (input) => {
+      rejudged.push(input);
+      if (options.rejudge === undefined) throw new Error("no re-judge in this test");
+      return options.rejudge(input);
+    },
+    currentInstructions: (kind) => `CURRENT ${kind}`,
   });
-  return { run, out, err, opened };
+  return { run, out, err, opened, rejudged };
 }
 
 describe("evals-proposals list", () => {
@@ -258,5 +273,237 @@ describe("evals-proposals open-pr", () => {
     for (const file of ["evals-proposals.ts", "eval-open-pr.ts"]) {
       expect(readFileSync(join(import.meta.dirname, file), "utf8")).not.toMatch(/["']merge["']/);
     }
+  });
+});
+
+const PROMPT_PID = "prop-feedbeef";
+const CHECK_PID = "prop-c0ffee00";
+
+/** An evaluation proposal beside the overlay one: a judge-prompt on c1 and c2, or a check on c1. */
+function evaluationProposal(root: string, id: string, kind: string, content: unknown, subset: string[]): StoredProposal {
+  const dir = join(experimentsRoot(root), SOURCE_RUN, "proposals");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${id}.json`);
+  const stored = {
+    v: 1, id, run: SOURCE_RUN, goal: "quality", kind, content, rationale: "r", answers: [],
+    model: "opus", createdAt: "2026-11-19T10:00:00.000Z", subset, entry: null,
+  };
+  writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`);
+  return { ...stored, full: null, path } as StoredProposal;
+}
+
+function cal(axis: Axis, preferred: string): CalibrationVerdict {
+  return { arms: ["live", "prop"], axis, preferred, reason: "because", by: "op", at: "2026-11-19T00:00:00Z" };
+}
+
+function setCase(id: string, extra: Partial<EvalCase> = {}): EvalCase {
+  return { id, repo: "org/app", status: "active", prs: [{ number: 1 }], ...extra } as unknown as EvalCase;
+}
+
+// The operators prefer live on correctness and tests, prop on scope; c3 is calibrated but not in the proposal's subset.
+const SET: EvalCase[] = [
+  setCase("c1", { calibration: [cal("correctness", "live"), cal("tests", "live"), cal("scope", "prop")] }),
+  setCase("c2"),
+  setCase("c3", { calibration: [cal("correctness", "prop")] }),
+];
+
+function judged(arms: Record<string, number>): PanelResult {
+  const order = Object.keys(arms);
+  const axes = (score: number) => Object.fromEntries(AXES.map((axis) => [axis, { score, evidence: "e" }])) as Record<Axis, AxisScore>;
+  return {
+    seed: "s", order, contested: [],
+    verdicts: [{
+      judge: { name: "judge-claude", runner: "claude", model: "opus" }, status: "ok", ranking: [order], reason: "r",
+      arms: Object.fromEntries(Object.entries(arms).map(([arm, score]) => [arm, { axes: axes(score), better: "" }])),
+    }],
+    aggregate: { status: "ok", seed: "s", order, ranking: [order], winners: order, tie: true, reason: "r" },
+  };
+}
+
+function armScore(name: string, result: "pass" | "fail"): ArmScore {
+  return {
+    arm: name as ArmScore["arm"], heads: { first: null, final: null },
+    heldOut: name === "a" ? null : { status: "ok", files: [{ path: "x.test.ts", baseline: "fail", result }] },
+    gates: null, review: null, human: null, notes: [],
+  };
+}
+
+function ticketScore(ticket: string, scores: Record<string, number>): TicketScore {
+  return { ticket, scoredAt: NOW, baseline: [], arms: [armScore("a", "pass"), armScore("live", "pass"), armScore("prop", "fail")], panel: judged(scores) };
+}
+
+describe("evals-proposals rejudge", () => {
+  test("a proposed prompt that raises accuracy with objectives unchanged passes, and list shows it passed", async () => {
+    const root = project();
+    const proposal = evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c1", "c2"]);
+    const { run, out, rejudged } = cli(root, {
+      cases: SET,
+      rejudge: async () => {
+        // Current: live wins every axis, agreeing on 2 of 3. Proposed: prop also wins scope, agreeing on 3 of 3.
+        const proposed = ticketScore("c1", { live: 4, prop: 3 });
+        const verdict = proposed.panel!.verdicts[0]!;
+        if (verdict.status === "ok") verdict.arms.prop!.axes.scope.score = 5;
+        return { current: [ticketScore("c1", { live: 4, prop: 3 })], proposed: [proposed] };
+      },
+    });
+    expect(await run(["rejudge", PROMPT_PID, "--project", root])).toBe(0);
+    // c2 has no calibration and c3 is outside the proposal's subset: only c1 is re-judged.
+    expect(rejudged).toHaveLength(1);
+    expect(rejudged[0]).toMatchObject({
+      project: root, runId: SOURCE_RUN, cases: ["c1"], kind: "judge-prompt",
+      instructions: { current: "CURRENT judge-prompt", proposed: "PROPOSED" },
+    });
+    const printed = JSON.parse(out[0]!);
+    expect(printed).toMatchObject({ version: 1, proposal: PROMPT_PID, pass: true });
+    expect(printed.conditions.map((c: { id: string }) => c.id)).toEqual(["calibrated", "same-verdicts", "accuracy-up", "objective-unchanged", "scores-alone"]);
+    expect(readPromptVerdict(proposal)).toMatchObject({ v: 1, at: NOW, cases: ["c1"], pass: true });
+
+    expect(await run(["list", "--project", root])).toBe(0);
+    expect(JSON.parse(out[1]!).proposals[0]).toMatchObject({ id: PROMPT_PID, status: "passed" });
+    // The list re-judges nothing.
+    expect(rejudged).toHaveLength(1);
+  });
+
+  test("a proposed prompt that raises the mean score but lowers accuracy fails, and list shows it failed", async () => {
+    const root = project();
+    evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c1"]);
+    const { run, out } = cli(root, {
+      cases: SET,
+      rejudge: async () => ({ current: [ticketScore("c1", { live: 4, prop: 3 })], proposed: [ticketScore("c1", { live: 4, prop: 5 })] }),
+    });
+    expect(await run(["rejudge", PROMPT_PID, "--project", root])).toBe(0);
+    const printed = JSON.parse(out[0]!);
+    expect(printed.pass).toBe(false);
+    expect(printed.conditions.find((c: { id: string }) => c.id === "accuracy-up")).toMatchObject({ pass: false });
+    expect(await run(["list", "--project", root])).toBe(0);
+    expect(JSON.parse(out[1]!).proposals[0]).toMatchObject({ id: PROMPT_PID, status: "failed" });
+  });
+
+  test("an analyst prompt is never rescored: it fails as not measurable by judge accuracy", async () => {
+    const root = project();
+    const proposal = evaluationProposal(root, PROMPT_PID, "analyst-prompt", { instructions: "PROPOSED" }, ["c1"]);
+    const { run, out, rejudged } = cli(root, { cases: SET, rejudge: async () => ({ current: [], proposed: [] }) });
+    expect(await run(["rejudge", PROMPT_PID, "--project", root])).toBe(0);
+    expect(rejudged).toEqual([]);
+    const printed = JSON.parse(out[0]!);
+    expect(printed).toMatchObject({ proposal: PROMPT_PID, pass: false, conditions: [{ id: "measurable", pass: false }] });
+    expect(printed.conditions[0].reason).toContain("the analyst's instructions never reach the judges");
+    expect(readPromptVerdict(proposal)).toMatchObject({ v: 1, pass: false, cases: ["c1"] });
+    expect(await run(["list", "--project", root])).toBe(0);
+    expect(JSON.parse(out[1]!).proposals[0]).toMatchObject({ id: PROMPT_PID, status: "failed" });
+  });
+
+  test("a held re-judge lock refuses a second re-judge, and a finished one releases it", async () => {
+    const root = project();
+    const proposal = evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c1"]);
+    const lock = join(experimentsRoot(root), SOURCE_RUN, "proposals", PROMPT_PID, "rejudge.lock");
+    mkdirSync(join(lock, ".."), { recursive: true });
+    writeFileSync(lock, "{}\n");
+    const held = cli(root, { cases: SET, rejudge: async () => ({ current: [], proposed: [] }) });
+    expect(await held.run(["rejudge", PROMPT_PID, "--project", root])).toBe(1);
+    expect(held.rejudged).toEqual([]);
+    expect(held.err[0]).toContain(`a re-judge of ${PROMPT_PID} is already running (remove ${lock} if it died)`);
+    expect(readFileSync(lock, "utf8")).toBe("{}\n");
+    rmSync(lock);
+    const free = cli(root, { cases: SET, rejudge: async () => ({ current: [ticketScore("c1", { live: 4, prop: 3 })], proposed: [ticketScore("c1", { live: 4, prop: 5 })] }) });
+    expect(await free.run(["rejudge", PROMPT_PID, "--project", root])).toBe(0);
+    expect(readPromptVerdict(proposal)).not.toBeNull();
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test.each([
+    ["prompt-overlay", (root: string) => { proposalFile(root); return PID; }, "is a prompt-overlay proposal"],
+    ["check", (root: string) => evaluationProposal(root, CHECK_PID, "check", { case: "c2", test: "c2.test.ts" }, []).id, "is a check proposal"],
+  ])("refuses a %s proposal", async (_kind, write, said) => {
+    const root = project();
+    const id = write(root);
+    const { run, out, err, rejudged } = cli(root, { cases: SET, rejudge: async () => ({ current: [], proposed: [] }) });
+    expect(await run(["rejudge", id, "--project", root])).toBe(1);
+    expect(rejudged).toEqual([]);
+    expect(out).toEqual([]);
+    expect(err[0]).toContain(said);
+  });
+
+  test("refuses a prompt proposal that already has a verdict, and leaves it as it was", async () => {
+    const root = project();
+    const proposal = evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c1"]);
+    const first = cli(root, { cases: SET, rejudge: async () => ({ current: [ticketScore("c1", { live: 4, prop: 3 })], proposed: [ticketScore("c1", { live: 4, prop: 5 })] }) });
+    expect(await first.run(["rejudge", PROMPT_PID, "--project", root])).toBe(0);
+    const before = readFileSync(join(experimentsRoot(root), SOURCE_RUN, "proposals", PROMPT_PID, "verdict.json"), "utf8");
+    const again = cli(root, { cases: SET, rejudge: async () => ({ current: [], proposed: [] }) });
+    expect(await again.run(["rejudge", PROMPT_PID, "--project", root])).toBe(1);
+    expect(again.rejudged).toEqual([]);
+    expect(again.err[0]).toContain("already has a verdict");
+    expect(readFileSync(join(experimentsRoot(root), SOURCE_RUN, "proposals", PROMPT_PID, "verdict.json"), "utf8")).toBe(before);
+    expect(readPromptVerdict(proposal)?.pass).toBe(false);
+  });
+
+  test("refuses when no case of the proposal's subset is calibrated now", async () => {
+    const root = project();
+    evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c2", "c9"]);
+    const { run, err, rejudged } = cli(root, { cases: SET, rejudge: async () => ({ current: [], proposed: [] }) });
+    expect(await run(["rejudge", PROMPT_PID, "--project", root])).toBe(1);
+    expect(rejudged).toEqual([]);
+    expect(err[0]).toContain("no calibrated case left to re-judge on");
+  });
+
+  test("an unknown id exits 1, and a missing id is bad usage", async () => {
+    const root = project();
+    const { run, err } = cli(root, { cases: SET });
+    expect(await run(["rejudge", "prop-ffffffff", "--project", root])).toBe(1);
+    expect(err[0]).toBe("evals-proposals: no proposal prop-ffffffff");
+    expect(await run(["rejudge"])).toBe(64);
+  });
+});
+
+describe("evals-proposals open-pr, prompt proposals", () => {
+  test("a passed judge-prompt proposal opens with its source run and its verdict", async () => {
+    const root = project();
+    const proposal = evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c1"]);
+    const judged = cli(root, {
+      cases: SET,
+      rejudge: async () => {
+        const proposed = ticketScore("c1", { live: 4, prop: 3 });
+        const verdict = proposed.panel!.verdicts[0]!;
+        if (verdict.status === "ok") verdict.arms.prop!.axes.scope.score = 5;
+        return { current: [ticketScore("c1", { live: 4, prop: 3 })], proposed: [proposed] };
+      },
+    });
+    expect(await judged.run(["rejudge", PROMPT_PID, "--project", root])).toBe(0);
+    const source = { ...subsetRun(root), id: SOURCE_RUN };
+    const { run, out, opened } = cli(root, { cases: SET, runs: [subsetRun(root), source] });
+    expect(await run(["open-pr", PROMPT_PID, "--project", root])).toBe(0);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.run.id).toBe(SOURCE_RUN);
+    expect(opened[0]!.verdict).toEqual(readPromptVerdict(proposal));
+    expect(opened[0]!.verdict?.pass).toBe(true);
+    expect(JSON.parse(out[0]!)).toMatchObject({ kind: "opened", proposal: PROMPT_PID });
+  });
+
+  test("a passed prompt proposal whose source run is gone opens nothing", async () => {
+    const root = project();
+    const proposal = evaluationProposal(root, PROMPT_PID, "judge-prompt", { instructions: "PROPOSED" }, ["c1"]);
+    mkdirSync(join(experimentsRoot(root), SOURCE_RUN, "proposals", PROMPT_PID), { recursive: true });
+    writeFileSync(join(experimentsRoot(root), SOURCE_RUN, "proposals", PROMPT_PID, "verdict.json"),
+      JSON.stringify({ v: 1, at: NOW, cases: ["c1"], pass: true, conditions: [], current: {}, proposed: {} }));
+    expect(readPromptVerdict(proposal)?.pass).toBe(true);
+    const { run, err, opened } = cli(root, { cases: SET, runs: [] });
+    expect(await run(["open-pr", PROMPT_PID, "--project", root])).toBe(1);
+    expect(opened).toEqual([]);
+    expect(err[0]).toContain(`source run ${SOURCE_RUN} is not among the runs`);
+  });
+});
+
+describe("evals-proposals list, test-set proposals", () => {
+  test("a check suggestion is confirmed once the set's case has that check", async () => {
+    const root = project();
+    evaluationProposal(root, CHECK_PID, "check", { case: "c2", test: "c2.test.ts" }, []);
+    const before = cli(root, { cases: SET });
+    expect(await before.run(["list", "--project", root])).toBe(0);
+    expect(JSON.parse(before.out[0]!).proposals[0]).toMatchObject({ id: CHECK_PID, status: "suggested" });
+    const checked = SET.map((c) => (c.id === "c2" ? { ...c, check: { test: "c2.test.ts", base: "fail", reference: "pass", acceptedAt: NOW, acceptedBy: "op" } } as EvalCase : c));
+    const after = cli(root, { cases: checked });
+    expect(await after.run(["list", "--project", root])).toBe(0);
+    expect(JSON.parse(after.out[0]!).proposals[0]).toMatchObject({ id: CHECK_PID, status: "confirmed" });
   });
 });

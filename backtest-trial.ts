@@ -18,6 +18,7 @@ import { GIT_TIMEOUT_MS, scoreBacktest, scoreRepeats, type ScoreDeps, type Ticke
 import { claudeJudge, JUDGE_TIMEOUT_MS } from "./backtest-judge";
 import { spawnGh } from "./clerk/pulls";
 import { analyse, type Analysis } from "./eval-analyst";
+import { readEvalInstructions } from "./eval-instructions";
 import { guardrailSettings, stampGuardrails, type GuardrailThresholds } from "./eval-guardrails";
 import { stampJudgeAccuracy, type CalibratedCase } from "./eval-judge-accuracy";
 import { NOISE_FLOOR_FILE, noiseFloorSettings, readNoiseFloors, stampNoise, type NoiseReads } from "./eval-noise-floor";
@@ -620,7 +621,7 @@ async function analyseReport(runDir: string, config: BacktestConfig, report: Bac
     const call = (options.scoreDeps?.analyst ?? claudeJudge)({
       model: analyst.model, cwd: scratch, logPath: join(runDir, "analyst.log"), timeoutMs: JUDGE_TIMEOUT_MS, env: options.scoreDeps?.env, signal: options.signal,
     });
-    const analysis = await analyse(report, analyst.model, call);
+    const analysis = await analyse(report, analyst.model, call, options.scoreDeps?.instructions?.analyst ?? readEvalInstructions("analyst-prompt"));
     writeAtomic(join(runDir, "analysis.json"), `${JSON.stringify(analysis, null, 2)}\n`);
     options.log(analysis.status === "ok" ? `analyst: ${analysis.improvements.length} improvement(s)` : `analyst unavailable: ${analysis.reason}`);
     return analysis;

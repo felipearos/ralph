@@ -17,6 +17,7 @@ import { armList, codexJudgeModel, judgeSpecs, type BacktestConfig, type Backtes
 import { judgeGate, recordBase, runGates, type BaseRed, type GateCheck } from "./base-red";
 import { JUDGE_TIMEOUT_MS, type ArmId, type JudgeCall, type JudgeResult } from "./backtest-judge";
 import { productionJudge, type JudgeFactory } from "./eval-judges";
+import { readEvalInstructions } from "./eval-instructions";
 import { judgePanel, type Candidate, type PanelResult } from "./eval-panel";
 import { PASSING, type ArmName, type TrialRow } from "./backtest-report";
 import { segment, writeAtomic, type BacktestState } from "./backtest-run";
@@ -91,6 +92,8 @@ export interface ScoreDeps {
   codexModel?: string | null;
   /** The Claude-only judge call of #535, used for every judge when `panelJudge` is not given. */
   judge?: (opts: { model: string; cwd: string; logPath: string; timeoutMs: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal }) => JudgeCall;
+  /** The judges' and the analyst's opening instructions (#878); each absent one is read from its harness file. */
+  instructions?: { judge?: string; analyst?: string };
 }
 
 
@@ -706,7 +709,10 @@ async function judgeArms(s: Scoring, seed: string, ticket: BacktestTicket, arms:
         timeoutMs: Math.min(s.timeoutMs, JUDGE_TIMEOUT_MS), env: s.deps.env, signal: s.deps.signal,
       }),
     }));
-    return await judgePanel({ ticket, candidates, seed, judges, contested: judge.contested });
+    return await judgePanel({
+      ticket, candidates, seed, judges, contested: judge.contested,
+      instructions: s.deps.instructions?.judge ?? readEvalInstructions("judge-prompt"),
+    });
   } catch (error) {
     return unavailable(message(error));
   }

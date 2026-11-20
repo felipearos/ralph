@@ -91,8 +91,20 @@ function fenced(diff: string): { body: string; note: string; fence: string } {
   return { body, note: cut ? ` (truncated to its first ${MAX_DIFF_CHARS} characters of ${diff.length})` : "", fence: "`".repeat(Math.max(3, longest + 1)) };
 }
 
+/**
+ * The panel prompt's opening instructions (#878). Separate from the sections that carry the case so an
+ * evaluation proposal can replace them (eval-instructions.ts reads the harness file) and leave the ticket,
+ * candidates, axes and answer format as they are.
+ */
+export const JUDGE_INSTRUCTIONS = [
+  "You are one judge on a panel comparing candidate changes for one ticket. Read the ticket, then each",
+  "candidate's diffs: its final head, and its first head where it shows one. Judge only the diffs;",
+  "the order they are listed in means nothing, and nothing tells you who or what wrote them.",
+].join("\n");
+
 /** The panel's whole input: the frozen ticket and each candidate's heads under a neutral label. */
-export function panelPrompt(frozen: BacktestTicket["frozen"], candidates: { label: string; first: string | null; final: string }[]): string {
+export function panelPrompt(frozen: BacktestTicket["frozen"], candidates: { label: string; first: string | null; final: string }[],
+  instructions: string = JUDGE_INSTRUCTIONS): string {
   const comments = frozen.comments.length === 0 ? "(none)" : frozen.comments.map((c) => `--- ${c.createdAt}\n${c.body}`).join("\n\n");
   const shown = candidates.map(({ label, first, final }) => {
     const parts = [`## Candidate ${label}`];
@@ -107,9 +119,7 @@ export function panelPrompt(frozen: BacktestTicket["frozen"], candidates: { labe
   const labels = candidates.map((c) => `"${c.label}"`).join(", ");
   const axes = AXES.map((axis) => `- \`${axis}\`: ${AXIS_QUESTIONS[axis]}`).join("\n");
   return [
-    "You are one judge on a panel comparing candidate changes for one ticket. Read the ticket, then each",
-    "candidate's diffs: its final head, and its first head where it shows one. Judge only the diffs;",
-    "the order they are listed in means nothing, and nothing tells you who or what wrote them.",
+    instructions,
     "",
     "# Ticket",
     "",
@@ -296,6 +306,8 @@ export async function judgePanel(input: {
   judges: { spec: JudgeSpec; call: JudgeCall }[];
   /** Absent is inversion, the rule before #818. */
   contested?: ContestedRule;
+  /** The prompt's opening instructions (#878); absent: JUDGE_INSTRUCTIONS. */
+  instructions?: string;
 }): Promise<PanelResult> {
   const rule: ContestedRule = input.contested ?? { kind: "inversion" };
   const present = input.candidates.filter((candidate) => candidate.final.trim() !== "");
@@ -307,7 +319,7 @@ export async function judgePanel(input: {
     return { seed: input.seed, order, verdicts, contested: [], rule, aggregate: { status: "unavailable", seed: input.seed, order, reason } };
   }
   const labels = shown.map((_, index) => String(index + 1));
-  const prompt = panelPrompt(input.ticket.frozen, shown.map((candidate, index) => ({ label: labels[index]!, first: candidate.first, final: candidate.final })));
+  const prompt = panelPrompt(input.ticket.frozen, shown.map((candidate, index) => ({ label: labels[index]!, first: candidate.first, final: candidate.final })), input.instructions);
   const verdicts = await Promise.all(input.judges.map(async ({ spec, call }): Promise<JudgeVerdict> => {
     let answer: Awaited<ReturnType<JudgeCall>>;
     try { answer = await call(prompt); } catch (error) { answer = { ok: false, reason: `the call threw: ${error instanceof Error ? error.message : String(error)}` }; }

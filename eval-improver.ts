@@ -19,8 +19,9 @@ import { basename } from "node:path";
 import type { ArmConfig } from "./backtest";
 import type { TrialOutcome, TrialRow } from "./backtest-report";
 import type { Analysis, Improvement } from "./eval-analyst";
+import { evaluationContent, isTestSetKind, EVALUATION_KINDS, type EvaluationContent, type EvaluationKind } from "./eval-evaluation-proposals";
 import type { RunGrades } from "./eval-grade";
-import { withoutGraded, type EvalCase } from "./evals-set";
+import { withoutGraded, type CaseStatus, type EvalCase } from "./evals-set";
 import { RUNNERS, STAGES, type Runner, type Stage } from "./models";
 import { isPromptFile } from "./prompt-overlay";
 import type { TrialReview } from "./trial-review";
@@ -59,11 +60,14 @@ export interface ImproverInput {
   threads: { ticket: string; arm: string; threads: { title: string; priority: string | null; answer: string }[] }[];
   /** What the total cap dropped, so the improver knows the run showed more than it read. */
   omitted: { patches: number; logs: number; threads: number };
-  cases: { id: string; tags: string[]; ticket: { ref: string; title: string; body: string } }[];
+  /** `status` is no grading: a retire suggestion needs to know which cases are saturated (#878). */
+  cases: { id: string; tags: string[]; status: CaseStatus; ticket: { ref: string; title: string; body: string } }[];
   /** The live `default` lineup, dotted stage names flattened: what a lineup proposal changes. */
   lineup: Record<string, LineupStage>;
   /** Whole current prompt files an overlay may replace; never cut, since an overlay is written back whole. */
   prompts: Record<string, string>;
+  /** The judge panel's and the analyst's current opening instructions: a judge- or analyst-prompt proposal replaces them whole (#878). */
+  instructions: { judge: string; analyst: string };
 }
 
 /** Past this a patch or log is cut: the improver needs what went wrong, not a whole session twice. */
@@ -108,7 +112,15 @@ const REFERENCE_ARM = "a";
  * without an analysis: the proposal must answer an analyst improvement, and
  * the caller refuses before it spends a model call.
  */
-export function improverInput(run: ImproverRun, cases: EvalCase[], lineup: Record<string, LineupStage>): ImproverInput {
+/**
+ * `saturated` is the caller's computed saturation (`saturatedCaseIds`): no
+ * case is stored as saturated, so without it the improver could never see a
+ * case to suggest retiring.
+ */
+export function improverInput(
+  run: ImproverRun, cases: EvalCase[], lineup: Record<string, LineupStage>, instructions: { judge: string; analyst: string },
+  saturated: ReadonlySet<string> = new Set(),
+): ImproverInput {
   if (run.analysis.status !== "ok") throw new Error(`improver: run ${run.id} has no analysis (${run.analysis.reason})`);
   const arms = run.arms.filter((arm) => arm.name !== REFERENCE_ARM);
   const armNames = new Set(arms.map((arm) => arm.name));
@@ -165,10 +177,12 @@ export function improverInput(run: ImproverRun, cases: EvalCase[], lineup: Recor
     cases: cases.filter((c) => tickets.has(c.id)).map((c) => {
       // withoutGraded drops heldOut, notes and check; reason, prs, comments and the rest are dropped by naming only these.
       const open = withoutGraded(c);
-      return { id: open.id, tags: [...open.tags], ticket: { ref: open.ticket.ref, title: open.ticket.title, body: open.ticket.body } };
+      const status = open.status === "active" && saturated.has(open.id) ? "saturated" : open.status;
+      return { id: open.id, tags: [...open.tags], status, ticket: { ref: open.ticket.ref, title: open.ticket.title, body: open.ticket.body } };
     }),
     lineup: { ...lineup },
     prompts,
+    instructions: { judge: instructions.judge, analyst: instructions.analyst },
   };
 }
 
@@ -201,7 +215,7 @@ export function improverPrompt(input: ImproverInput, goal: Goal): string {
     "",
     "Answer with exactly one JSON object and no other text:",
     "",
-    `{"kind": "prompt-overlay" | "lineup", "content": <see below>, "rationale": "<why this change, citing the improvements>", "answers": [<improvement index>]}`,
+    `{"kind": ${PROPOSAL_KINDS.map((kind) => `"${kind}"`).join(" | ")}, "content": <see below>, "rationale": "<why this change, citing the improvements>", "answers": [<improvement index>]}`,
     "",
     "- prompt-overlay: `content` is `{\"files\": {\"<path>\": \"<the full new text of the file>\"}}`. Every path is a",
     "  harness prompt file: `prompt.md`, `coder.md`, `inspector.md` or `prompts/<name>.md`. Nothing else may be replaced.",
@@ -211,14 +225,29 @@ export function improverPrompt(input: ImproverInput, goal: Goal): string {
     `- lineup: \`content\` is \`{"stages": {"<stage>": {"model": "<model id>", "runner": "<${RUNNERS.join("|")}>"}}}\`; the runner is`,
     "  optional and, when left out, stays the stage's current one in `lineup`. A stage moved to another runner keeps",
     `  only its runner and model. Stages: ${stages.join(", ")}.`,
+    "- judge-prompt / analyst-prompt: `content` is `{\"instructions\": \"<the full replacement of the opening instructions>\"}`,",
+    "  replacing `instructions.judge` (judge-prompt) or `instructions.analyst` (analyst-prompt) in the input whole; start from",
+    "  that current text. It passes only if the judges' accuracy on the operators' calibration verdicts rises with no case's",
+    "  objective outcome changed; raising scores alone never passes. An analyst-prompt cannot pass yet: the analyst's",
+    "  instructions never reach the judges, so judge accuracy cannot show them better. Do not propose one.",
+    "- case: `content` is `{\"repo\": \"<owner/name>\", \"prs\": [<merged PR number>], \"reason\": \"<why the set needs it>\", \"tags\": [\"<tag>\"]}`",
+    "  (`tags` optional): a new case from merged PRs no case already holds.",
+    "- check: `content` is `{\"case\": \"<case id>\", \"test\": \"<repo-relative test path>\"}` for a case with no check yet:",
+    "  it must fail on the case's base and pass on its reference. A test file only, never a command: a command check is an operator's.",
+    "- retire-suggestion: `content` is `{\"case\": \"<case id>\", \"reason\": \"<why>\"}` for a case whose `status` is saturated.",
+    "",
+    "A test-set proposal (case, check, retire-suggestion) may only ADD a case or a check, or SUGGEST retiring a case. It may",
+    "never edit or remove a case, its held-out tests, its check or its notes. Test-set proposals become suggestions an",
+    "operator confirms; `answers` may be empty for them.",
   ].join("\n");
 }
 
-export type ProposalKind = "prompt-overlay" | "lineup";
+export const PROPOSAL_KINDS = ["prompt-overlay", "lineup", ...EVALUATION_KINDS] as const;
+export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
 export interface OverlayContent { files: Record<string, string> }
 export interface LineupContent { stages: Partial<Record<Stage, { model: string; runner?: Runner }>> }
 
-export type Proposal = { goal: Goal; kind: ProposalKind; content: OverlayContent | LineupContent; rationale: string; answers: Improvement[] };
+export type Proposal = { goal: Goal; kind: ProposalKind; content: OverlayContent | LineupContent | EvaluationContent; rationale: string; answers: Improvement[] };
 
 /** A model's JSON: a fenced block, an object inside prose, or the whole text — as the analyst and judges read theirs. */
 function jsonIn(text: string): unknown {
@@ -270,20 +299,25 @@ function lineupContent(content: unknown): { ok: true; content: LineupContent } |
 export function parseProposal(text: string, goal: Goal, improvements: Improvement[]): { ok: true; proposal: Proposal } | { ok: false; reason: string } {
   const doc = jsonIn(text);
   if (!isRecord(doc)) return { ok: false, reason: "the improver answered with no JSON object" };
-  if (doc.kind !== "prompt-overlay" && doc.kind !== "lineup") return { ok: false, reason: `kind ${String(doc.kind)} is not prompt-overlay or lineup` };
+  if (!(PROPOSAL_KINDS as readonly unknown[]).includes(doc.kind)) return { ok: false, reason: `kind ${String(doc.kind)} is not one of ${PROPOSAL_KINDS.join(", ")}` };
+  const kind = doc.kind as ProposalKind;
   if (typeof doc.rationale !== "string" || doc.rationale.trim() === "") return { ok: false, reason: "the proposal has no rationale" };
-  if (!Array.isArray(doc.answers) || doc.answers.length === 0) return { ok: false, reason: "the proposal answers no analyst improvement" };
+  // A test-set proposal may rest on the set itself (a saturated case, a missing check) rather than on an analyst improvement.
+  const given = isTestSetKind(kind) && doc.answers === undefined ? [] : doc.answers;
+  if (!Array.isArray(given) || (given.length === 0 && !isTestSetKind(kind))) return { ok: false, reason: "the proposal answers no analyst improvement" };
   const answers: Improvement[] = [];
-  for (const index of doc.answers) {
+  for (const index of given) {
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= improvements.length) {
       return { ok: false, reason: `answer ${String(index)} is not an analyst improvement (0 to ${improvements.length - 1})` };
     }
     const improvement = improvements[index]!;
     if (!answers.includes(improvement)) answers.push(improvement);
   }
-  const content = doc.kind === "prompt-overlay" ? overlayContent(doc.content) : lineupContent(doc.content);
+  const content: { ok: true; content: Proposal["content"] } | { ok: false; reason: string } = kind === "prompt-overlay" ? overlayContent(doc.content)
+    : kind === "lineup" ? lineupContent(doc.content)
+      : evaluationContent(kind as EvaluationKind, doc.content);
   if (!content.ok) return content;
-  return { ok: true, proposal: { goal, kind: doc.kind, content: content.content, rationale: doc.rationale, answers } };
+  return { ok: true, proposal: { goal, kind, content: content.content, rationale: doc.rationale, answers } };
 }
 
 export interface SubsetSettings { size: number; failed: boolean }

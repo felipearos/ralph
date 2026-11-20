@@ -8,8 +8,12 @@
  * and the contested cases — because the PR is the one place a person reads
  * before merging, and the improver never merges.
  */
+import { isPromptKind, type PromptContent, type PromptKind } from "./eval-evaluation-proposals";
 import type { LineupContent, OverlayContent } from "./eval-improver";
-import type { ProposalState, StoredProposal } from "./eval-proposals";
+import { EVAL_INSTRUCTION_FILES } from "./eval-instructions";
+import { accuracyLabel } from "./eval-judge-accuracy";
+import { AXES } from "./eval-panel";
+import type { ProposalState, StoredPromptVerdict, StoredProposal } from "./eval-proposals";
 import type { EvalArmTotal, EvalRunSummary } from "./eval-runs";
 
 /** One arm of the quality-vs-cost plot, as numbers. */
@@ -82,8 +86,7 @@ export function qualityCostPoints(run: EvalRunSummary): QualityCostPoints | null
 const SUBJECT_MAX = 100;
 
 /** The changed files or stages, shortened with "…" so the subject stays under SUBJECT_MAX. */
-function subject(area: string, lead: string, items: string[]): string {
-  const tail = " (#803)";
+function subject(area: string, lead: string, items: string[], tail = " (#803)"): string {
   const head = `${area}: ${lead}`;
   const room = SUBJECT_MAX - head.length - tail.length;
   let list = items.join(", ");
@@ -110,7 +113,10 @@ const lineupStages = (content: unknown): [string, { model: string; runner?: stri
     : [];
 };
 
+const promptWho = (kind: PromptKind): string => (kind === "judge-prompt" ? "judge" : "analyst");
+
 export function proposalPrTitle(proposal: Pick<StoredProposal, "id" | "kind" | "content">): string {
+  if (isPromptKind(proposal.kind)) return subject("evals", `${promptWho(proposal.kind)} prompt from proposal ${proposal.id}`, [], " (#878)");
   if (proposal.kind === "lineup") {
     return subject("models", `apply eval proposal ${proposal.id} lineup: `, lineupStages(proposal.content).map(([stage, value]) => `${stage} → ${value.model}`));
   }
@@ -125,7 +131,9 @@ export function proposalCommitMessage(proposal: StoredProposal, run: Pick<EvalRu
     "",
     proposal.rationale.trim(),
     "",
-    `Its full-set run ${run.id} passed the ${proposal.goal} guardrails.`,
+    isPromptKind(proposal.kind)
+      ? `Re-judged on the calibrated cases of run ${run.id}, the proposed ${promptWho(proposal.kind)} instructions agreed with the operators' verdicts more often than the current ones.`
+      : `Its full-set run ${run.id} passed the ${proposal.goal} guardrails.`,
   ].join("\n");
 }
 
@@ -233,8 +241,49 @@ function contestedSection(run: EvalRunSummary): string[] {
   ];
 }
 
+const meanWords = (mean: number | null): string => (mean === null ? "none" : mean.toFixed(2));
+
+/** A prompt proposal's evidence (#878): its judge accuracy against the operators' verdicts, current against proposed. */
+function accuracySection(verdict: StoredPromptVerdict | undefined): string[] {
+  const head = ["## Accuracy evidence", ""];
+  if (verdict === undefined) return [...head, "No re-judge verdict recorded."];
+  const { current, proposed } = verdict;
+  const axisRows = AXES.map((axis) => {
+    const now = current.axes?.[axis];
+    const next = proposed.axes?.[axis];
+    const label = (tally: typeof now): string => (tally === undefined ? "—" : accuracyLabel(tally));
+    return `| ${cell(axis)} | ${cell(label(now))} | ${cell(label(next))} |`;
+  });
+  return [
+    ...head,
+    `Re-judged at ${verdict.at} on ${verdict.cases.length} calibrated case${verdict.cases.length === 1 ? "" : "s"}: ${verdict.cases.length === 0 ? "none" : verdict.cases.join(", ")}.`,
+    "",
+    "| Accuracy | Current | Proposed |",
+    "| --- | --- | --- |",
+    `| overall | ${cell(accuracyLabel(current.accuracy))} | ${cell(accuracyLabel(proposed.accuracy))} |`,
+    ...axisRows,
+    "",
+    `Mean score: ${meanWords(current.meanScore)} → ${meanWords(proposed.meanScore)} (reported only: raising scores alone never passes).`,
+    "",
+    `${verdict.pass ? "PASS" : "FAIL"}:`,
+    "",
+    ...verdict.conditions.map((condition) => `- ${condition.pass ? "pass" : "FAIL"} — ${condition.id}: ${condition.reason}`),
+  ];
+}
+
+/** A Markdown code fence longer than any backtick run in the text, so instructions holding their own ``` cannot close it early. */
+function fence(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 function changeSection(proposal: StoredProposal): string[] {
   const head = ["## The change", ""];
+  if (isPromptKind(proposal.kind)) {
+    const instructions = (proposal.content as Partial<PromptContent> | null)?.instructions ?? "";
+    const f = fence(instructions);
+    return [...head, `Replaces \`${EVAL_INSTRUCTION_FILES[proposal.kind]}\` whole with:`, "", `${f}markdown`, instructions, f];
+  }
   if (proposal.kind === "lineup") {
     const stages = lineupStages(proposal.content);
     return [...head, ...(stages.length === 0 ? ["no stage"] : stages.map(([stage, value]) => `- ${stage} → ${value.model} (${value.runner ?? "current runner"})`))];
@@ -247,12 +296,22 @@ export interface ProposalPrInput {
   proposal: StoredProposal;
   state: ProposalState;
   run: EvalRunSummary;
+  /** A judge- or analyst-prompt proposal's re-judge verdict (#878), rendered in place of the run's guardrails. */
+  verdict?: StoredPromptVerdict;
   /** An HTML comment the caller finds the PR again by; first so a search never misses it. */
   marker: string;
 }
 
 export function proposalPrBody(input: ProposalPrInput): string {
-  const { proposal, state, run, marker } = input;
+  const { proposal, state, run, verdict, marker } = input;
+  const prompt = isPromptKind(proposal.kind);
+  // A prompt proposal is proven by its re-judge, not by an A/B run: the run is only its source.
+  const runs = prompt
+    ? [`- Source run: ${run.id}`]
+    : [`- Subset run: ${state.runs.subset ?? "none"}`, `- Full run: ${state.runs.full ?? run.id}`];
+  const evidence = prompt
+    ? accuracySection(verdict)
+    : [...scorecard(run), "", ...guardrailSection(proposal, run), "", ...qualityCostSection(run), "", ...contestedSection(run)];
   const answers = proposal.answers.length === 0
     ? ["- none"]
     : proposal.answers.map((answer) => `- ${answer.knob} / ${answer.target}: ${answer.change}`);
@@ -263,8 +322,7 @@ export function proposalPrBody(input: ProposalPrInput): string {
     "",
     `- Proposal: ${proposal.id} (${proposal.kind})`,
     `- Goal: ${proposal.goal}`,
-    `- Subset run: ${state.runs.subset ?? "none"}`,
-    `- Full run: ${state.runs.full ?? run.id}`,
+    ...runs,
     "",
     "Rationale:",
     "",
@@ -276,13 +334,7 @@ export function proposalPrBody(input: ProposalPrInput): string {
     "",
     ...provenAgainst(run),
     "",
-    ...scorecard(run),
-    "",
-    ...guardrailSection(proposal, run),
-    "",
-    ...qualityCostSection(run),
-    "",
-    ...contestedSection(run),
+    ...evidence,
     "",
     ...changeSection(proposal),
     "",

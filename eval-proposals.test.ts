@@ -16,10 +16,16 @@ import {
   proposalView,
   proposalViews,
   readProposals,
+  readPromptVerdict,
+  saturatedCaseIds,
+  verdictPath,
+  writePromptVerdict,
   type AdvanceDeps,
+  type StoredPromptVerdict,
   type StoredProposal,
 } from "./eval-proposals";
-import { experimentsRoot, type EvalRunSummary } from "./eval-runs";
+import { experimentsRoot, type EvalCaseView, type EvalRunSummary } from "./eval-runs";
+import type { EvalCase } from "./evals-set";
 import { guardrailReport, tokens, type GuardrailCase } from "./fixtures/evals/guardrail-arms";
 import { scratchDir } from "./test-scratch";
 
@@ -349,5 +355,157 @@ describe("proposalView", () => {
     proposalFile(root, "prop-b", { createdAt: "2026-11-19T11:00:00.000Z" });
     const rows = readProposals(root).proposals.map((proposal) => proposalView(proposal, statusOf(root, [], {}, proposal), false));
     expect(proposalViews(rows).map((row) => row.id)).toEqual(["prop-b", "prop-a"]);
+  });
+});
+
+describe("evaluation proposals (#878)", () => {
+  function evalCase(id: string, over: Partial<EvalCase> = {}): EvalCase {
+    return {
+      v: 1, id, kind: "coder", repo: "acme/app",
+      prs: [{ number: 1, url: "u", createdAt: "", mergedAt: "", headRefName: "h", firstCommit: "f", headRefOid: "o" }],
+      baseCommit: "b", startedAt: "2026-11-01T00:00:00Z", ticket: { ref: "r", title: "t", body: "b", comments: [], dropped: 0 },
+      reference: "person", heldOut: [], tags: [], reason: "r", notes: "", status: "active", addedAt: "2026-11-01T00:00:00Z", addedBy: "x", ...over,
+    };
+  }
+  const CHECK = { test: "CHECK_TEST_SENTINEL.test.ts", base: "fail", reference: "pass", acceptedAt: NOW, acceptedBy: "felipe" } as const;
+  const checkProposal = { kind: "check", content: { case: "c1", test: "CHECK_TEST_SENTINEL.test.ts" }, subset: [], entry: null, answers: [] };
+  const judgeProposal = { kind: "judge-prompt", content: { instructions: "Judge strictly." }, subset: ["c1"], entry: null };
+  const status = (root: string, cases?: readonly EvalCase[]) =>
+    proposalStatus(stored(root), [], { readReport: () => null, thresholds: DEFAULTS, inbox: [], ...(cases === undefined ? {} : { cases }) });
+  const verdict = (pass: boolean): StoredPromptVerdict => ({
+    v: 1, at: NOW, cases: ["c1"], pass,
+    conditions: [{ id: "accuracy-up", pass, reason: "judge accuracy 0.5 → 0.75" }],
+    current: { accuracy: { agree: 1, total: 2, accuracy: 0.5 }, axes: {}, objectives: {}, meanScore: null, cases: 1, checked: [] },
+    proposed: { accuracy: { agree: 1, total: 2, accuracy: 0.75 }, axes: {}, objectives: {}, meanScore: null, cases: 1, checked: [] },
+  } as unknown as StoredPromptVerdict);
+
+  test("readProposals accepts each kind and refuses a bad evaluation content", () => {
+    const root = project();
+    proposalFile(root, "prop-check", checkProposal);
+    proposalFile(root, "prop-judge", judgeProposal);
+    proposalFile(root, "prop-bad", { kind: "case", content: { repo: "acme/app", prs: [2], reason: "r", notes: "x" } });
+    const { proposals, problems } = readProposals(root);
+    expect(proposals.map((proposal) => proposal.kind).sort()).toEqual(["check", "judge-prompt"]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/prop-bad\.json: content: .*may not set notes/);
+  });
+
+  test("a judge-prompt is proposed until its verdict, then passed or failed", () => {
+    const root = project();
+    proposalFile(root, PID, judgeProposal);
+    expect(status(root)).toMatchObject({ status: "proposed", reason: "awaiting its re-judge on the calibrated cases", verdict: null });
+    writePromptVerdict(stored(root), verdict(true));
+    expect(verdictPath(stored(root))).toBe(join(experimentsRoot(root), SOURCE_RUN, "proposals", PID, "verdict.json"));
+    expect(status(root)).toMatchObject({ status: "passed", verdict: { pass: true, conditions: [{ id: "accuracy-up", pass: true }] } });
+    writePromptVerdict(stored(root), verdict(false));
+    expect(status(root)).toMatchObject({ status: "failed", verdict: { pass: false } });
+    // The verdict sits in the pid directory: never read as a proposal.
+    expect(readProposals(root)).toMatchObject({ problems: [] });
+  });
+
+  test("a malformed verdict file reads as none", () => {
+    const root = project();
+    proposalFile(root, PID, judgeProposal);
+    writeFileSync(verdictPath(stored(root)), "{ not json");
+    expect(readPromptVerdict(stored(root))).toBeNull();
+    writeFileSync(verdictPath(stored(root)), JSON.stringify({ v: 1, pass: "yes" }));
+    expect(readPromptVerdict(stored(root))).toBeNull();
+    expect(status(root).status).toBe("proposed");
+  });
+
+  test("a check is suggested, confirmed once the case has a check, failed once the case is retired", () => {
+    const root = project();
+    proposalFile(root, PID, checkProposal);
+    expect(status(root).status).toBe("suggested");
+    expect(status(root, [evalCase("c1")]).status).toBe("suggested");
+    expect(status(root, [evalCase("c1", { check: { ...CHECK } })]).status).toBe("confirmed");
+    expect(status(root, [evalCase("c1", { status: "retired" })])).toMatchObject({ status: "failed", reason: "case c1 is already retired" });
+  });
+
+  test("a check is confirmed only by its own test: another check on the case fails it", () => {
+    const root = project();
+    proposalFile(root, PID, checkProposal);
+    expect(status(root, [evalCase("c1", { check: { ...CHECK, test: "other.test.ts" } })]))
+      .toMatchObject({ status: "failed", reason: "would replace case c1's check; a proposal may only add" });
+    const { test: _test, ...rest } = CHECK;
+    expect(status(root, [evalCase("c1", { check: { ...rest, command: "bun test" } })]).status).toBe("failed");
+  });
+
+  test("a stored check proposal naming a command reads as a problem", () => {
+    const root = project();
+    proposalFile(root, PID, { ...checkProposal, content: { case: "c1", command: "rm -rf ~" } });
+    const { proposals, problems } = readProposals(root);
+    expect(proposals).toEqual([]);
+    expect(problems[0]).toMatch(/an improver's check may only name a test file/);
+  });
+
+  test("a retire suggestion reads the saturation the set runs compute, not only a stored status", () => {
+    const root = project();
+    proposalFile(root, "prop-retire", { kind: "retire-suggestion", content: { case: "c1", reason: "r" }, subset: [], entry: null });
+    const view = (objective: "pass" | "fail"): EvalCaseView => ({
+      key: "c1", title: "c1", repo: "acme/app", prs: [], reference: "person",
+      arms: ["a", "b"].map((arm) => ({ arm, outcome: null, gates: null, heldOut: null, findings: null, rounds: null, wallSeconds: null, tokens: null, costUsd: null, axes: [], objective: arm === "a" ? null : objective, judge: null })),
+      ranking: null, judges: [], contested: [], contestedRule: null, grade: { grader: "tests", noEvidence: false },
+    });
+    const setRun = (day: number, objective: "pass" | "fail") => run(`set-${day}`, [], ["c1"], { startedAt: `2026-11-0${day}T10:00:00Z`, cases: [view(objective)] });
+    const passed = [setRun(1, "pass"), setRun(2, "pass"), setRun(3, "pass")];
+    const of = (cases: readonly EvalCase[], runs: EvalRunSummary[]) =>
+      proposalStatus(stored(root, "prop-retire"), [], { readReport: () => null, thresholds: DEFAULTS, inbox: [], cases, saturated: saturatedCaseIds(cases, runs, 3) });
+    // Active, every arm passed its last three set runs: saturated, so the suggestion stands.
+    expect(of([evalCase("c1")], passed).status).toBe("suggested");
+    expect(saturatedCaseIds([evalCase("c1"), evalCase("c2", { status: "saturated" }), evalCase("c3", { status: "retired" })], passed, 3)).toEqual(new Set(["c1", "c2"]));
+    // Kept after those runs: the window restarts, so it is not saturated.
+    expect(of([evalCase("c1", { keptAt: "2026-11-05T00:00:00Z" })], passed)).toMatchObject({ status: "failed", reason: "case c1 is not saturated" });
+    // A run it failed is not saturated either.
+    expect(of([evalCase("c1")], [...passed, setRun(4, "fail")])).toMatchObject({ status: "failed", reason: "case c1 is not saturated" });
+  });
+
+  test("a case and a retire suggestion are confirmed when the set shows them done", () => {
+    const root = project();
+    proposalFile(root, "prop-case", { kind: "case", content: { repo: "Acme/App", prs: [7], reason: "r" }, subset: [], entry: null });
+    proposalFile(root, "prop-retire", { kind: "retire-suggestion", content: { case: "c1", reason: "r" }, subset: [], entry: null });
+    const of = (pid: string, cases: readonly EvalCase[]) =>
+      proposalStatus(stored(root, pid), [], { readReport: () => null, thresholds: DEFAULTS, inbox: [], cases });
+    expect(of("prop-case", [evalCase("c1")]).status).toBe("suggested");
+    const added = evalCase("acme-app-7", { prs: [{ ...evalCase("x").prs[0]!, number: 7 }] });
+    expect(of("prop-case", [evalCase("c1"), added]).status).toBe("confirmed");
+    expect(of("prop-retire", [evalCase("c1", { status: "saturated" })]).status).toBe("suggested");
+    expect(of("prop-retire", [evalCase("c1")])).toMatchObject({ status: "failed", reason: "case c1 is not saturated" });
+    expect(of("prop-retire", [evalCase("c1", { status: "retired" })]).status).toBe("confirmed");
+  });
+
+  test("advanceProposals ignores test-set and prompt proposals, even beside a promising run carrying them", async () => {
+    const root = project();
+    proposalFile(root, "prop-check", checkProposal);
+    proposalFile(root, "prop-judge", judgeProposal);
+    const done = [run("sub-check", arms(root, "prop-check"), ["case-kept", "case-won"]), run("sub-judge", arms(root, "prop-judge"), ["case-kept", "case-won"])];
+    const { advance, checks } = deps(root, () => done, { "sub-check": guardrailReport(GOOD), "sub-judge": guardrailReport(GOOD) });
+    expect(await advanceProposals(root, advance)).toEqual({ advanced: [], problems: [] });
+    expect(checks).toEqual([]);
+    expect(readInbox(root)).toEqual([]);
+  });
+
+  test("a summary-only view carries neither a test-set target nor a suggestion, not even the check's test", () => {
+    const root = project();
+    proposalFile(root, PID, checkProposal);
+    const brief = proposalView(stored(root), status(root), false);
+    expect(brief).not.toHaveProperty("target");
+    expect(brief).not.toHaveProperty("suggestion");
+    expect(JSON.stringify(brief)).not.toContain("CHECK_TEST_SENTINEL");
+  });
+
+  test("with details, a test-set view carries its target and what the operator confirms it with", () => {
+    const root = project();
+    proposalFile(root, PID, checkProposal);
+    proposalFile(root, "prop-case", { kind: "case", content: { repo: "acme/app", prs: [7, 8], reason: "flaky area", tags: ["ui"] }, subset: [], entry: null });
+    proposalFile(root, "prop-retire", { kind: "retire-suggestion", content: { case: "c1", reason: "saturated" }, subset: [], entry: null });
+    proposalFile(root, "prop-judge", judgeProposal);
+    const view = (pid: string) => proposalView(stored(root, pid), status(root), true);
+    expect(view(PID)).toMatchObject({ target: "add check to c1", suggestion: { kind: "check", case: "c1", test: "CHECK_TEST_SENTINEL.test.ts" } });
+    expect(view(PID).suggestion).not.toHaveProperty("command");
+    expect(view("prop-case")).toMatchObject({ target: "add case acme/app#7, #8", suggestion: { kind: "case", repo: "acme/app", prs: [7, 8], reason: "flaky area", tags: ["ui"] } });
+    expect(view("prop-retire").suggestion).toEqual({ kind: "retire-suggestion", case: "c1", reason: "saturated" });
+    // A prompt proposal is no test-set suggestion.
+    expect(view("prop-judge")).not.toHaveProperty("suggestion");
   });
 });

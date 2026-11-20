@@ -13,20 +13,35 @@
  * proposal file), so the advance happens once even if the operator dismisses
  * the recommendation: a dismissed run is the operator's decision, never
  * re-asked.
+ *
+ * An evaluation proposal (#878) runs no subset: a prompt one waits on its
+ * re-judge of the calibrated cases (`verdict.json` in its directory), and a
+ * test-set one is a suggestion until the operator confirms it in the set.
  */
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { BacktestReport } from "./backtest-report";
 import { writeAtomic } from "./backtest-run";
+import {
+  EVALUATION_KINDS, evaluationContent, isPromptKind, isTestSetKind, testSetRefusal,
+  type CaseContent, type CheckContent, type EvaluationKind, type PromptProposalVerdict, type RetireContent,
+} from "./eval-evaluation-proposals";
 import { NOISE_FLOOR_CONDITIONS, guardrailSettings, reportGuardrails, type GuardrailCondition, type GuardrailGoal, type GuardrailThresholds } from "./eval-guardrails";
 import { addEntry, readInbox, withLock, type InboxEntry } from "./eval-inbox";
 import type { NoiseStatus } from "./eval-noise-floor";
 import { checkStart, experimentsRoot, runsNewestFirst, type EvalRunSummary } from "./eval-runs";
+import { DEFAULT_SATURATION_RUNS, saturationById, saturationSettings } from "./eval-saturation";
+import { readSet as readEvalSet, type EvalCase } from "./evals-set";
 import { loadProjectConfig } from "./project-config";
+import { projectIdFor } from "./project-id";
 
-export type ProposalStatus = "proposed" | "subset-run" | "full-run" | "passed" | "failed";
+/** `suggested`: a test-set proposal waiting on the operator; `confirmed`: the operator acted on it (#878). */
+export type ProposalStatus = "proposed" | "subset-run" | "full-run" | "passed" | "failed" | "suggested" | "confirmed";
+
+export type StoredProposalKind = "prompt-overlay" | "lineup" | EvaluationKind;
+const STORED_KINDS: readonly StoredProposalKind[] = ["prompt-overlay", "lineup", ...EVALUATION_KINDS];
 
 export interface ProposalAnswer { knob: string; target: string; change: string; arm?: string; evidence?: string[] }
 
@@ -36,7 +51,7 @@ export interface StoredProposal {
   /** The run the improver read. */
   run: string;
   goal: GuardrailGoal;
-  kind: "prompt-overlay" | "lineup";
+  kind: StoredProposalKind;
   content: unknown;
   rationale: string;
   answers: ProposalAnswer[];
@@ -79,7 +94,12 @@ export function parseProposal(value: unknown, path: string): StoredProposal | st
     if (!isString(value[key]) || value[key] === "") return `${path}: ${key} must be a non-empty string`;
   }
   if (value.goal !== "quality" && value.goal !== "cost") return `${path}: goal must be "quality" or "cost"`;
-  if (value.kind !== "prompt-overlay" && value.kind !== "lineup") return `${path}: kind must be "prompt-overlay" or "lineup"`;
+  if (!STORED_KINDS.includes(value.kind as StoredProposalKind)) return `${path}: kind must be one of ${STORED_KINDS.join(", ")}`;
+  const kind = value.kind as StoredProposalKind;
+  if (kind !== "prompt-overlay" && kind !== "lineup") {
+    const content = evaluationContent(kind, value.content);
+    if (!content.ok) return `${path}: content: ${content.reason}`;
+  }
   if (!isString(value.rationale)) return `${path}: rationale must be a string`;
   if (!Array.isArray(value.answers) || !value.answers.every((answer) => isObject(answer) && isString(answer.knob) && isString(answer.target) && isString(answer.change))) {
     return `${path}: answers must be a list of improvements`;
@@ -98,7 +118,7 @@ export function parseProposal(value: unknown, path: string): StoredProposal | st
     bases = value.bases as Record<string, string | null>;
   }
   return {
-    v: 1, id: value.id as string, run: value.run as string, goal: value.goal, kind: value.kind, content: value.content,
+    v: 1, id: value.id as string, run: value.run as string, goal: value.goal, kind, content: value.content,
     rationale: value.rationale, answers: value.answers as ProposalAnswer[], model: value.model as string, createdAt: value.createdAt as string,
     subset: value.subset as string[], entry: (value.entry as string | null | undefined) ?? null, full, path,
     ...(bases === undefined ? {} : { bases }),
@@ -164,10 +184,75 @@ export function subsetPromise(report: BacktestReport, goal: GuardrailGoal, thres
     : { promising: false, conditions, reason: `the subset run was not promising: ${failing.join(", ")}` };
 }
 
+/** A prompt proposal's verdict as its re-judge stored it: the verdict, when, and the calibrated cases it read. */
+export type StoredPromptVerdict = PromptProposalVerdict & { v: 1; at: string; cases: string[] };
+
+/** `<run>/proposals/<pid>/verdict.json`: inside the pid directory, so readProposals never globs it as a proposal. */
+export const verdictPath = (proposal: StoredProposal): string => join(dirname(proposal.path), proposal.id, "verdict.json");
+
+/** `<run>/proposals/<pid>/rejudge.lock`: held while a re-judge runs, so two never rescore one proposal. */
+export const rejudgeLockPath = (proposal: StoredProposal): string => join(dirname(proposal.path), proposal.id, "rejudge.lock");
+
+/** The stored verdict of a prompt proposal; null when there is none or it does not read as one. Never throws. */
+export function readPromptVerdict(proposal: StoredProposal): StoredPromptVerdict | null {
+  const value = readJson<unknown>(verdictPath(proposal));
+  if (!isObject(value) || value.v !== 1 || typeof value.pass !== "boolean" || !isString(value.at)) return null;
+  if (!Array.isArray(value.cases) || !value.cases.every(isString)) return null;
+  if (!Array.isArray(value.conditions) || !value.conditions.every((condition) => isObject(condition) && isString(condition.id) && typeof condition.pass === "boolean" && isString(condition.reason))) return null;
+  if (!isObject(value.current) || !isObject(value.proposed)) return null;
+  return value as unknown as StoredPromptVerdict;
+}
+
+/** Stores a prompt proposal's verdict, whole or not at all. */
+export function writePromptVerdict(proposal: StoredProposal, verdict: StoredPromptVerdict): void {
+  writeAtomic(verdictPath(proposal), `${JSON.stringify(verdict, null, 2)}\n`);
+}
+
 export interface ProposalStatusDeps {
   readReport: (runDir: string) => BacktestReport | null;
   thresholds: GuardrailThresholds;
   inbox: readonly InboxEntry[];
+  /** A prompt proposal's stored verdict (#878); `readPromptVerdict` when absent. */
+  promptVerdict?: (proposal: StoredProposal) => StoredPromptVerdict | null;
+  /** The current test set, for a test-set proposal (#878); absent, or unreadable, leaves it `suggested`. */
+  cases?: readonly EvalCase[];
+  /** The saturated cases as computed from the set runs (`saturatedCaseIds`); absent, only a case stored as saturated is. */
+  saturated?: ReadonlySet<string>;
+}
+
+/**
+ * The cases a retire suggestion may name: stored as saturated, or saturated
+ * as the set runs say. Nothing writes `status: "saturated"` on a case, so the
+ * status alone would refuse every retire suggestion. Retired cases never are.
+ */
+export function saturatedCaseIds(cases: readonly EvalCase[], runs: readonly EvalRunSummary[], window: number): Set<string> {
+  const live = cases.filter((c) => c.status !== "retired");
+  const computed = saturationById(live, runs, window);
+  return new Set(live.filter((c) => c.status === "saturated" || computed.get(c.id)?.saturated === true).map((c) => c.id));
+}
+
+/** The project's saturated cases, from its runs and its configured window; undefined when they cannot be read. Never throws. */
+export function readSaturated(project: string, cases: readonly EvalCase[]): Set<string> | undefined {
+  let window = DEFAULT_SATURATION_RUNS;
+  try { window = saturationSettings(loadProjectConfig(project)).runs; } catch { /* a broken config is the default window */ }
+  try { return saturatedCaseIds(cases, runsNewestFirst(project).runs, window); } catch { return undefined; }
+}
+
+/** Status-based only: what a caller without the runs can say is saturated. */
+const storedSaturated = (cases: readonly EvalCase[]): Set<string> => new Set(cases.filter((c) => c.status === "saturated").map((c) => c.id));
+
+/** Whether the set already shows the operator acted on a test-set proposal. */
+function confirmedIn(kind: "case" | "check" | "retire-suggestion", content: CaseContent | CheckContent | RetireContent, cases: readonly EvalCase[]): boolean {
+  if (kind === "case") {
+    const proposed = content as CaseContent;
+    const repo = proposed.repo.toLowerCase();
+    return cases.some((c) => c.repo.toLowerCase() === repo && proposed.prs.every((pr) => c.prs.some((held) => held.number === pr)));
+  }
+  const found = cases.find((c) => c.id === (content as CheckContent | RetireContent).case);
+  if (found === undefined) return false;
+  // This check, not any check: a different one on the case means the suggestion was not taken (the guard says why).
+  if (kind === "check") return found.check !== undefined && "test" in found.check && found.check.test === (content as CheckContent).test;
+  return found.status === "retired";
 }
 
 export interface ProposalState {
@@ -185,6 +270,23 @@ export function proposalStatus(proposal: StoredProposal, runs: readonly EvalRunS
   const state = (status: ProposalStatus, rest: Partial<ProposalState> = {}): ProposalState =>
     ({ status, verdict: null, reason: null, runs: ids, promising: null, ...rest });
   const inInbox = (id: string): boolean => deps.inbox.some((entry) => entry.id === id);
+
+  // An evaluation proposal has no subset run: its standing is its verdict file or the set.
+  if (isPromptKind(proposal.kind)) {
+    let stored: StoredPromptVerdict | null;
+    try { stored = (deps.promptVerdict ?? readPromptVerdict)(proposal); } catch { stored = null; }
+    if (stored === null) return state("proposed", { reason: "awaiting its re-judge on the calibrated cases" });
+    return state(stored.pass ? "passed" : "failed", { verdict: { pass: stored.pass, conditions: stored.conditions } });
+  }
+  if (isTestSetKind(proposal.kind)) {
+    if (deps.cases === undefined) return state("suggested");
+    const parsed = evaluationContent(proposal.kind, proposal.content);
+    if (!parsed.ok) return state("failed", { reason: parsed.reason });
+    const content = parsed.content as CaseContent | CheckContent | RetireContent;
+    if (confirmedIn(proposal.kind, content, deps.cases)) return state("confirmed");
+    const why = testSetRefusal(proposal.kind, content, deps.cases, deps.saturated ?? storedSaturated(deps.cases));
+    return why === null ? state("suggested") : state("failed", { reason: why });
+  }
   // Recommended and dismissed before it ran: the operator's call, said rather than waited on.
   const fullPending = (rest: Partial<ProposalState>): ProposalState => state("full-run", {
     ...rest,
@@ -245,6 +347,10 @@ function isFullSetOf(plan: Record<string, unknown>, wanted: Record<string, unkno
 }
 
 export interface AdvanceDeps {
+  /** The project's test set, for a test-set proposal's status (#878); undefined when it could not be read. */
+  cases?: readonly EvalCase[];
+  /** The saturated cases computed from the set runs (#878); undefined when they could not be read. */
+  saturated?: ReadonlySet<string>;
   runs: () => EvalRunSummary[];
   readReport: (runDir: string) => BacktestReport | null;
   readPlan: (runDir: string) => Record<string, unknown> | null;
@@ -277,7 +383,8 @@ export async function advanceProposals(project: string, deps: AdvanceDeps): Prom
 
   const due: { proposal: StoredProposal; subsetRun: string; plan: Record<string, unknown> }[] = [];
   for (const proposal of proposals) {
-    if (proposal.full !== null) continue;
+    // Only an overlay or a lineup has a subset run to advance from.
+    if (proposal.full !== null || (proposal.kind !== "prompt-overlay" && proposal.kind !== "lineup")) continue;
     const state = proposalStatus(proposal, runs, { readReport: deps.readReport, thresholds: deps.thresholds, inbox });
     if (state.status !== "subset-run" || state.promising !== true) continue;
     const subset = proposalRuns(proposal.id, runs).subset!;
@@ -334,14 +441,60 @@ export interface ProposalRowView {
   runs: { subset: string | null; full: string | null };
   rationale?: string;
   answers?: { knob: string; target: string; change: string }[];
+  /** A test-set proposal's one-line target (#878), with details only. */
+  target?: string;
+  /** What an operator confirms a test-set proposal with, through the existing set commands (#878); with details only. */
+  suggestion?: ProposalSuggestion;
+}
+
+/**
+ * A test-set proposal's content as the Test set screen's confirm sends it.
+ * A check's test is graded-only for the improver, not for the
+ * operator: the screen's own check form shows the same on a details project.
+ */
+export type ProposalSuggestion =
+  | { kind: "case"; repo: string; prs: number[]; reason: string; tags: string[] }
+  | { kind: "check"; case: string; test: string }
+  | { kind: "retire-suggestion"; case: string; reason: string };
+
+function testSetSuggestion(proposal: StoredProposal): ProposalSuggestion | undefined {
+  if (!isTestSetKind(proposal.kind)) return undefined;
+  const parsed = evaluationContent(proposal.kind, proposal.content);
+  if (!parsed.ok) return undefined;
+  if (proposal.kind === "case") {
+    const content = parsed.content as CaseContent;
+    return { kind: "case", repo: content.repo, prs: [...content.prs], reason: content.reason, tags: [...(content.tags ?? [])] };
+  }
+  if (proposal.kind === "check") {
+    const content = parsed.content as CheckContent;
+    return { kind: "check", case: content.case, test: content.test };
+  }
+  const content = parsed.content as RetireContent;
+  return { kind: "retire-suggestion", case: content.case, reason: content.reason };
+}
+
+function testSetTarget(proposal: StoredProposal): string | undefined {
+  if (!isTestSetKind(proposal.kind)) return undefined;
+  const parsed = evaluationContent(proposal.kind, proposal.content);
+  if (!parsed.ok) return undefined;
+  if (proposal.kind === "case") {
+    const content = parsed.content as CaseContent;
+    return `add case ${content.repo}#${content.prs.join(", #")}`;
+  }
+  const id = (parsed.content as CheckContent | RetireContent).case;
+  return proposal.kind === "check" ? `add check to ${id}` : `retire ${id}`;
 }
 
 /** A proposal as a page shows it: never its content, overlay or lineup, which name host paths and prompt text. */
 export function proposalView(stored: StoredProposal, status: ProposalState, details: boolean): ProposalRowView {
+  const target = details ? testSetTarget(stored) : undefined;
+  const suggestion = details ? testSetSuggestion(stored) : undefined;
   return {
     id: stored.id, run: stored.run, goal: stored.goal, kind: stored.kind,
     status: status.status, verdict: status.verdict, reason: status.reason, createdAt: stored.createdAt, runs: status.runs,
     ...(details ? { rationale: stored.rationale, answers: stored.answers.map((answer) => ({ knob: answer.knob, target: answer.target, change: answer.change })) } : {}),
+    ...(target !== undefined ? { target } : {}),
+    ...(suggestion !== undefined ? { suggestion } : {}),
   };
 }
 
@@ -355,7 +508,13 @@ export function realProposalDeps(project: string): AdvanceDeps {
   const root = experimentsRoot(project);
   let thresholds: GuardrailThresholds;
   try { thresholds = guardrailSettings(loadProjectConfig(project)); } catch { thresholds = guardrailSettings({}); }
+  // An unreadable set (no network, no home) leaves test-set proposals `suggested`, never a throw.
+  let cases: EvalCase[] | undefined;
+  try { cases = readEvalSet(projectIdFor(project).id).cases; } catch { cases = undefined; }
+  const saturated = cases === undefined ? undefined : readSaturated(project, cases);
   return {
+    cases,
+    saturated,
     runs: () => runsNewestFirst(project).runs,
     readReport: (runDir) => readJson<BacktestReport>(join(root, runDir, "report.json")),
     readPlan: (runDir) => {

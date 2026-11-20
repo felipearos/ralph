@@ -31,6 +31,7 @@ import {
 import { readRecorded, type LedgerEntry } from "./backtest-ledger";
 import { verifyCheck, type CheckOutcome } from "./backtest-score";
 import { spawnGh } from "./clerk/pulls";
+import { checkAcceptance } from "./eval-evaluation-proposals";
 import { AXES, type Axis } from "./eval-panel";
 import { DEFAULT_STALE_SHARE, floorStatus, latestFloor, noiseFloorSettings, readNoiseFloors, type NoiseFloor, type NoiseStatus } from "./eval-noise-floor";
 import { relaysPatches, runsNewestFirst, type EvalRunSummary } from "./eval-runs";
@@ -838,8 +839,6 @@ async function importBacktest(projectPath: string, projectId: string, by: string
   return 0;
 }
 
-const short = (sha: string): string => sha.slice(0, 7);
-
 /**
  * Verify an operator check on a case and store it only when it fails on the
  * base and passes on the reference: a check that passes on the base grades
@@ -875,12 +874,9 @@ async function checkCase(projectPath: string, projectId: string, flags: Map<stri
     deps.err(`evals-set: refused: ${reason}`);
     return 1;
   };
-  // Base first: a check that cannot run on the base says nothing about the reference either.
-  if (base.result === "error") return refused(`the check cannot run on the base: ${base.why}`);
-  if (reference.result === "error") return refused(`the check cannot run on the reference: ${reference.why}`);
-  const head = found.prs.at(-1)!.headRefOid;
-  if (base.result === "pass") return refused(`the check passes on the base (${short(found.baseCommit)}); it must fail there`);
-  if (reference.result === "fail") return refused(`the check fails on the reference (${short(head)}); it must pass there`);
+  // One rule for an operator's check and an improver's suggested one (#878): fail on the base, pass on the reference.
+  const why = checkAcceptance({ base, reference }, { base: found.baseCommit, reference: found.prs.at(-1)!.headRefOid });
+  if (why !== null) return refused(why);
   const written = deps.write({
     projectId, kind: "check", id,
     check: { ...spec, base: "fail", reference: "pass", acceptedAt: deps.now(), acceptedBy: one("by") ?? deps.user() },

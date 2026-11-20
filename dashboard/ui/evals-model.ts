@@ -19,8 +19,10 @@ import type {
   EvalCaseView,
   EvalNoiseSpreadView,
   EvalNoiseStatusView,
+  EvalProposalKind,
   EvalProposalRowView,
   EvalProposalStatus,
+  EvalProposalSuggestionView,
   EvalRepeatView,
   EvalRunView,
   EvalSetRowView,
@@ -838,17 +840,88 @@ const PROPOSAL_STATUS: Record<EvalProposalStatus, { label: string; tone: Proposa
   "full-run": { label: "Full-set run", tone: "neutral" },
   passed: { label: "Passed", tone: "good" },
   failed: { label: "Failed", tone: "bad" },
+  // A test-set proposal (#878) waits on an operator's Confirm on the Test set screen; nothing writes it to the set before.
+  suggested: { label: "Suggested — confirm on Test set", tone: "neutral" },
+  confirmed: { label: "Confirmed in the set", tone: "good" },
 };
 
-/** A proposal's status badge (#874): its short label and whether it is an outcome. */
-export const proposalStatus = (status: EvalProposalStatus): { label: string; tone: ProposalTone } => PROPOSAL_STATUS[status];
+/** The kinds the improver proposes for the test set itself (#878): confirmed by an operator, never by a PR. */
+export const TEST_SET_PROPOSAL_KINDS: readonly EvalProposalKind[] = ["case", "check", "retire-suggestion"];
+export const isTestSetProposal = (kind: EvalProposalKind): boolean => TEST_SET_PROPOSAL_KINDS.includes(kind);
+const isPromptProposal = (kind: EvalProposalKind): boolean => kind === "judge-prompt" || kind === "analyst-prompt";
 
-/** Whether a proposal's row offers Open PR (#875): only a passed verdict earns a PR, so a failed or unsettled one has no action. */
-export const proposalOpensPr = (status: EvalProposalStatus): boolean => status === "passed";
+/**
+ * A proposal's status badge (#874): its short label and whether it is an
+ * outcome. A fresh judge or analyst prompt has no subset run: its re-judge on
+ * the calibrated cases settles it (#878), so its label says that instead.
+ */
+export const proposalStatus = (status: EvalProposalStatus, kind?: EvalProposalKind): { label: string; tone: ProposalTone } =>
+  status === "proposed" && kind !== undefined && isPromptProposal(kind)
+    ? { label: "Awaiting its re-judge", tone: "neutral" }
+    : PROPOSAL_STATUS[status];
+
+/**
+ * Whether a proposal's row offers Open PR (#875): only a passed verdict earns
+ * a PR, so a failed or unsettled one has no action. A test-set proposal never
+ * does (#878): an operator confirms it on the Test set screen instead.
+ */
+export const proposalOpensPr = (row: Pick<EvalProposalRowView, "status" | "kind">): boolean =>
+  row.status === "passed" && !isTestSetProposal(row.kind);
+
+const PROPOSAL_KIND_LABEL: Record<EvalProposalKind, string> = {
+  "prompt-overlay": "Prompt overlay",
+  lineup: "Lineup",
+  "judge-prompt": "Judge prompt",
+  "analyst-prompt": "Analyst prompt",
+  case: "New case",
+  check: "New check",
+  "retire-suggestion": "Retire suggestion",
+};
 
 /** What the proposal aims at and what it changes, as the row's headline. */
 export const proposalLabel = (row: Pick<EvalProposalRowView, "goal" | "kind">): string =>
-  `${row.goal === "quality" ? "Quality" : "Cost"} · ${row.kind === "lineup" ? "Lineup" : "Prompt overlay"}`;
+  `${row.goal === "quality" ? "Quality" : "Cost"} · ${PROPOSAL_KIND_LABEL[row.kind]}`;
+
+/**
+ * What a test-set suggestion asks of the operator, in one line (#878): the
+ * row's target with its reason, or its check; the CLI's target alone when it
+ * sent no suggestion, and a plain "no details" on a summary-only project.
+ */
+export function suggestionLine(row: Pick<EvalProposalRowView, "kind" | "target" | "suggestion">): string {
+  const suggestion = row.suggestion;
+  if (suggestion === undefined) return row.target ?? `${PROPOSAL_KIND_LABEL[row.kind].toLowerCase()} (no details on this project)`;
+  if (suggestion.kind === "case") {
+    const tags = suggestion.tags.length > 0 ? ` [${suggestion.tags.join(", ")}]` : "";
+    return `add case ${suggestion.repo}#${suggestion.prs.join(", #")}${tags} — ${suggestion.reason}`;
+  }
+  if (suggestion.kind === "check") {
+    return `add check to ${suggestion.case}: test ${suggestion.test}`;
+  }
+  return `retire ${suggestion.case} — ${suggestion.reason}`;
+}
+
+/**
+ * What Confirm on a test-set suggestion sends (#878): the same command and
+ * body the Test set screen's own add, check or retire would, so the set's
+ * guards (the check's fail-on-base, pass-on-reference acceptance among them)
+ * hold. Null when the row carries no suggestion: nothing to confirm with.
+ */
+export function suggestionConfirm(suggestion: EvalProposalSuggestionView | undefined):
+  | { path: "/api/evals/set/add"; body: { repo: string; prs: number[]; reason: string; tags?: string[] }; refused: string; done: string }
+  | { path: "/api/evals/set/check"; body: { case: string; test: string }; refused: string; done: string }
+  | { path: "/api/evals/set/retire"; body: { case: string }; refused: string; done: string }
+  | null {
+  if (suggestion === undefined) return null;
+  if (suggestion.kind === "case") {
+    const { repo, prs, reason, tags } = suggestion;
+    return { path: "/api/evals/set/add", body: { repo, prs, reason, ...(tags.length === 0 ? {} : { tags }) }, refused: "Not added", done: "Added. It shows in the set below." };
+  }
+  if (suggestion.kind === "check") {
+    // A test file only, never a command: see EvalProposalSuggestionView.
+    return { path: "/api/evals/set/check", body: { case: suggestion.case, test: suggestion.test }, refused: "Not attached", done: "Attached. Set runs grade this case on its check." };
+  }
+  return { path: "/api/evals/set/retire", body: { case: suggestion.case }, refused: "Not retired", done: "Retired. No run samples it from now on." };
+}
 
 /**
  * The verdict that settled a proposal, compactly: a headline plus one line per

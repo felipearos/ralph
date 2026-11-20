@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { BacktestReport, TrialRow } from "./backtest-report";
-import { analyse, analystPrompt, parseAnalysis, renderAnalysis } from "./eval-analyst";
+import { ANALYST_INSTRUCTIONS, analyse, analystPrompt, parseAnalysis, renderAnalysis } from "./eval-analyst";
 import { scratchDir } from "./test-scratch";
 
 const row = (ticket: string, arm: string, extra: Partial<TrialRow> = {}): TrialRow => ({
@@ -44,6 +44,27 @@ describe("analystPrompt", () => {
     // A case none of whose trials ran says nothing about any arm.
     expect(prompt).not.toContain("## Case OA-2");
   });
+
+  it("opens with today's instructions by default, byte for byte (#878)", () => {
+    const today = [
+      "You are the analyst of an evaluation run. Several arms — each a model lineup and, optionally, replacement",
+      "prompt files for the coding harness — each worked the same cases from the same base. `a` is the reference:",
+      "the change that actually merged. A blind panel of judges then scored every arm. You are told which arm ran",
+      "what. Say what the arms' results show and what to change so the next run does better: on code quality, or",
+      "on spend (tokens, a cheaper model where it held up).",
+      "",
+      "Every improvement must name the knob it changes and cite the cases it rests on. Prefer few, concrete",
+      "improvements over many vague ones. Do not propose a change the evidence does not support.",
+    ].join("\n");
+    expect(ANALYST_INSTRUCTIONS).toBe(today);
+    expect(analystPrompt(report(null)).startsWith(`${today}\n\n# Arms\n`)).toBe(true);
+  });
+
+  it("replaces only the opening instructions with an override, keeping every other section (#878)", () => {
+    const prompt = analystPrompt(report(null), "Be brief.");
+    expect(prompt.startsWith("Be brief.\n\n# Arms\n")).toBe(true);
+    expect(prompt.slice("Be brief.".length)).toBe(analystPrompt(report(null)).slice(ANALYST_INSTRUCTIONS.length));
+  });
 });
 
 describe("parseAnalysis", () => {
@@ -73,6 +94,12 @@ describe("parseAnalysis", () => {
 describe("analyse", () => {
   it("returns a failed call as unavailable, never a throw", async () => {
     expect(await analyse(report(null), "m", async () => { throw new Error("boom"); })).toEqual({ status: "unavailable", model: "m", reason: "the call threw: boom" });
+  });
+
+  it("asks with the instructions it is given (#878)", async () => {
+    const prompts: string[] = [];
+    await analyse(report(null), "m", async (prompt) => { prompts.push(prompt); return { ok: false, reason: "x" }; }, "Be brief.");
+    expect(prompts[0]!.startsWith("Be brief.\n\n# Arms\n")).toBe(true);
   });
 });
 

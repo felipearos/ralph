@@ -84,18 +84,26 @@ function caseSection(report: BacktestReport, ticket: string): string {
   return lines.join("\n");
 }
 
+/**
+ * The analyst prompt's opening instructions (#878), apart from the run's sections so an evaluation
+ * proposal can replace them (eval-instructions.ts reads the harness file).
+ */
+export const ANALYST_INSTRUCTIONS = [
+  "You are the analyst of an evaluation run. Several arms — each a model lineup and, optionally, replacement",
+  "prompt files for the coding harness — each worked the same cases from the same base. `a` is the reference:",
+  "the change that actually merged. A blind panel of judges then scored every arm. You are told which arm ran",
+  "what. Say what the arms' results show and what to change so the next run does better: on code quality, or",
+  "on spend (tokens, a cheaper model where it held up).",
+  "",
+  "Every improvement must name the knob it changes and cite the cases it rests on. Prefer few, concrete",
+  "improvements over many vague ones. Do not propose a change the evidence does not support.",
+].join("\n");
+
 /** Everything the analyst sees: the arms' configurations, each case's metrics and every judge's verdict. */
-export function analystPrompt(report: BacktestReport): string {
+export function analystPrompt(report: BacktestReport, instructions: string = ANALYST_INSTRUCTIONS): string {
   const tickets = [...new Set(report.rows.filter((row) => row.outcome !== "not-run").map((row) => row.ticket))];
   return [
-    "You are the analyst of an evaluation run. Several arms — each a model lineup and, optionally, replacement",
-    "prompt files for the coding harness — each worked the same cases from the same base. `a` is the reference:",
-    "the change that actually merged. A blind panel of judges then scored every arm. You are told which arm ran",
-    "what. Say what the arms' results show and what to change so the next run does better: on code quality, or",
-    "on spend (tokens, a cheaper model where it held up).",
-    "",
-    "Every improvement must name the knob it changes and cite the cases it rests on. Prefer few, concrete",
-    "improvements over many vague ones. Do not propose a change the evidence does not support.",
+    instructions,
     "",
     "# Arms",
     "",
@@ -153,10 +161,10 @@ export function parseAnalysis(text: string, model: string, cases: readonly strin
 }
 
 /** One analyst call over a scored report. A model problem is `unavailable`, never a throw. */
-export async function analyse(report: BacktestReport, model: string, call: JudgeCall): Promise<Analysis> {
+export async function analyse(report: BacktestReport, model: string, call: JudgeCall, instructions?: string): Promise<Analysis> {
   const cases = [...new Set(report.rows.map((row) => row.ticket))];
   let answer: Awaited<ReturnType<JudgeCall>>;
-  try { answer = await call(analystPrompt(report)); } catch (error) { answer = { ok: false, reason: `the call threw: ${error instanceof Error ? error.message : String(error)}` }; }
+  try { answer = await call(analystPrompt(report, instructions)); } catch (error) { answer = { ok: false, reason: `the call threw: ${error instanceof Error ? error.message : String(error)}` }; }
   if (!answer.ok) return { status: "unavailable", model, reason: answer.reason };
   return parseAnalysis(answer.text, model, cases);
 }

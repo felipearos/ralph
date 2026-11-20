@@ -2,9 +2,10 @@
  * The Evals tab's Test set screen (#856): the committed cases a run samples,
  * with their tags, graders and last run, and the curation an operator does on
  * them — add a case from merged PRs, edit its tags and notes, attach a check
- * (#857), retire it. A case every arm passed in its last set runs is
- * flagged saturated and suggested for retirement, with Retire and a Keep that
- * clears the suggestion (#860).
+ * (#857), retire it, or confirm what the improver suggested for the set
+ * (#878). A case every arm passed in its last set runs is flagged saturated
+ * and suggested for retirement, with Retire and a Keep that clears the
+ * suggestion (#860).
  *
  * The set is a relayed snapshot and add, edit, check, retire and keep are relayed
  * commands, so the remote page does all of it. A case's reason and notes stay
@@ -24,7 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { EvalCalibrationSuggestionView, EvalSetRowView, EvalSetView, EvalSetWriteResult, EvalsView, EvalStartResult } from "../contracts";
+import type { EvalCalibrationSuggestionView, EvalProposalRowView, EvalSetRowView, EvalSetView, EvalSetWriteResult, EvalsView, EvalStartResult } from "../contracts";
 import { isRemote } from "./api";
 import { CommandNotice, useCommand } from "./command";
 import {
@@ -39,20 +40,24 @@ import {
   defaultNoiseFloorArms,
   estimate,
   EVAL_AXIS_LABELS,
+  isTestSetProposal,
   lastRunLabel,
   MAX_ARMS,
   MIN_NOISE_FLOOR_ARMS,
   noiseFloorForm,
   noiseFloorPlan,
   noiseStatusLabel,
+  proposalLabel,
   saturationNote,
   setVersionLabel,
+  suggestionConfirm,
+  suggestionLine,
   type CaseAddForm,
   type CaseCheckForm,
   type CaseEditForm,
 } from "./evals-model";
 import { Quiet } from "./label";
-import { useEvalSet, useEvalSetCase, useEvals } from "./use-reads";
+import { useEvalProposals, useEvalSet, useEvalSetCase, useEvals } from "./use-reads";
 
 const Field = ({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) => (
   <label className={cn("flex flex-col gap-1 text-xs text-muted-foreground", className)}>
@@ -475,9 +480,61 @@ function CaseRow({ row, details, onChanged }: { row: EvalSetRowView; details: bo
   );
 }
 
+/**
+ * One improver suggestion for the set (#878). Confirm sends the set's own add,
+ * check or retire, so a check still has to fail on the base and pass on the
+ * reference, and a refusal reads as the CLI's reason. Nothing reaches the set
+ * before that click. A row without a suggestion (a summary-only project) has
+ * nothing to send, so it has no Confirm.
+ */
+function SuggestedRow({ row, onChanged }: { row: EvalProposalRowView; onChanged: () => void }) {
+  const confirm = suggestionConfirm(row.suggestion);
+  const command = useCommand(confirm?.path ?? "/api/evals/set/add");
+  const [notice, setNotice] = useState<React.ReactNode>(null);
+
+  const submit = async (): Promise<void> => {
+    if (confirm === null) return;
+    setNotice(null);
+    const result = await command.send<EvalSetWriteResult>(confirm.body);
+    onChanged();
+    setNotice(writeNotice(result, confirm.refused, confirm.done));
+  };
+
+  return (
+    <li className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="text-[10px]">{proposalLabel(row)}</Badge>
+        <span className="break-all">{suggestionLine(row)}</span>
+        {confirm !== null && (
+          <Button size="xs" variant="outline" disabled={command.disabled || command.pending} title={command.why ?? undefined} onClick={() => void submit()}>
+            {command.queued ? "Waiting for the machine…" : command.pending ? "Confirming…" : "Confirm"}
+          </Button>
+        )}
+      </div>
+      {confirm === null && <Quiet>This project does not relay eval details, so its content is not here to confirm; add it with the form above.</Quiet>}
+      {notice !== null && <div>{notice}</div>}
+    </li>
+  );
+}
+
+/** The improver's suggestions for the set (#878), waiting on an operator: shown only when there is one. */
+function SuggestedSection({ proposals, onChanged }: { proposals: EvalProposalRowView[]; onChanged: () => void }) {
+  const suggested = proposals.filter((row) => isTestSetProposal(row.kind) && row.status === "suggested");
+  if (suggested.length === 0) return null;
+  return (
+    <section className="space-y-2 text-xs">
+      <h3 className="text-sm font-medium">Suggested by the improver</h3>
+      <ul className="space-y-2">
+        {suggested.map((row) => <SuggestedRow key={row.id} row={row} onChanged={onChanged} />)}
+      </ul>
+    </section>
+  );
+}
+
 export function EvalSetScreen() {
   const { read, refresh } = useEvalSet();
   const { read: evalsRead, refresh: refreshEvals } = useEvals();
+  const { read: proposalsRead, refresh: refreshProposals } = useEvalProposals();
   if (read.state === "loading") return <Skeleton className="h-64" />;
   const view = read.data;
   // The arm count and panel come from the evals view; before it is in, the card opens on 3 and the default panel.
@@ -501,6 +558,9 @@ export function EvalSetScreen() {
       {read.state === "error" && view === null && <Quiet>{read.message}</Quiet>}
       {view !== null && <NoiseFloorSection key={evals === null ? "empty" : "read"} view={view} evals={evals} onStarted={refreshEvals} />}
       <AddCaseCard key={view === null ? "empty" : "read"} view={view} onChanged={refresh} />
+      {proposalsRead.state !== "loading" && proposalsRead.data !== null && (
+        <SuggestedSection proposals={proposalsRead.data.proposals} onChanged={() => { refresh(); refreshProposals(); }} />
+      )}
       {(view?.calibrationSuggestions ?? []).length > 0 && <CalibrateNextSection suggestions={view!.calibrationSuggestions} />}
       {saturatedCount > 0 && (
         <p className="text-xs text-status-warn">{saturatedCount} saturated case{saturatedCount === 1 ? "" : "s"} suggested for retirement</p>

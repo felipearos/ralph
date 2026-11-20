@@ -923,6 +923,53 @@ describe("the improver's proposals (#874)", () => {
     expect(parseEvalProposalsOutput({ status: null, stdout: "", stderr: "" }).problem).toBe("evals-proposals.ts list did not run without saying why");
   });
 
+  it("keeps a row of each prompt and test-set kind, with its target and suggestion on a details print (#878)", () => {
+    const base = { ...proposalRow, rationale: undefined, answers: undefined, verdict: null, reason: null, runs: { subset: null, full: null } };
+    const rows = [
+      { ...base, id: "p-judge", kind: "judge-prompt", status: "passed", verdict: { pass: true, conditions: [{ id: "accuracy-up", pass: true, reason: "0.9 over 0.8" }] } },
+      { ...base, id: "p-analyst", kind: "analyst-prompt", status: "proposed" },
+      { ...base, id: "p-case", kind: "case", status: "suggested", target: "add case acme/app#7", suggestion: { kind: "case", repo: "acme/app", prs: [7], reason: "r", tags: ["ui"], extra: "x" } },
+      { ...base, id: "p-check", kind: "check", status: "confirmed", target: "add check to c1", suggestion: { kind: "check", case: "c1", test: "x.test.ts" } },
+      { ...base, id: "p-retire", kind: "retire-suggestion", status: "suggested", target: "retire c1", suggestion: { kind: "retire-suggestion", case: "c1", reason: "saturated" } },
+    ];
+    const view = parseEvalProposalsOutput(ok({ version: 1, details: true, proposals: rows, problems: [] }));
+    expect(view.proposals.map((row) => [row.id, row.kind, row.status])).toEqual([
+      ["p-judge", "judge-prompt", "passed"], ["p-analyst", "analyst-prompt", "proposed"], ["p-case", "case", "suggested"],
+      ["p-check", "check", "confirmed"], ["p-retire", "retire-suggestion", "suggested"],
+    ]);
+    expect(view.proposals[0]!.verdict).toEqual({ pass: true, conditions: [{ id: "accuracy-up", pass: true, reason: "0.9 over 0.8" }] });
+    expect(view.proposals[2]).toMatchObject({ target: "add case acme/app#7", suggestion: { kind: "case", repo: "acme/app", prs: [7], reason: "r", tags: ["ui"] } });
+    expect(view.proposals[2]!.suggestion).not.toHaveProperty("extra");
+    expect(view.proposals[3]!.suggestion).toEqual({ kind: "check", case: "c1", test: "x.test.ts" });
+    expect(view.proposals[4]).toMatchObject({ target: "retire c1", suggestion: { kind: "retire-suggestion", case: "c1", reason: "saturated" } });
+    // A summary-only print over-sharing a target or a suggestion relays neither.
+    const brief = parseEvalProposalsOutput(ok({ version: 1, details: false, proposals: rows, problems: [] }));
+    expect(brief.proposals).toHaveLength(5);
+    for (const row of brief.proposals) {
+      expect(row).not.toHaveProperty("target");
+      expect(row).not.toHaveProperty("suggestion");
+    }
+  });
+
+  it("drops a malformed suggestion, never the row", () => {
+    const base = { ...proposalRow, rationale: undefined, answers: undefined, kind: "case", status: "suggested", verdict: null, reason: null, target: "add case acme/app#7" };
+    for (const [kind, suggestion] of [
+      ["case", { kind: "case", repo: "acme/app", prs: ["7"], reason: "r", tags: [] }],
+      ["case", { kind: "case", repo: "acme/app", prs: [7], reason: "r" }],
+      ["case", { kind: "check", case: "c1", command: "x" }],
+      ["check", { kind: "check", case: "c1" }],
+      // A command check is an operator's: one relayed as a suggestion would be a model-written command one Confirm from the host.
+      ["check", { kind: "check", case: "c1", command: "x" }],
+      ["check", { kind: "check", case: "c1", test: "t", command: "x" }],
+      ["retire-suggestion", { kind: "retire-suggestion", case: 3, reason: "r" }],
+      ["retire-suggestion", "retire c1"],
+    ] as const) {
+      const [row] = parseEvalProposalsOutput(ok({ version: 1, details: true, proposals: [{ ...base, kind, suggestion }], problems: [] })).proposals;
+      expect(row, JSON.stringify(suggestion)).toMatchObject({ kind, target: "add case acme/app#7" });
+      expect(row, JSON.stringify(suggestion)).not.toHaveProperty("suggestion");
+    }
+  });
+
   it("serves GET /api/evals/proposals through evals-proposals.ts list for the project, and 405s a POST", async () => {
     const { evals, calls } = proposalsAdapter(ok({ version: 1, details: true, proposals: [proposalRow], problems: [] }));
     const response = await handleEvalsRoute(new Request("http://127.0.0.1/api/evals/proposals"), "/api/evals/proposals", evals);
