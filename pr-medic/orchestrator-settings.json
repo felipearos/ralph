@@ -1,0 +1,33 @@
+{
+  "$comment": [
+    "Rails for the pr-medic's ORCHESTRATOR session, added by `ralph.sh` with",
+    "`--settings` because `roles.ts` names this file as the role's",
+    "`orchestratorSettings`, INSTEAD of the harness-wide",
+    "`claude-orchestrator-settings.json` — so it repeats every rule of that",
+    "file, and adds the medic's own.",
+    "",
+    "The medic writes to the operator's branch, and the one way it may is",
+    "`bun pr-medic/push.ts <pr> --expect <sha>` (felipearos/ralph#247): a",
+    "re-read of the pull request, the diff guard, the `Pr-Medic` trailer and a",
+    "lease pinned to the sha it read. A raw `git push` skips all four, so it is",
+    "denied here; `push.ts`'s own `git push` is a child of `bun`, which no Bash",
+    "rule sees.",
+    "",
+    "Both spellings, `Bash(x *)` and `Bash(x:*)`, for the reason",
+    "`claude-executor-settings.json` gives. Like that file's path rules it is a",
+    "tripwire, not a boundary: `git -C . push` or `/usr/bin/git push` would go",
+    "round it. What it catches is the habit: a session that reaches for the",
+    "push every coder makes is refused and pointed back at the fence."
+  ],
+  "permissions": {
+    "deny": [
+      "Bash(git push *)", "Bash(git push:*)",
+      "Bash(doppler *)", "Bash(doppler:*)",
+      "Bash(* ~/.doppler/*)",
+      "Read(~/.doppler/**)",
+      "Bash(* ~/.config/ralph/trackers/*)", "Read(~/.config/ralph/trackers/**)",
+      "Bash(* ~/.config/ralph/slack/*)", "Read(~/.config/ralph/slack/**)",
+      "Bash(* ~/.config/ralph/screenshots/*)", "Read(~/.config/ralph/screenshots/**)"
+    ]
+  }
+}

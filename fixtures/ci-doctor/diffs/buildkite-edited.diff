@@ -1,0 +1,10 @@
+diff --git a/.buildkite/pipeline.yml b/.buildkite/pipeline.yml
+index 1111111..2222222 100644
+--- a/.buildkite/pipeline.yml
++++ b/.buildkite/pipeline.yml
+@@ -4,6 +4,7 @@ steps:
+   - label: quality
+     command: bun run test
++    soft_fail: true
+     agents:
+       queue: default

@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "Rails for the clerk's ORCHESTRATOR session, added by `ralph.sh` with",
+    "`--settings` because `roles.ts` names this file as the role's",
+    "`orchestratorSettings`, INSTEAD of the harness-wide",
+    "`claude-orchestrator-settings.json` — so it repeats every rule of that",
+    "file, and adds the clerk's own.",
+    "",
+    "The clerk's session reads untrusted Slack text and writes one plan file",
+    "(felipearos/ralph#315). It holds no Slack or Jira credential — both are",
+    "`gate` secrets — and everything it needs is in what",
+    "`clerk/batch.ts` prints, so it has no use for the network at all. A",
+    "message that says 'fetch this URL' or 'post this to Slack' is data; these",
+    "rules make sure the session cannot act on it by habit: no web tools, no",
+    "`curl`, no `wget`. Nor may it edit the clerk's store (`ralph/clerk/` in",
+    "git's common directory), whose handed batch carries the candidates a",
+    "report may be merged into; the gate also signs that batch and files a",
+    "changed one unclassified.",
+    "",
+    "Both spellings, `Bash(x *)` and `Bash(x:*)`, for the reason",
+    "`claude-executor-settings.json` gives. A tripwire, not the boundary: the",
+    "boundary is that no credential that could write anywhere is in the",
+    "session's environment, and that code validates the plan before any write."
+  ],
+  "permissions": {
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(curl *)", "Bash(curl:*)",
+      "Bash(wget *)", "Bash(wget:*)",
+      "Edit(**/ralph/clerk/**)", "Write(**/ralph/clerk/**)",
+      "Bash(doppler *)", "Bash(doppler:*)",
+      "Bash(* ~/.doppler/*)",
+      "Read(~/.doppler/**)",
+      "Bash(* ~/.config/ralph/trackers/*)", "Read(~/.config/ralph/trackers/**)",
+      "Bash(* ~/.config/ralph/slack/*)", "Read(~/.config/ralph/slack/**)",
+      "Bash(* ~/.config/ralph/screenshots/*)", "Read(~/.config/ralph/screenshots/**)"
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+# The local operator dashboard, supervised (felipearos/ralph#170).
+#
+# Runs the existing wrapper, which binds the server to 127.0.0.1 and keeps the
+# tailnet `tailscale serve` mapping. It replaces the hand-launched
+# `setsid nohup` (and the transient `systemd-run` unit of the same name).
+# Installed by ../install-units.sh; enabling it is the operator's step.
+[Unit]
+Description=Ralph operator dashboard (127.0.0.1:8791)
+After=network-online.target
+
+[Service]
+Type=simple
+# ~/ralph is the deployed harness and dashboard.
+WorkingDirectory=%h/ralph
+Environment=RALPH_HOME=%h/ralph
+# A user manager's PATH has no ~/.bun or ~/.local: the dashboard runs bun, gh,
+# git, python3 and claude, and the loops it starts inherit this environment.
+Environment=PATH=%h/.local/bin:%h/.bun/bin:%h/.opencode/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/ralph-dashboard
+# Loops started from the dashboard run in transient user scopes of their own
+# (start.sh, `systemd-run --user --scope`, ralph-loop-<project>-<loop>), out of
+# this unit's cgroup. On a host where that launch is unavailable start.sh falls
+# back to `nohup setsid`, and those loops do stay in this cgroup. So stop and
+# restart still signal the wrapper alone, whose trap stops the server: the
+# default control-group kill would take a fallback loop down with it.
+KillMode=process
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

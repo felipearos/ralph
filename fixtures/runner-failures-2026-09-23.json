@@ -1,0 +1,177 @@
+{
+  "$comment": [
+    "Every executor observation the four loggd loops recorded overnight on 2026-09-23",
+    "(at >= 01:30Z), with the codex events that produced each signal, trimmed to the",
+    "matching window. `recorded` is what the classifier said at the time; `expectedKind`",
+    "is what it must say now. Eight of eleven were wrong: five clean exits recorded as",
+    "failures, and three 900s timeouts recorded as api-error or authentication, all from",
+    "text inside a shell command's own output. Source: .ralph/logs/runner-failures.jsonl",
+    "and delegate-*.log.jsonl in each loop's worktree."
+  ],
+  "cases": [
+    {
+      "loop": "ralph",
+      "log": ".ralph/logs/delegate-20260923T032158.log",
+      "recorded": {
+        "at": "2026-09-23T06:36:59.010Z",
+        "exitCode": 124,
+        "kind": "api-error",
+        "note": "the executor was killed at its 900s timeout; partial events survived but the diff may be incomplete"
+      },
+      "expectedKind": "timeout",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cced-9e47-7731-8588-2de4694cc56c\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_33\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc 'bun run test src/app/api/v1/shows/[id]/seasons/[seasonNumber]/lists/route.test.ts src/app/api/v1/shows/[id]/seasons/[seasonNumber]/episodes/[episodeNumber]/lists/route.test.ts'\", \"aggregated_output\": \"…(3 matching properties omitted from actual)\\n\\n- Expected\\n+ Received\\n\\n  {\\n-   \\\"data\\\": {\\n-     \\\"hasMore\\\": true,\\n-   },\\n+   \\\"code\\\": \\\"INTERNAL_ERROR\\\",\\n+   \\\"error\\\": \\\"Internal server error\\\",\\n+   \\\"success\\\": false,\\n  }\\n\\n ❯ src/app/api/v1/shows/[id]/seasons/[seasonNumber]/lists/route.test.ts:275:7\\n    273|       const res = await GET(makeRequest(1))…\", \"exit_code\": 1, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "ralph",
+      "log": ".ralph/logs/delegate-20260923T045209.log",
+      "recorded": {
+        "at": "2026-09-23T08:04:53.960Z",
+        "exitCode": 0,
+        "kind": "api-error",
+        "note": null
+      },
+      "expectedKind": "none",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd40-2c73-7cc1-8adb-286bcc5867af\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_2\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc \\\"git status --short && printf '%s\\\\\\\\n' '--- review action ---' && sed -n '1,300p' src/server/actions/review.ts && printf '%s\\\\\\\\n' '--- delete validation references ---' && rg -n \\\\\\\"deleteR…\", \"aggregated_output\": \"…revalidateUserStats\\\";\\nimport { db } from \\\"~/server/db\\\";\\nimport { review } from \\\"~/server/db/schema\\\";\\nimport { eq, and } from \\\"drizzle-orm\\\";\\nimport { checkActionRateLimit } from \\\"~/server/rate-limit\\\";\\nimport { getLogger, serializeError } from \\\"~/lib/logger\\\";\\nimport {\\n  RATED_ROW_COLUMNS,\\n  scheduleAggregateRecalc,\\n} from \\\"~/serv…\", \"exit_code\": 2, \"status\": \"failed\"}}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_40\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc 'bun run test'\", \"aggregated_output\": \"…v\\\",\\\"msg\\\":\\\"ensureMediaMetadata failed\\\"}\\n{\\\"level\\\":\\\"warn\\\",\\\"time\\\":\\\"2026-09-23T08:01:21.152Z\\\",\\\"service\\\":\\\"loggd\\\",\\\"env\\\":\\\"test\\\",\\\"error\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"TMDB API error\\\",\\\"stack\\\":\\\"Error: TMDB API error\\\\n    at /home/faros/orca/workspaces/loggd/ralph-loop/src/server/actions/watchStatus.test.ts:220:52\\\\n    at file:///home/faros/o…\", \"exit_code\": 130, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "ralph",
+      "log": ".ralph/logs/delegate-20260923T051706.log",
+      "recorded": {
+        "at": "2026-09-23T08:23:29.994Z",
+        "exitCode": 0,
+        "kind": "authentication",
+        "note": null
+      },
+      "expectedKind": "none",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd40-2c73-7cc1-8adb-286bcc5867af\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_10\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc \\\"sed -n '1,220p' mobile/lib/query-client.ts; rg -n 'QueryClientProvider|createQueryClient|useConfirm|use.*Alert|Alert.alert' mobile/hooks mobile/components --glob '*.{ts,tsx}' | head -1…\", \"aggregated_output\": \"import { QueryClient } from \\\"@tanstack/react-query\\\";\\n\\n/**\\n * The app's default retry rule: never retry an unauthorized request (the\\n * caller is signed out or the token is stale), otherwise retry up to 3 times.\\n * Exported so a query with its own failure to special-case (e.g. a…\", \"exit_code\": 1, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "rafa",
+      "log": ".ralph/logs/delegate-20260923T023725.log",
+      "recorded": {
+        "at": "2026-09-23T05:52:25.436Z",
+        "exitCode": 124,
+        "kind": "authentication",
+        "note": "the executor was killed at its 900s timeout; partial events survived but the diff may be incomplete"
+      },
+      "expectedKind": "timeout",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0ccc4-d2d9-7812-b044-a3b42ef9a293\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_53\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc \\\"bun run test src/app/api/v1/users/me/route.test.ts src/app/api/v1/movies/'[id]'/route.test.ts src/app/api/v1/shows/'[id]'/route.test.ts src/lib/api/watch-providers.test.ts\\\"\", \"aggregated_output\": \"…roviders 5ms\\n ✓ src/app/api/v1/movies/[id]/route.test.ts (25 tests) 47ms\\n ❯ src/app/api/v1/users/me/route.test.ts (47 tests | 6 failed) 45ms\\n     ✓ returns 401 UNAUTHORIZED when unauthenticated 4ms\\n     × returns the caller's profile and stats 10ms\\n     ✓ reports the media preference against the enabled targets, unfiltered 1ms\\n   …\", \"exit_code\": 1, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "rafa",
+      "log": ".ralph/logs/delegate-20260923T042255.log",
+      "recorded": {
+        "at": "2026-09-23T07:34:20.707Z",
+        "exitCode": 0,
+        "kind": "authentication",
+        "note": null
+      },
+      "expectedKind": "none",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd25-6a38-7631-8db4-18bc8d04952a\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_5\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc \\\"printf '%s\\\\\\\\n' '--- web activity tabs ---'\\nrg -n \\\\\\\"ActivityTabs|includeYour|includeIncoming|excludeTypes|activityQuery|activity.*exclude\\\\\\\" src/app/[username] src/lib src/server package…\", \"aggregated_output\": \"… profile\\n  let isOwnProfile = false;\\n  try {\\n    const user = (await getViewer())?.user ?? null;\\n    isOwnProfile = user?.id === profile.id;\\n  } catch {\\n    // Not logged in or error - isOwnProfile stays false\\n  }\\n\\n  // Different tabs for own profile vs other users\\n  const ownProfileTabs = [\\\"friends\\\", \\\"you\\\", \\\"incoming\\\"];\\n  const ot…\", \"exit_code\": 2, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "rafa",
+      "log": ".ralph/logs/delegate-20260923T052127.log",
+      "recorded": {
+        "at": "2026-09-23T08:32:03.232Z",
+        "exitCode": 0,
+        "kind": "api-error",
+        "note": null
+      },
+      "expectedKind": "none",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd5b-020f-7060-ae59-8d2697a6d7fe\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_23\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc 'bun run test'\", \"aggregated_output\": \"…r/imports/jobs.test.ts (47 tests) 42ms\\n{\\\"level\\\":\\\"warn\\\",\\\"time\\\":\\\"2026-09-23T08:27:48.633Z\\\",\\\"service\\\":\\\"loggd\\\",\\\"env\\\":\\\"test\\\",\\\"error\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"TMDB API error\\\",\\\"stack\\\":\\\"Error: TMDB API error\\\\n    at /home/faros/orca/workspaces/loggd/rafa-loop/src/server/actions/watchStatus.test.ts:220:52\\\\n    at file:///home/faros/or…\", \"exit_code\": 130, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "rafa",
+      "log": ".ralph/logs/delegate-20260923T064817.log",
+      "recorded": {
+        "at": "2026-09-23T10:03:18.203Z",
+        "exitCode": 124,
+        "kind": "api-error",
+        "note": "the executor was killed at its 900s timeout; partial events survived but the diff may be incomplete"
+      },
+      "expectedKind": "timeout",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cdaa-838e-7691-b3ce-53c33f61ae73\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_82\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc 'bun run test'\", \"aggregated_output\": \"…/lib/api-utils.test.ts (35 tests) 63ms\\n{\\\"level\\\":\\\"warn\\\",\\\"time\\\":\\\"2026-09-23T10:00:35.758Z\\\",\\\"service\\\":\\\"loggd\\\",\\\"env\\\":\\\"test\\\",\\\"error\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"TMDB API error\\\",\\\"stack\\\":\\\"Error: TMDB API error\\\\n    at /home/faros/orca/workspaces/loggd/rafa-loop/src/server/actions/watchStatus.test.ts:220:52\\\\n    at file:///home/faros/or…\", \"exit_code\": 130, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "rulo",
+      "log": ".ralph/logs/delegate-20260922T223503.log",
+      "recorded": {
+        "at": "2026-09-23T01:36:12.698Z",
+        "exitCode": 0,
+        "kind": "permission-denied",
+        "note": null
+      },
+      "expectedKind": "permission-denied",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cbe6-f0c7-72e0-986f-9b968d6429e1\"}",
+        "2026-09-23T01:35:54.913848Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to read file to update /home/faros/orca/workspaces/loggd/rulo-loop/mobile/__tests__/home-sections.test.tsx: fs sandbox helper failed with status exit status: 1: bwrap: setting up uid map: Operation not permitted"
+      ]
+    },
+    {
+      "loop": "rulo",
+      "log": ".ralph/logs/delegate-20260923T034740.log",
+      "recorded": {
+        "at": "2026-09-23T07:00:52.114Z",
+        "exitCode": 0,
+        "kind": "api-error",
+        "note": null
+      },
+      "expectedKind": "none",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd05-25a5-75d2-8395-12ea718585b8\"}",
+        "{\"type\": \"item.completed\", \"item\": {\"id\": \"item_56\", \"type\": \"command_execution\", \"command\": \"/bin/bash -lc 'bun x jest hooks/__tests__/useSettings.test.tsx --runInBand'\", \"aggregated_output\": \"…c removal (2 ms)\\n    ✓ rolls back the removal on error (52 ms)\\n  useUpdateProfile\\n    ✓ patches /users/me and invalidates profile queries (2 ms)\\n    ✓ surfaces API errors (52 ms)\\n    identity fields (#872)\\n      ✓ writes the stored values into the member's own profile entry (52 ms)\\n      ✓ moves the cache to the canonical usern…\", \"exit_code\": 130, \"status\": \"failed\"}}"
+      ]
+    },
+    {
+      "loop": "remo",
+      "log": ".ralph/logs/delegate-20260923T043154.log",
+      "recorded": {
+        "at": "2026-09-23T07:46:54.794Z",
+        "exitCode": 124,
+        "kind": "timeout",
+        "note": "the executor was killed at its 900s timeout; partial events survived but the diff may be incomplete"
+      },
+      "expectedKind": "timeout",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd2d-a5a6-7131-bc1f-08b6fb42292b\"}"
+      ]
+    },
+    {
+      "loop": "remo",
+      "log": ".ralph/logs/delegate-20260923T053823.log",
+      "recorded": {
+        "at": "2026-09-23T08:53:23.444Z",
+        "exitCode": 124,
+        "kind": "timeout",
+        "note": "the executor was killed at its 900s timeout; partial events survived but the diff may be incomplete"
+      },
+      "expectedKind": "timeout",
+      "events": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"01a0cd6a-8082-77a0-af8b-38608e7ebeb1\"}"
+      ]
+    }
+  ]
+}

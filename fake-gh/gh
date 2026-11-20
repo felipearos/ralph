@@ -1,0 +1,15 @@
+#!/bin/sh
+# The fake `gh` for sandboxed trials (#526): put this directory first on PATH
+# and every `gh` call lands in fake-gh.ts, never on GitHub.
+# Resolve this script's real directory, following symlinks, so a link to it
+# placed anywhere on PATH still finds fake-gh.ts beside the shim's real home.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self") || exit 1
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
+exec bun "$dir/../fake-gh.ts" "$@"

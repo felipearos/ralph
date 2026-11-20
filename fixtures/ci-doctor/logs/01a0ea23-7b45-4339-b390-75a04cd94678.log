@@ -1,0 +1,39 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin refs/pull/1731/head 35e2e1d4a2dfb6295a9bca1e5b184527b83ca83e
+$ git -c advice.detachedHead=false checkout -f 35e2e1d4a2dfb6295a9bca1e5b184527b83ca83e
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+ FAIL  __tests__/onboarding-flow.test.tsx (8.27 s)
+  ● OnboardingGate › gates a signed-in account with unfinished onboarding behind the media step
+
+    Unable to find an element with text: What do you want to track?
+
+    <View
+      accessibilityLabel="Loading Loggd"
+      accessibilityRole="progressbar"
+    >
+      <View>
+ FAIL  __tests__/onboarding-flow.test.tsx (8.27 s)
+  ● OnboardingGate › gates a signed-in account with unfinished onboarding behind the media step
+
+    Unable to find an element with text: What do you want to track?
+
+    <View
+      accessibilityLabel="Loading Loggd"
+      accessibilityRole="progressbar"
+    >
+      <View>
+Test Suites: 1 failed, 346 passed, 347 total
+Tests:       1 failed, 3867 passed, 3868 total
+error: script "test" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

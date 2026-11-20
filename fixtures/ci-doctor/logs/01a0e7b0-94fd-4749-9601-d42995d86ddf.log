@@ -1,0 +1,52 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin c4e24b6252c93776e21b8bd6e9c996504dd0dde1
+$ git -c advice.detachedHead=false checkout -f c4e24b6252c93776e21b8bd6e9c996504dd0dde1
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+$ node ../node_modules/typescript7/bin/tsc --noEmit
+$ node_modules/typescript7/bin/tsc --noEmit
+$ bun x vitest run --coverage
+ ❯ src/server/list-summary/read-boundary-conformance.test.ts (11 tests | 1 failed) 12998ms
+ ❯ src/app/api/v1/media-mode-conformance.test.ts (42 tests | 1 failed) 6890ms
+ ❯ src/app/api/v1/mobile-api-error-conformance.test.ts (13 tests | 1 failed) 39ms
+ FAIL  src/server/list-summary/read-boundary-conformance.test.ts > the List Summary read boundary > allows no new production module to touch the list table
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/server/list-summary/read-boundary-conformance.test.ts:186:3
+    184|   });
+    185| 
+    186|   it("allows no new production module to touch the list table", () => {
+       |   ^
+    187|     const unlisted = listTableImporters(realRepo)
+ FAIL  src/app/api/v1/media-mode-conformance.test.ts > Media Mode conformance (real tree) > routes every mobile read through the Media Mode Scope
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/app/api/v1/media-mode-conformance.test.ts:589:3
+    587|     expect(staleEntries(Object.keys(allowlist!), read(PROFILE_HOOKS))).toEqual([]);
+    588|   });
+    589|   it("routes every mobile read through the Media Mode Scope", () => {
+       |   ^
+    590|     const files = mobileFiles();
+ FAIL  src/app/api/v1/mobile-api-error-conformance.test.ts > mobile API Error conformance > never grows the allowlist against the base branch
+AssertionError: MOBILE_ENVELOPE_CALLERS may only shrink; new paths: mobile/components/AddToListSheet.tsx, mobile/components/list/ListBackgroundField.tsx, mobile/hooks/useBulkAddToList.ts, mobile/hooks/useCreateList.ts, mobile/hooks/useCsvListImport.ts, mobile/hooks/useListCollaborators.ts, mobile/hooks/useListDiscussion.ts, mobile/hooks/useListLike.ts, mobile/hooks/useListMembership.ts, mobile/hoo
+
+- Expected
++ Received
+
+- []
++ [
++   "mobile/components/AddToListSheet.tsx",
+ Test Files  3 failed | 572 passed (575)
+      Tests  3 failed | 8562 passed (8565)
+error: script "test:coverage" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

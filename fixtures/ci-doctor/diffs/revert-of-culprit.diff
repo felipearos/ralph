@@ -1,0 +1,8 @@
+diff --git a/src/server/list-summary/aggregate.ts b/src/server/list-summary/aggregate.ts
+index 2222222..1111111 100644
+--- a/src/server/list-summary/aggregate.ts
++++ b/src/server/list-summary/aggregate.ts
+@@ -40,7 +40,7 @@ export function aggregate(rows: Row[]): Summary {
+-  return rows.reduce(mergeFast, empty());
++  return rows.reduce(merge, empty());
+ }

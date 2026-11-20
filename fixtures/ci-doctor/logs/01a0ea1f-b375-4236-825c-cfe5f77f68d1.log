@@ -1,0 +1,28 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-3/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-3/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin 0d91af640e4dffb5ac13cc6dcff67db735e64b9d
+$ git -c advice.detachedHead=false checkout -f 0d91af640e4dffb5ac13cc6dcff67db735e64b9d
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ -z "$TMDB_API_KEY" ]; then echo "TMDB_API_KEY not set — skipping Playwright E2E."; exit 0; fi
+$ bash scripts/ensure-signing-key.sh
+$ bash scripts/reap-supabase-stack.sh
+$ bun x vitest run --config vitest.security.config.ts
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Startup Error ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: Supabase Auth was not stable within 120000ms after 239 attempts; required 3 consecutive healthy responses; longest healthy streak 0; observations: HTTP 502 x239
+    at Object.waitForSupabaseAuth [as waitForAuth] (/data/buildkite/builds/home-loggd-3/felipe-aros/loggd/scripts/wait-for-supabase-auth.ts:102:9)
+    at resetSupabase (/data/buildkite/builds/home-loggd-3/felipe-aros/loggd/security/harness/global-setup.ts:114:3)
+    at TestProject._teardownGlobalSetup (file:///data/buildkite/builds/home-loggd-3/felipe-aros/loggd/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:10042:68)
+    at file:///data/buildkite/builds/home-loggd-3/felipe-aros/loggd/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:12917:54
+    at startVitest (file:///data/buildkite/builds/home-loggd-3/felipe-aros/loggd/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:13537:2)
+    at start (file:///data/buildkite/builds/home-loggd-3/felipe-aros/loggd/node_modules/vitest/dist/chunks/cac.DVeoLl0M.js:1360:15)
+    at CAC.run (file:///data/buildkite/builds/home-loggd-3/felipe-aros/loggd/node_modules/vitest/dist/chunks/cac.DVeoLl0M.js:1338:2)
+error: script "test:security" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Uploading artifacts
+$ /usr/local/bin/buildkite-agent artifact upload playwright-report/**/*
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

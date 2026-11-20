@@ -1,0 +1,21 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin refs/pull/1716/head db98194ce3d17a76139e0bc54d4f47423ad31447
+$ git -c advice.detachedHead=false checkout -f db98194ce3d17a76139e0bc54d4f47423ad31447
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+ FAIL  components/__tests__/library-recovery.test.tsx
+ FAIL  components/__tests__/library-recovery.test.tsx
+Test Suites: 1 failed, 342 passed, 343 total
+Tests:       3 failed, 3807 passed, 3810 total
+error: script "test" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

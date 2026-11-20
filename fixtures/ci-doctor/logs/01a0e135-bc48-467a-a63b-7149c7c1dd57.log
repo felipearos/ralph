@@ -1,0 +1,49 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin refs/pull/1466/head ebd5ea8f7d1a7017d8845eb74f14a6a6ca4a81ea
+$ git -c advice.detachedHead=false checkout -f ebd5ea8f7d1a7017d8845eb74f14a6a6ca4a81ea
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ -z "$TMDB_API_KEY" ]; then echo "TMDB_API_KEY not set — skipping Playwright E2E."; exit 0; fi
+$ bash scripts/ensure-signing-key.sh
+$ bash scripts/reap-supabase-stack.sh
+$ bun x vitest run --config vitest.security.config.ts
+$ bun run scripts/seed-e2e.ts
+$ playwright test
+  1) [chromium-authenticated] › e2e/catch-up.spec.ts:156:3 › Catch Up - Authenticated @authenticated › should mark episode as watched when clicking Watch button 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByRole('main').locator('div.group').filter({ has: locator('a[href="/show/1396"]') }).first().getByText('S05 E15')
+    Expected: visible
+    Timeout: 15000ms
+    Error: element(s) not found
+
+  2) [chromium-authenticated] › e2e/catch-up.spec.ts:111:3 › Catch Up - Authenticated @authenticated › should display episode cards with show name, episode name, and code 
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByRole('main').locator('div.group').filter({ has: locator('a[href="/show/1396"]') }).first().getByText('S05 E15')
+    Expected: visible
+    Timeout: 5000ms
+  3) [chromium-authenticated] › e2e/push-targets.spec.ts:6:3 › Push Target registration @authenticated › a phone keeps its name and muted switch through rotation and disappears after deregistration 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('Rotation phone 026c85e2-cf51-4015-9537-813dc9eddc8f', { exact: true })
+    Expected: visible
+    Error: strict mode violation: getByText('Rotation phone 026c85e2-cf51-4015-9537-813dc9eddc8f', { exact: true }) resolved to 2 elements:
+        1) <span class="text-body text-text-secondary block truncate">Rotation phone 026c85e2-cf51-4015-9537-813dc9eddc…</span> aka locator('#main-content').getByText('Rotation phone 026c85e2-cf51-')
+        2) <span class="text-body text-text-secondary block truncate">Rotation phone 026c85e2-cf51-4015-9537-813dc9eddc…</span> aka getByText('Rotation phone 026c85e2-cf51-').nth(1)
+  1 failed
+error: script "test:e2e" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Uploading artifacts
+$ /usr/local/bin/buildkite-agent artifact upload playwright-report/**/*
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

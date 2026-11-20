@@ -1,0 +1,35 @@
+{
+  "repo": "felipearos/ralph",
+  "owner": "felipearosr",
+  "baseBranch": "main",
+  "displayName": "Software Factory",
+  "secrets": {
+    "runner": "none",
+    "withhold": []
+  },
+  "refuseFiles": [],
+  "envCheck": [],
+  "requiredChecks": [
+    "test"
+  ],
+  "gates": {
+    "test": "bun run test",
+    "typecheck": "bun run typecheck",
+    "lint": "bun run lint"
+  },
+  "promptFragment": ".ralph/prompt.md",
+  "coderFragment": ".ralph/coder.md",
+  "plan": ".ralph/plan.md",
+  "journal": {
+    "dir": "journal/ralph"
+  },
+  "loops": [
+    "ralph",
+    "rafa",
+    {
+      "name": "tria",
+      "role": "triager"
+    },
+    "rita"
+  ]
+}

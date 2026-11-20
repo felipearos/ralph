@@ -1,0 +1,39 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin a7e6ff97504089eb7c8b927814d44ca08c8b516e
+$ git -c advice.detachedHead=false checkout -f a7e6ff97504089eb7c8b927814d44ca08c8b516e
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+ FAIL  components/__tests__/DiaryTab.test.tsx
+  ● DiaryTab media mode › applies a TV-only genre in movie mode: false
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: StringNotContaining "genre=", ObjectContaining {"noRetryOnRateLimit": true}
+    Received: "/users/diary?username=faros&genre=10759&media=movies&offset=0&limit=30", {"noRetryOnRateLimit": true, "signal": {Symbol(kEvents): Map {"abort" => {"next": {"callback": [Function anonymous], "flags": 1, "listener": [Function anonymous], "next": undefined, "previous": [Circular]}, "resistStopPropagation": false, "size": 1}}, Symbol(events.maxEventTargetListeners): 0, Symbol(events.max
+
+    Number of calls: 1
+
+ FAIL  components/__tests__/DiaryTab.test.tsx
+  ● DiaryTab media mode › applies a TV-only genre in movie mode: false
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: StringNotContaining "genre=", ObjectContaining {"noRetryOnRateLimit": true}
+    Received: "/users/diary?username=faros&genre=10759&media=movies&offset=0&limit=30", {"noRetryOnRateLimit": true, "signal": {Symbol(kEvents): Map {"abort" => {"next": {"callback": [Function anonymous], "flags": 1, "listener": [Function anonymous], "next": undefined, "previous": [Circular]}, "resistStopPropagation": false, "size": 1}}, Symbol(events.maxEventTargetListeners): 0, Symbol(events.max
+
+    Number of calls: 1
+
+Test Suites: 1 failed, 320 passed, 321 total
+Tests:       1 failed, 3510 passed, 3511 total
+error: script "test" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

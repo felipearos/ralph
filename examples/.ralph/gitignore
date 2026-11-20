@@ -1,0 +1,5 @@
+# Append to the project's .gitignore. The config, fragments and plan are
+# committed; loop state and identity are per worktree.
+.ralph/logs/
+.ralph/loop-name
+.ralph/control/

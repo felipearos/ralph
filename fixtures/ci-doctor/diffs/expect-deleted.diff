@@ -1,0 +1,10 @@
+diff --git a/src/server/actions/action-result-conformance.test.ts b/src/server/actions/action-result-conformance.test.ts
+index 1111111..2222222 100644
+--- a/src/server/actions/action-result-conformance.test.ts
++++ b/src/server/actions/action-result-conformance.test.ts
+@@ -20,7 +20,6 @@ describe("action results", () => {
+   it("returns a typed failure", async () => {
+     const result = await act();
+     expect(result.ok).toBe(false);
+-    expect(result.error.code).toBe("FORBIDDEN");
+   });

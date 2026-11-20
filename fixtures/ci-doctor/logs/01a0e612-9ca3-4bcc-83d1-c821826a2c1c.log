@@ -1,0 +1,39 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin ebb4920257e7f20ee01d2ca413f643c0cc388351
+$ git -c advice.detachedHead=false checkout -f ebb4920257e7f20ee01d2ca413f643c0cc388351
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+ FAIL  hooks/__tests__/title-detail-query.test.tsx
+  ● titleDetailDisplayName › names a movie by its detail read
+
+    expect(received).toBeUndefined()
+
+    Received: "The Matrix"
+
+      88 |     });
+      89 |
+    > 90 |     expect(titleDetailDisplayName(result.current.data)).toBeUndefined();
+ FAIL  hooks/__tests__/title-detail-query.test.tsx
+  ● titleDetailDisplayName › names a movie by its detail read
+
+    expect(received).toBeUndefined()
+
+    Received: "The Matrix"
+
+      88 |     });
+      89 |
+    > 90 |     expect(titleDetailDisplayName(result.current.data)).toBeUndefined();
+Test Suites: 1 failed, 328 passed, 329 total
+Tests:       1 failed, 3625 passed, 3626 total
+error: script "test" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

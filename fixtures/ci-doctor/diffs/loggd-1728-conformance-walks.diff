@@ -1,0 +1,712 @@
+diff --git a/src/app/api/v1/media-mode-conformance.test.ts b/src/app/api/v1/media-mode-conformance.test.ts
+index 46ca88d1b..2eb5eb23a 100644
+--- a/src/app/api/v1/media-mode-conformance.test.ts
++++ b/src/app/api/v1/media-mode-conformance.test.ts
+@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
+ import { lstatSync, readdirSync, readFileSync } from "node:fs";
+ import path from "node:path";
+ import ts from "typescript";
+-import { describe, expect, it } from "vitest";
++import { beforeAll, describe, expect, it } from "vitest";
++import { forkedHistory, ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * Media Mode conformance ratchet (#1481).
+@@ -26,6 +27,7 @@ import { describe, expect, it } from "vitest";
+ const ROOT = process.cwd();
+ const SCOPE_FILE = "mobile/stores/media-mode-scope.ts";
+ const STORE_FILE = "mobile/stores/media-mode-store.ts";
++const STORE_MODULE = "@/stores/media-mode-store";
+ const PROFILE_HOOKS = "mobile/hooks/useProfile.ts";
+ const BASE_REF = process.env.CONFORMANCE_BASE_REF ?? "origin/main";
+ 
+@@ -86,8 +88,12 @@ function functionName(node: FunctionLike): string | undefined {
+ 
+ /** Guard 1: functions whose direct Media Mode store read flows into a query key or a request. */
+ function inspectMobileFile(file: string, source: string, exempt: ReadonlySet<string> = new Set()): string[] {
++  // A file that never names the store module cannot import it, so it has no
++  // store read to flag. Skipping the parse keeps the real-tree walk cheap:
++  // most of the mobile tree never touches the Media Mode.
++  if (!source.includes(STORE_MODULE)) return [];
+   const ast = parse(file, source);
+-  const store = importedNames(ast, "@/stores/media-mode-store", new Set(["useMediaModeStore"]));
++  const store = importedNames(ast, STORE_MODULE, new Set(["useMediaModeStore"]));
+   const api = importedNames(ast, "@/lib/api-client", new Set(["api"]));
+ 
+   // Follow local aliases (`const store = useMediaModeStore`) like the route ratchet does.
+@@ -352,12 +358,15 @@ function allowlistGrowth(current: Record<string, string>, baseRef: string, ci: b
+     if (ci) throw new Error(`Cannot resolve ${baseRef}; CI must fetch the base branch for the Media Mode ratchet`);
+     return [];
+   }
+-  const files = readGit("ls-tree", "--name-only", baseRef, "--", SCOPE_FILE);
+-  if (files === null) throw new Error(`Cannot inspect ${baseRef}:${SCOPE_FILE}`);
++  // Where this branch left the base, not its tip: a list the base shrank since
++  // is not growth on this branch (see ~/test/ratchet-base).
++  const base = ratchetBase(baseRef, readGit);
++  const files = readGit("ls-tree", "--name-only", base, "--", SCOPE_FILE);
++  if (files === null) throw new Error(`Cannot inspect ${base}:${SCOPE_FILE}`);
+   // Bootstrap only when the reachable base predates the allowlist itself.
+   if (!files.trim()) return [];
+-  const source = readGit("show", `${baseRef}:${SCOPE_FILE}`);
+-  if (source === null) throw new Error(`Cannot read ${baseRef}:${SCOPE_FILE}`);
++  const source = readGit("show", `${base}:${SCOPE_FILE}`);
++  if (source === null) throw new Error(`Cannot read ${base}:${SCOPE_FILE}`);
+   const baseline = parseModeIndependentReads(source);
+   if (baseline === null) return [];
+   return Object.keys(current).filter((name) => !(name in baseline));
+@@ -560,6 +569,13 @@ describe("MODE_INDEPENDENT_READS", () => {
+     expect(allowlistGrowth({ useA: "a", useB: "b", useC: "c" }, "base", true, readGit)).toEqual(["useC"]);
+     expect(allowlistGrowth({ useA: "a" }, "base", true, readGit)).toEqual([]);
+   });
++  it("compares against where the branch forked, not a base tip that shrank since", () => {
++    const readGit = forkedHistory(SCOPE_FILE,
++      'const MODE_INDEPENDENT_READS = { useA: "a", useB: "b" };',
++      'const MODE_INDEPENDENT_READS = { useA: "a" };');
++    expect(allowlistGrowth({ useA: "a", useB: "b" }, "base", true, readGit)).toEqual([]);
++    expect(allowlistGrowth({ useA: "a", useC: "c" }, "base", true, readGit)).toEqual(["useC"]);
++  });
+   it("fails loudly for a missing CI base but permits an unfetched local clone", () => {
+     expect(() => allowlistGrowth({}, "missing", true, () => null)).toThrow("CI must fetch");
+     expect(allowlistGrowth({}, "missing", false, () => null)).toEqual([]);
+@@ -578,26 +594,49 @@ describe("MODE_INDEPENDENT_READS", () => {
+   });
+ });
+ 
++/**
++ * Generous on purpose: this bound exists to catch a hang, not to police speed.
++ * Under `test:coverage` on a loaded Buildkite agent the mobile walk overran the
++ * 5s default while passing everywhere else.
++ */
++const WALK_TIMEOUT = 120_000;
++
+ describe("Media Mode conformance (real tree)", () => {
+   const allowlist = parseModeIndependentReads(read(SCOPE_FILE));
+ 
++  /**
++   * The walks run once, in `beforeAll` — not inside the assertions, where the
++   * first check to touch the tree paid the whole bill inside its own 5s
++   * budget. Same note as `~/server/db/sql-identifier-conformance.test.ts`.
++   */
++  let mobile: { files: string[]; violations: string[] };
++  let routes: { files: string[]; violations: string[] };
++  beforeAll(() => {
++    const exempt = new Set(Object.keys(allowlist ?? {}));
++    const mobilePaths = mobileFiles();
++    mobile = {
++      files: mobilePaths,
++      violations: mobilePaths.flatMap((file) => inspectMobileFile(file, read(file), exempt)),
++    };
++    const routePaths = routeFiles();
++    routes = { files: routePaths, violations: routePaths.flatMap((file) => inspectRouteMedia(file, read(file))) };
++  }, WALK_TIMEOUT);
++
+   it("parses a non-empty allowlist of live, mode-independent profile reads", () => {
+     expect(allowlist).not.toBeNull();
+     expect(Object.keys(allowlist!).length).toBeGreaterThan(0);
+     expect(staleEntries(Object.keys(allowlist!), read(PROFILE_HOOKS))).toEqual([]);
+   });
+   it("routes every mobile read through the Media Mode Scope", () => {
+-    const files = mobileFiles();
+-    expect(files).toContain(PROFILE_HOOKS);
+-    const exempt = new Set(Object.keys(allowlist ?? {}));
+-    expect(files.flatMap((file) => inspectMobileFile(file, read(file), exempt))).toEqual([]);
++    expect(mobile.files).toContain(PROFILE_HOOKS);
++    expect(mobile.violations).toEqual([]);
+   });
+   it("reads media= through api-utils in every v1 route", () => {
+-    const files = routeFiles();
+-    expect(files.length).toBeGreaterThan(0);
+-    expect(files.flatMap((file) => inspectRouteMedia(file, read(file)))).toEqual([]);
++    expect(routes.files.length).toBeGreaterThan(0);
++    expect(routes.violations).toEqual([]);
+   });
++  // Shells out to git up to three times; bounded like the walk for the same reason.
+   it("never grows MODE_INDEPENDENT_READS against the base branch", () => {
+     expect(allowlistGrowth(allowlist ?? {}, BASE_REF, Boolean(process.env.CI))).toEqual([]);
+-  });
++  }, WALK_TIMEOUT);
+ });
+diff --git a/src/app/api/v1/mobile-api-error-conformance.test.ts b/src/app/api/v1/mobile-api-error-conformance.test.ts
+index afebf0d90..f489c5270 100644
+--- a/src/app/api/v1/mobile-api-error-conformance.test.ts
++++ b/src/app/api/v1/mobile-api-error-conformance.test.ts
+@@ -4,6 +4,7 @@ import path from "node:path";
+ import ts from "typescript";
+ import { describe, expect, it } from "vitest";
+ import { MOBILE_ENVELOPE_CALLERS } from "./mobile-api-error-allowlist";
++import { forkedHistory, ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * API Error conformance ratchet (#1554).
+@@ -379,12 +380,15 @@ function allowlistGrowth(current: readonly string[], baseRef: string, ci: boolea
+     if (ci) throw new Error(`Cannot resolve ${baseRef}; CI must fetch the base branch for the API Error ratchet`);
+     return [];
+   }
+-  const files = readGit("ls-tree", "--name-only", baseRef, "--", ALLOWLIST_FILE);
+-  if (files === null) throw new Error(`Cannot inspect ${baseRef}:${ALLOWLIST_FILE}`);
++  // Where this branch left the base, not its tip: a list the base shrank since
++  // is not growth on this branch (see ~/test/ratchet-base).
++  const base = ratchetBase(baseRef, readGit);
++  const files = readGit("ls-tree", "--name-only", base, "--", ALLOWLIST_FILE);
++  if (files === null) throw new Error(`Cannot inspect ${base}:${ALLOWLIST_FILE}`);
+   // Bootstrap only when the base predates the allowlist itself.
+   if (!files.trim()) return [];
+-  const source = readGit("show", `${baseRef}:${ALLOWLIST_FILE}`);
+-  if (source === null) throw new Error(`Cannot read ${baseRef}:${ALLOWLIST_FILE}`);
++  const source = readGit("show", `${base}:${ALLOWLIST_FILE}`);
++  if (source === null) throw new Error(`Cannot read ${base}:${ALLOWLIST_FILE}`);
+   const baseline = parseMobileEnvelopeCallers(source);
+   const baselineSet = new Set(baseline);
+   return current.filter((file) => !baselineSet.has(file));
+@@ -491,6 +495,16 @@ describe("MOBILE_ENVELOPE_CALLERS", () => {
+     expect(allowlistGrowth(["mobile/a.ts"], "base", true, readGit)).toEqual([]);
+   });
+ 
++  it("compares against where the branch forked, not a base tip that shrank since", () => {
++    // Build 2454: main dropped b and c after this branch was cut; the branch kept them.
++    const readGit = forkedHistory(ALLOWLIST_FILE,
++      'export const MOBILE_ENVELOPE_CALLERS = ["mobile/a.ts", "mobile/b.ts", "mobile/c.ts"];',
++      'export const MOBILE_ENVELOPE_CALLERS = ["mobile/a.ts"];');
++    expect(allowlistGrowth(["mobile/a.ts", "mobile/b.ts", "mobile/c.ts"], "base", true, readGit)).toEqual([]);
++    expect(allowlistGrowth(["mobile/a.ts", "mobile/b.ts", "mobile/d.ts"], "base", true, readGit))
++      .toEqual(["mobile/d.ts"]);
++  });
++
+   it("fails loudly for a missing CI base and bootstraps when the base predates the file", () => {
+     expect(() => allowlistGrowth([], "missing", true, () => null)).toThrow("CI must fetch");
+     expect(allowlistGrowth([], "missing", false, () => null)).toEqual([]);
+diff --git a/src/app/api/v1/profile-subject-conformance.test.ts b/src/app/api/v1/profile-subject-conformance.test.ts
+index f74d6bac8..089ac0c0c 100644
+--- a/src/app/api/v1/profile-subject-conformance.test.ts
++++ b/src/app/api/v1/profile-subject-conformance.test.ts
+@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+ import path from "node:path";
+ import ts from "typescript";
+ import { describe, expect, it } from "vitest";
++import { forkedHistory, ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * Profile Subject conformance ratchet (#1564).
+@@ -284,12 +285,15 @@ function baselineGrowth(current: Baseline, baseRef: string, ci: boolean, readGit
+     if (ci) throw new Error(`Cannot resolve ${baseRef}; CI must fetch the base branch for the Profile Subject ratchet`);
+     return [];
+   }
+-  const files = readGit("ls-tree", "--name-only", baseRef, "--", SELF);
+-  if (files === null) throw new Error(`Cannot inspect ${baseRef}:${SELF}`);
++  // Where this branch left the base, not its tip: a list the base shrank since
++  // is not growth on this branch (see ~/test/ratchet-base).
++  const base = ratchetBase(baseRef, readGit);
++  const files = readGit("ls-tree", "--name-only", base, "--", SELF);
++  if (files === null) throw new Error(`Cannot inspect ${base}:${SELF}`);
+   // Bootstrap only when the reachable base predates the test itself.
+   if (!files.trim()) return [];
+-  const source = readGit("show", `${baseRef}:${SELF}`);
+-  if (source === null) throw new Error(`Cannot read ${baseRef}:${SELF}`);
++  const source = readGit("show", `${base}:${SELF}`);
++  if (source === null) throw new Error(`Cannot read ${base}:${SELF}`);
+   const baseline = parseBaseline(source);
+   return [
+     ...Object.entries(current.routes).filter(([file, count]) => count > (baseline.routes[file] ?? 0))
+@@ -396,6 +400,14 @@ describe("Profile Subject baseline", () => {
+       .toEqual(["old/route.ts", "new/route.ts"]);
+     expect(baselineGrowth({ routes: { "old/route.ts": 1 }, exemptions: {} }, "base", true, readGit)).toEqual([]);
+   });
++  it("compares against where the branch forked, not a base tip that shrank since", () => {
++    const readGit = forkedHistory(SELF, baseSource,
++      "const HAND_RESOLVED_SUBJECT_ROUTES = {}; const USERNAME_READ_EXEMPTIONS = {};");
++    const current = { routes: { "old/route.ts": 2 }, exemptions: { "exempt/route.ts": "checks availability" } };
++    expect(baselineGrowth(current, "base", true, readGit)).toEqual([]);
++    expect(baselineGrowth({ routes: { "new/route.ts": 1 }, exemptions: { "new/route.ts": "x" } }, "base", true, readGit))
++      .toEqual(["new/route.ts", "exemption:new/route.ts"]);
++  });
+   it("rejects a new exemption", () => {
+     expect(baselineGrowth({ routes: {}, exemptions: { "new/route.ts": "reason" } }, "base", true, fakeGit(baseSource)))
+       .toEqual(["exemption:new/route.ts"]);
+@@ -421,6 +433,7 @@ describe("Profile Subject baseline", () => {
+       expect(() => baselineGrowth(CURRENT, "base", true, fakeGit(source))).toThrow();
+     }
+   });
++  // Walks and parses every v1 route; the timeout bounds a hang, not speed.
+   it("matches the current hand-resolving routes exactly", () => {
+     const files = walk("src/app/api/v1");
+     expect(files.length).toBeGreaterThan(0);
+@@ -434,7 +447,7 @@ describe("Profile Subject baseline", () => {
+         `${file} is exempted but no longer reads username`).toBeGreaterThan(0);
+     }
+     expect(parseBaseline(readFileSync(path.join(ROOT, SELF), "utf8"))).toEqual(CURRENT);
+-  });
++  }, 120_000);
+   it("never grows against the base branch", () => {
+     expect(baselineGrowth(CURRENT, BASE_REF, Boolean(process.env.CI))).toEqual([]);
+   });
+diff --git a/src/app/api/v1/route-conformance.test.ts b/src/app/api/v1/route-conformance.test.ts
+index 662ef4f0f..0a2879f04 100644
+--- a/src/app/api/v1/route-conformance.test.ts
++++ b/src/app/api/v1/route-conformance.test.ts
+@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
+ import path from "node:path";
+ import ts from "typescript";
+ import { describe, expect, it } from "vitest";
++import { forkedHistory, ratchetBase } from "~/test/ratchet-base";
+ 
+ const ROOT = process.cwd();
+ const SELF = "src/app/api/v1/route-conformance.test.ts";
+@@ -159,12 +160,15 @@ function baselineGrowth(current: Record<string, number>, baseRef: string, ci: bo
+     if (ci) throw new Error(`Cannot resolve ${baseRef}; CI must fetch the base branch for the v1 route conformance ratchet`);
+     return [];
+   }
+-  const files = readGit("ls-tree", "--name-only", baseRef, "--", SELF);
+-  if (files === null) throw new Error(`Cannot inspect ${baseRef}:${SELF}`);
++  // Where this branch left the base, not its tip: a list the base shrank since
++  // is not growth on this branch (see ~/test/ratchet-base).
++  const base = ratchetBase(baseRef, readGit);
++  const files = readGit("ls-tree", "--name-only", base, "--", SELF);
++  if (files === null) throw new Error(`Cannot inspect ${base}:${SELF}`);
+   // Bootstrap only when the reachable base predates the test itself.
+   if (!files.trim()) return [];
+-  const source = readGit("show", `${baseRef}:${SELF}`);
+-  if (source === null) throw new Error(`Cannot read ${baseRef}:${SELF}`);
++  const source = readGit("show", `${base}:${SELF}`);
++  if (source === null) throw new Error(`Cannot read ${base}:${SELF}`);
+   const baseline = parseBaseline(source);
+   return Object.entries(current).filter(([file, count]) => count > (baseline[file] ?? 0)).map(([file]) => file);
+ }
+@@ -222,6 +226,12 @@ describe("v1 route baseline", () => {
+     expect(baselineGrowth({ "old/route.ts": 2, "new/route.ts": 1 }, "base", true, readGit)).toEqual(["new/route.ts"]);
+     expect(baselineGrowth({}, "base", true, readGit)).toEqual([]);
+   });
++  it("compares against where the branch forked, not a base tip that shrank since", () => {
++    const readGit = forkedHistory(SELF, 'const RAW_WRITE_ROUTES = {"old/route.ts": 2};', "const RAW_WRITE_ROUTES = {};");
++    expect(baselineGrowth({ "old/route.ts": 2 }, "base", true, readGit)).toEqual([]);
++    expect(baselineGrowth({ "old/route.ts": 3, "new/route.ts": 1 }, "base", true, readGit))
++      .toEqual(["old/route.ts", "new/route.ts"]);
++  });
+   it("rejects additional writes in an exempted route even if its allowance increases", () => {
+     const file = "old/route.ts";
+     const readGit = (...args: string[]) => args[0] === "show"
+@@ -260,6 +270,7 @@ describe("v1 route baseline", () => {
+     }
+     expect(parseBaseline("const RAW_WRITE_ROUTES = {}; const other = ['ignored'];")).toEqual({});
+   });
++  // Walks and parses every v1 route; the timeout bounds a hang, not speed.
+   it("matches the current raw-writing routes exactly", () => {
+     const files = routeFiles("src/app/api/v1");
+     expect(files.length).toBeGreaterThan(0);
+@@ -268,7 +279,7 @@ describe("v1 route baseline", () => {
+     expect(Object.fromEntries(results.filter((result) => result.writes.length > 0)
+       .map((result) => [result.file, result.writes.length]))).toEqual(RAW_WRITE_ROUTES);
+     expect(parseBaseline(readFileSync(path.join(ROOT, SELF), "utf8"))).toEqual(RAW_WRITE_ROUTES);
+-  });
++  }, 120_000);
+   it("never grows against the base branch", () => {
+     expect(baselineGrowth(RAW_WRITE_ROUTES, BASE_REF, Boolean(process.env.CI))).toEqual([]);
+   });
+diff --git a/src/app/auth-connection-conformance.test.ts b/src/app/auth-connection-conformance.test.ts
+index 3f4c6cdcb..8c7e7cc40 100644
+--- a/src/app/auth-connection-conformance.test.ts
++++ b/src/app/auth-connection-conformance.test.ts
+@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
+ import { execFileSync } from "node:child_process";
+ import nodePath from "node:path";
+ import * as ts from "typescript";
++import { ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * A deferred auth read must also be a *declared* one.
+@@ -1043,7 +1044,8 @@ const git = (...args: string[]): string | null => {
+ const exemptionsOnBase = (): Set<string> | "unreachable" | "introduced" => {
+   if (git("rev-parse", "--verify", `${BASE_REF}^{commit}`) === null) return "unreachable";
+ 
+-  const source = git("show", `${BASE_REF}:${SELF}`);
++  // Where this branch left the base, not its tip (see ~/test/ratchet-base).
++  const source = git("show", `${ratchetBase(BASE_REF)}:${SELF}`);
+   if (source === null) return "introduced";
+ 
+   return parseExemptions(source) ?? "introduced";
+diff --git a/src/components/media/poster-slot-conformance.test.ts b/src/components/media/poster-slot-conformance.test.ts
+index 069e179dd..81d45127c 100644
+--- a/src/components/media/poster-slot-conformance.test.ts
++++ b/src/components/media/poster-slot-conformance.test.ts
+@@ -5,6 +5,7 @@ import nodePath from "node:path";
+ import ts from "typescript";
+ 
+ import { POSTER_TIER_CLASSES, POSTER_TIER_WIDTHS } from "./PosterSlot";
++import { ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * A fixed poster width must come from the Poster Slot module, not from a class
+@@ -534,7 +535,8 @@ it("the exemptions never grow", () => {
+     return;
+   }
+ 
+-  const source = git("show", `${BASE_REF}:${SELF}`);
++  // Where this branch left the base, not its tip (see ~/test/ratchet-base).
++  const source = git("show", `${ratchetBase(BASE_REF)}:${SELF}`);
+   if (source === null) return;
+ 
+   /**
+diff --git a/src/server/actions/action-result-conformance.test.ts b/src/server/actions/action-result-conformance.test.ts
+index cd35a2baf..9ddff45eb 100644
+--- a/src/server/actions/action-result-conformance.test.ts
++++ b/src/server/actions/action-result-conformance.test.ts
+@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
+ import { readFileSync, readdirSync } from "node:fs";
+ import { execFileSync } from "node:child_process";
+ import path from "node:path";
++import { ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * Server actions are the repo's mutation surface, and their outcomes used to be
+@@ -276,7 +277,8 @@ const parseBaseline = (source: string): Record<string, string[]> | null => {
+ const baselineOnBase = (): Record<string, string[]> | null => {
+   let source: string;
+   try {
+-    source = execFileSync("git", ["show", `${BASE_REF}:${SELF}`], {
++    // Where this branch left the base, not its tip (see ~/test/ratchet-base).
++    source = execFileSync("git", ["show", `${ratchetBase(BASE_REF)}:${SELF}`], {
+       cwd: ROOT,
+       encoding: "utf8",
+       stdio: ["ignore", "pipe", "ignore"],
+diff --git a/src/server/auth/acting-member-conformance.test.ts b/src/server/auth/acting-member-conformance.test.ts
+index 9ca557b05..d5566f0bd 100644
+--- a/src/server/auth/acting-member-conformance.test.ts
++++ b/src/server/auth/acting-member-conformance.test.ts
+@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
+ import { describe, expect, it } from "vitest";
+ import { countInlineMemberReads, isMemberDecisionScope, type InlineMemberReads } from "~/test/member-resolution-census";
+ import baseline from "./acting-member-baseline.json";
++import { ratchetBase } from "~/test/ratchet-base";
+ 
+ const ADAPTERS: Record<string, string> = baseline.adapters;
+ const files = () => execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "src"], { encoding: "utf8" }).trim().split("\n").filter(isMemberDecisionScope);
+@@ -70,13 +71,15 @@ describe("Acting Member migration ratchet", () => {
+       if (process.env.CI) throw new Error(`CI must fetch ${base}`);
+       return;
+     }
++    // Where this branch left the base, not its tip (see ~/test/ratchet-base).
++    const at = ratchetBase(base);
+     let previous: typeof baseline;
+     const path = "src/server/auth/acting-member-baseline.json";
+-    const exists = git("ls-tree", "--name-only", base, path).trim();
+-    if (exists) previous = JSON.parse(git("show", `${base}:${path}`)) as typeof baseline;
++    const exists = git("ls-tree", "--name-only", at, path).trim();
++    if (exists) previous = JSON.parse(git("show", `${at}:${path}`)) as typeof baseline;
+     else {
+-      const paths = git("ls-tree", "-r", "--name-only", base, "src").trim().split("\n").filter(isMemberDecisionScope);
+-      previous = { ...baseline, files: census((file) => git("show", `${base}:${file}`), paths) };
++      const paths = git("ls-tree", "-r", "--name-only", at, "src").trim().split("\n").filter(isMemberDecisionScope);
++      previous = { ...baseline, files: census((file) => git("show", `${at}:${file}`), paths) };
+     }
+     const inlineFiles: Record<string, InlineMemberReads> = baseline.files;
+     for (const [file, counts] of Object.entries(inlineFiles)) {
+diff --git a/src/server/db/review-visibility-conformance.test.ts b/src/server/db/review-visibility-conformance.test.ts
+index 0bb29bbbf..28c76faf1 100644
+--- a/src/server/db/review-visibility-conformance.test.ts
++++ b/src/server/db/review-visibility-conformance.test.ts
+@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
+ import { execFileSync } from "node:child_process";
+ import nodePath from "node:path";
+ import ts from "typescript";
++import { ratchetBase } from "~/test/ratchet-base";
+ 
+ /**
+  * A scan of the `review` table must say whether the rows it reads are publicly
+@@ -639,7 +640,8 @@ it("the baseline never grows", () => {
+ 
+   // Reachable, but predating this file: every entry is the starting point
+   // rather than growth.
+-  const source = git("show", `${BASE_REF}:${SELF}`);
++  // Where this branch left the base, not its tip (see ~/test/ratchet-base).
++  const source = git("show", `${ratchetBase(BASE_REF)}:${SELF}`);
+   if (source === null) return;
+ 
+   const base = parseBaseline(source);
+diff --git a/src/server/list-summary/read-boundary-conformance.test.ts b/src/server/list-summary/read-boundary-conformance.test.ts
+index e9466c978..796ef3d21 100644
+--- a/src/server/list-summary/read-boundary-conformance.test.ts
++++ b/src/server/list-summary/read-boundary-conformance.test.ts
+@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
+ import nodePath from "node:path";
+ 
+ import ts from "typescript";
+-import { describe, expect, it } from "vitest";
++import { beforeAll, describe, expect, it } from "vitest";
+ 
+ /**
+  * The single List Summary read boundary, enforced.
+@@ -93,7 +93,7 @@ const schemaUsage = (file: string, source: string): SchemaUsage => {
+     file,
+     source,
+     ts.ScriptTarget.Latest,
+-    true,
++    /* setParentNodes */ false,
+     ts.ScriptKind.TSX,
+   );
+ 
+@@ -122,16 +122,22 @@ const schemaUsage = (file: string, source: string): SchemaUsage => {
+   return usage;
+ };
+ 
+-const listTableImporters = (repo: Repo): string[] =>
+-  repo
+-    .files()
+-    .filter((file) => !file.startsWith(BOUNDARY_DIR))
+-    .filter((file) => schemaUsage(file, repo.read(file)).importsListTable);
++interface ScannedFile extends SchemaUsage {
++  file: string;
++}
++
++/** Each file read and analysed once; the checks below filter the result. */
++const scan = (repo: Repo): ScannedFile[] =>
++  repo.files().map((file) => ({ file, ...schemaUsage(file, repo.read(file)) }));
+ 
+-const namespaceImporters = (repo: Repo): string[] =>
+-  repo
+-    .files()
+-    .filter((file) => schemaUsage(file, repo.read(file)).importsSchemaNamespace);
++const listTableImporters = (scanned: ScannedFile[]): string[] =>
++  scanned
++    .filter(({ file }) => !file.startsWith(BOUNDARY_DIR))
++    .filter((entry) => entry.importsListTable)
++    .map(({ file }) => file);
++
++const namespaceImporters = (scanned: ScannedFile[]): string[] =>
++  scanned.filter((entry) => entry.importsSchemaNamespace).map(({ file }) => file);
+ 
+ /**
+  * Every production module allowed to import the `list` table, and why.
+@@ -176,15 +182,32 @@ const ALLOWED_LIST_TABLE_READERS: Record<string, string> = {
+   "src/app/api/search/route.ts": "search-hit-row",
+ };
+ 
++/**
++ * Generous on purpose: this bound exists to catch a hang, not to police speed.
++ * Under `test:coverage` on a loaded Buildkite agent the walk overran the 5s
++ * default while passing everywhere else.
++ */
++const WALK_TIMEOUT = 120_000;
++
+ describe("the List Summary read boundary", () => {
++  /**
++   * The walk runs once, in `beforeAll`. Each check used to walk, read and
++   * parse `src/` again inside its own 5s budget — three full walks per run.
++   * Same note as `~/server/db/sql-identifier-conformance.test.ts`.
++   */
++  let real: ScannedFile[] = [];
++  beforeAll(() => {
++    real = scan(realRepo);
++  }, WALK_TIMEOUT);
++
+   it("finds the tree rather than trusting a hardcoded list", () => {
+-    const files = realRepo.files();
++    const files = real.map(({ file }) => file);
+     expect(files).toContain("src/server/list-summary/index.ts");
+     expect(files.some((file) => file.endsWith(".test.ts"))).toBe(false);
+   });
+ 
+   it("allows no new production module to touch the list table", () => {
+-    const unlisted = listTableImporters(realRepo)
++    const unlisted = listTableImporters(real)
+       .filter((file) => !(file in ALLOWED_LIST_TABLE_READERS))
+       .map(
+         (file) =>
+@@ -195,7 +218,7 @@ describe("the List Summary read boundary", () => {
+   });
+ 
+   it("claims no reader that is gone", () => {
+-    const current = new Set(listTableImporters(realRepo));
++    const current = new Set(listTableImporters(real));
+     const stale = Object.keys(ALLOWED_LIST_TABLE_READERS).filter(
+       (file) => !current.has(file),
+     );
+@@ -206,13 +229,13 @@ describe("the List Summary read boundary", () => {
+   it("bans namespace imports of the schema module in production", () => {
+     // `import * as schema` would hide the `list` binding from the name check.
+     // Only src/test/database.ts uses one, and src/test is outside this walk.
+-    expect(namespaceImporters(realRepo)).toEqual([]);
++    expect(namespaceImporters(real)).toEqual([]);
+   });
+ });
+ 
+ describe("the analysis", () => {
+   const usageOf = (source: string): string[] =>
+-    listTableImporters(syntheticRepo({ "src/x.ts": source }));
++    listTableImporters(scan(syntheticRepo({ "src/x.ts": source })));
+ 
+   it("flags a named import of the list table", () => {
+     expect(
+@@ -250,9 +273,11 @@ describe("the analysis", () => {
+   it("sees a namespace import of the schema module", () => {
+     expect(
+       namespaceImporters(
+-        syntheticRepo({
+-          "src/x.ts": `import * as schema from "~/server/db/schema";`,
+-        }),
++        scan(
++          syntheticRepo({
++            "src/x.ts": `import * as schema from "~/server/db/schema";`,
++          }),
++        ),
+       ),
+     ).toEqual(["src/x.ts"]);
+   });
+@@ -260,9 +285,11 @@ describe("the analysis", () => {
+   it("never flags the boundary module itself", () => {
+     expect(
+       listTableImporters(
+-        syntheticRepo({
+-          "src/server/list-summary/index.ts": `import { list } from "~/server/db/schema";`,
+-        }),
++        scan(
++          syntheticRepo({
++            "src/server/list-summary/index.ts": `import { list } from "~/server/db/schema";`,
++          }),
++        ),
+       ),
+     ).toEqual([]);
+   });
+diff --git a/src/test/ratchet-base.test.ts b/src/test/ratchet-base.test.ts
+new file mode 100644
+index 000000000..46033f8ef
+--- /dev/null
++++ b/src/test/ratchet-base.test.ts
+@@ -0,0 +1,76 @@
++// @vitest-environment node
++import { execFileSync } from "node:child_process";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import { afterAll, beforeAll, describe, expect, it } from "vitest";
++
++import { MERGE_BASE, forkedHistory, ratchetBase, type ReadGit } from "./ratchet-base";
++
++describe("ratchetBase", () => {
++  it("answers the merge-base of HEAD and the base ref", () => {
++    const calls: string[][] = [];
++    const git: ReadGit = (...args) => (calls.push(args), `${MERGE_BASE}\n`);
++    expect(ratchetBase("origin/main", git)).toBe(MERGE_BASE);
++    expect(calls).toEqual([["merge-base", "HEAD", "origin/main"]]);
++  });
++
++  it("falls back to the base ref when there is no merge-base", () => {
++    expect(ratchetBase("origin/main", () => null)).toBe("origin/main");
++    expect(ratchetBase("origin/main", () => "")).toBe("origin/main");
++    expect(ratchetBase("origin/main", () => "not a commit\n")).toBe("origin/main");
++  });
++
++  it("fakes a stale branch: the merge-base and the tip answer differently", () => {
++    const git = forkedHistory("f.ts", "old", "new");
++    expect(git("show", `${ratchetBase("origin/main", git)}:f.ts`)).toBe("old");
++    expect(git("show", "origin/main:f.ts")).toBe("new");
++  });
++});
++
++/**
++ * The same questions against a real repository, because what matters is what
++ * git answers, not what a fake was told to.
++ */
++describe("ratchetBase against real history", () => {
++  let dir = "";
++  const git = (...args: string[]) =>
++    execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
++  const readIn: ReadGit = (...args) => {
++    try { return git(...args); } catch { return null; }
++  };
++  const commit = (content: string) => {
++    writeFileSync(path.join(dir, "allowlist.ts"), content);
++    git("add", "allowlist.ts");
++    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", content);
++    return git("rev-parse", "HEAD");
++  };
++
++  beforeAll(() => {
++    dir = mkdtempSync(path.join(tmpdir(), "ratchet-base-"));
++    git("init", "-q", "-b", "main");
++  });
++  afterAll(() => rmSync(dir, { recursive: true, force: true }));
++
++  it("reads a stale branch's baseline from where it forked, and a queue batch's from the tip", () => {
++    const fork = commit("a b c");
++    git("checkout", "-q", "-b", "feature");
++    commit("a b c // unrelated change");
++    git("checkout", "-q", "main");
++    const tip = commit("a b"); // main shrank the list after the branch was cut
++    git("checkout", "-q", "feature");
++
++    const base = ratchetBase("main", readIn);
++    expect(base).toBe(fork);
++    expect(git("show", `${base}:allowlist.ts`)).toBe("a b c");
++
++    // A merge-queue build: the batch sits on top of the base tip.
++    git("checkout", "-q", "-b", "queue", "main");
++    commit("a b // batch");
++    expect(ratchetBase("main", readIn)).toBe(tip);
++  });
++
++  it("falls back to the ref when it does not resolve", () => {
++    expect(ratchetBase("origin/missing", readIn)).toBe("origin/missing");
++  });
++});
+diff --git a/src/test/ratchet-base.ts b/src/test/ratchet-base.ts
+new file mode 100644
+index 000000000..33ccea020
+--- /dev/null
++++ b/src/test/ratchet-base.ts
+@@ -0,0 +1,57 @@
++import { execFileSync } from "node:child_process";
++
++/**
++ * The revision a "may only shrink" ratchet reads its old baseline from.
++ *
++ * A ratchet asks whether THIS branch added an entry. Comparing against the tip
++ * of the base branch asks something else: whether the branch has every removal
++ * `main` made since it was cut. With several agents shrinking the same lists
++ * all day, a branch cut an hour ago "grows" a list it never touched, and its
++ * build goes red for a commit it does not contain (PR #1728, build 2454:
++ * `MOBILE_ENVELOPE_CALLERS` after #1726 shrank it on `main`).
++ *
++ * So the comparison point is `git merge-base HEAD <baseRef>`: where the branch
++ * left the base. On a Mergify merge-queue build the checked-out tree is the
++ * base tip plus the batch, so the merge-base is that tip, which is the same
++ * comparison as before. On `main` it is `HEAD` itself, as before.
++ *
++ * When the merge-base cannot be computed (an unfetched ref, a shallow history),
++ * this returns `baseRef` unchanged. Each ratchet's own `rev-parse` check then
++ * still fails loudly in CI or skips locally, and a resolvable but unrelated
++ * ref still falls back to the stricter tip comparison.
++ */
++export type ReadGit = (...args: string[]) => string | null;
++
++export const readGit: ReadGit = (...args) => {
++  try {
++    return execFileSync("git", args, {
++      cwd: process.cwd(),
++      encoding: "utf8",
++      stdio: ["ignore", "pipe", "ignore"],
++    });
++  } catch {
++    return null;
++  }
++};
++
++export function ratchetBase(baseRef: string, git: ReadGit = readGit): string {
++  const commit = git("merge-base", "HEAD", baseRef)?.trim();
++  return commit && /^[0-9a-f]{7,64}$/.test(commit) ? commit : baseRef;
++}
++
++/**
++ * A fake `readGit` for a branch cut from `baseRef` before the base moved on:
++ * `show` answers from `atMergeBase` at the merge-base and from `atTip` at the
++ * tip. It lets a ratchet's own tests pin the stale-branch case.
++ */
++export const MERGE_BASE = "0123456789abcdef0123456789abcdef01234567";
++export const forkedHistory = (file: string, atMergeBase: string, atTip: string): ReadGit =>
++  (...args) => {
++    switch (args[0]) {
++      case "rev-parse": return `${"f".repeat(40)}\n`;
++      case "merge-base": return `${MERGE_BASE}\n`;
++      case "ls-tree": return `${file}\n`;
++      case "show": return args[1]?.startsWith(`${MERGE_BASE}:`) ? atMergeBase : atTip;
++      default: return null;
++    }
++  };

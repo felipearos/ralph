@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The self-hosted runner on the desktop that also runs the loops
+    # (systemd user unit `ralph-runner`). GitHub-hosted minutes are unavailable
+    # while the account's Actions billing is blocked, and self-hosted minutes
+    # are not billed.
+    runs-on: [self-hosted, ralph]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.x
+
+      # The Codex stages confine filesystem reads with bubblewrap, and the tests
+      # exercise that sandbox for real. Ubuntu's runners ship without it and
+      # restrict the unprivileged user namespaces `bwrap --unshare-user` needs.
+      # The self-hosted runner's host already has both, and no passwordless sudo.
+      - name: Install bubblewrap
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Test
+        run: bun run test

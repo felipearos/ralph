@@ -1,0 +1,292 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Revisión Claude · busca bugs en cada PR — NO bloquea ni despliega
+#
+#  Reemplaza al revisor de Codex que comentaba los PR. Solo revisa los PR de
+#  felipearosr (los suyos y los de los loops de Ralph, que abren con esa cuenta). No revisa estilo ni si
+#  el PR cumple el ticket (eso lo hacen el loop y la persona que revisa): busca
+#  los bugs que una lectura rápida no ve — carreras, caminos de error que se
+#  caen, chequeos de permiso o visibilidad que faltan, datos a medio escribir.
+#
+#  Si el PR toca `src/`, además de leer ejecuta: escribe specs descartables con
+#  los fixtures herméticos de `tests/e2e/fixtures/hermetic.ts` (sin acceso a
+#  Supabase ni a ningún servicio real), recorre las pantallas que el PR cambió,
+#  intenta reproducir lo que sospecha y sube las capturas como artefacto.
+#
+#  Cada hallazgo queda como comentario en la línea, con prioridad P1–P3 en el
+#  mismo formato que usaba Codex. Los loops de Ralph (`review-threads.ts`) ya
+#  leen esos hilos y tienen que contestar cada uno antes de entregar el PR.
+#
+#  Sin credencial no hace nada: el job termina en verde con un aviso. Para
+#  activarlo, un admin agrega UNO de estos secretos en Settings → Secrets and
+#  variables → Actions:
+#    CLAUDE_CODE_OAUTH_TOKEN   `claude setup-token` (cuenta con suscripción)
+#    ANTHROPIC_API_KEY         clave de la API, factura por uso
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Revisión Claude
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Una revisión por PR: si llega otro push, la anterior se cancela. Revisar una
+# cabeza que ya no existe es pagar por comentarios que nadie va a leer.
+concurrency:
+  group: revision-claude-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Lo mínimo para leer el código y comentar el PR. Con GITHUB_TOKEN no hace
+# falta instalar la GitHub App de Claude en la organización.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  revision:
+    name: Revisión de correctitud
+    # Solo los PR de felipearosr, que es también la cuenta con la que abren
+    # PR los loops de Ralph; los del resto del equipo no se revisan. Un
+    # borrador todavía cambia: se revisa cuando se marca listo.
+    if: >-
+      github.event.pull_request.user.login == 'felipearosr' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Credencial de Claude
+        id: credencial
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$OAUTH" ] || [ -n "$API_KEY" ]; then
+            echo "hay=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Sin CLAUDE_CODE_OAUTH_TOKEN ni ANTHROPIC_API_KEY: la revisión se omite."
+            echo "hay=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.credencial.outputs.hay == 'true'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      # Instalar dependencias y Chromium cuesta un par de minutos: solo cuando
+      # el PR toca código de la app, que es lo único que Playwright puede ver.
+      - name: ¿Toca la UI?
+        id: ui
+        if: steps.credencial.outputs.hay == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # La API de archivos y no `gh pr diff`: el diff falla con HTTP 406 en un
+        # PR de más de 300 archivos, justo los que más tocan `src/`. Si la API
+        # falla igual, se corre Playwright con un aviso: saltearlo en silencio
+        # es peor que gastar unos minutos de más.
+        run: |
+          if ! archivos="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+              --paginate --jq '.[].filename')"; then
+            echo "::warning::No se pudo listar los archivos del PR; se corre Playwright por las dudas."
+            echo "playwright=si" >> "$GITHUB_OUTPUT"
+          elif grep -qE '^src/.*\.(tsx?|css)$' <<<"$archivos"; then
+            echo "playwright=si" >> "$GITHUB_OUTPUT"
+          else
+            echo "playwright=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 22.12.0, igual que `ci.yml` y `netlify.toml`.
+      - uses: actions/setup-node@v4
+        if: steps.ui.outputs.playwright == 'si'
+        with:
+          node-version: "22.12.0"
+          cache: npm
+
+      - name: Dependencias y navegador
+        id: dependencias
+        if: steps.ui.outputs.playwright == 'si'
+        # Sin dependencias la revisión igual lee el diff; Playwright le va a
+        # fallar y lo va a decir, pero el check no se pone en rojo por eso.
+        continue-on-error: true
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium-headless-shell
+
+      - name: Revisar
+        id: revisar
+        if: steps.credencial.outputs.hay == 'true'
+        # Los loops de Ralph esperan este check antes de entregar el PR. Que el
+        # revisor falle (cuota, API caída) no dice nada del código, así que no
+        # pone el check en rojo: a lo sumo, esa cabeza queda sin revisar.
+        continue-on-error: true
+        # Menor que el del job: si el revisor se cuelga, se corta este paso y
+        # no el job, así el check queda en verde y las capturas igual se suben.
+        timeout-minutes: 30
+        uses: anthropics/claude-code-action@v1
+        # Lo mismo que el job `e2e` de `ci.yml`: un host que no existe como
+        # segundo candado, y el Chromium empaquetado.
+        env:
+          VITE_SUPABASE_URL: "https://ci.supabase.invalid"
+          VITE_SUPABASE_ANON_KEY: "anon-key-de-ci"
+          E2E_BUNDLED_CHROMIUM: "1"
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Cada comentario se publica tal cual: el prompt ya exige un escenario
+          # de falla concreto, que es el filtro que importa.
+          classify_inline_comments: "false"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR: ${{ github.event.pull_request.number }}
+            BASE: ${{ github.event.pull_request.base.ref }}
+            PLAYWRIGHT: ${{ steps.ui.outputs.playwright }}
+            CORRIDA: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Sos la revisión de correctitud de este PR. Buscás bugs, no calificás el cambio.
+
+            1. Leé el diff con `gh pr diff ${{ github.event.pull_request.number }}` y el
+               código que ese diff llama y el que lo llama (Read, Grep, Glob). El
+               checkout es el PR ya mezclado con su base.
+            2. Leé los comentarios de revisión que ya existen:
+               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate`.
+               No repitas un hallazgo que ya está en un hilo, contestado o no. Si una
+               respuesta lo refutó con razón, no lo vuelvas a levantar.
+            3. Buscá la entrada, el intercalado o la falla que rompe el cambio:
+               carreras y check-then-act; caminos de error o vacíos que se caen o se
+               tragan el error; un chequeo de permiso, pertenencia o visibilidad que
+               falta o que se aplica en un solo camino; bordes y off-by-one; estado
+               escrito a medias; un reintento o clave de idempotencia que no se
+               sostiene; una prueba que pasa sin probar el comportamiento.
+               Estilo y nombres no son tuyos. Un bug que ya estaba en la base cuenta
+               solo si este diff lo vuelve alcanzable o peor.
+            4. Por cada hallazgo, UN comentario en la línea con
+               `mcp__github_inline_comment__create_inline_comment`, anclado a una
+               línea del diff por la que pasa el bug. El cuerpo empieza exactamente
+               con la insignia de su prioridad, en este formato:
+                 ![P1 Badge](https://img.shields.io/badge/P1-red?style=flat)
+                 ![P2 Badge](https://img.shields.io/badge/P2-orange?style=flat)
+                 ![P3 Badge](https://img.shields.io/badge/P3-yellow?style=flat)
+               seguida de un título en **negrita** y del escenario de falla: la
+               entrada o el intercalado concreto, qué pasa y qué debería pasar.
+               P1: comportamiento incorrecto, pérdida o exposición de datos, o una
+               caída en un camino real. P2: incorrecto en un camino que se va a
+               recorrer, o un chequeo que se puede saltar. P3: defecto real de bajo
+               impacto. Sin escenario que puedas enunciar es una sospecha: dejala
+               afuera.
+            5. Si PLAYWRIGHT es `si`, además de leer, ejecutá (si es `no`, saltá
+               este paso). Escribí specs descartables SOLO en
+               `tests/e2e/_revision-claude/` (no se commitean) para recorrer las
+               pantallas que el diff cambió y para reproducir cada sospecha que
+               dependa del navegador. Leé primero `tests/e2e/fixtures/hermetic.ts`:
+               importá `test`, `expect`, `stubEmptyTables` y
+               `stubAuthenticatedSession` de `../fixtures/hermetic`; CADA test
+               recibe `escapedRequests` (es el candado: falla si algo sale a la
+               red), llama `stubEmptyTables(page)` primero y
+               `stubAuthenticatedSession(page, { preAuthenticated: true, ... })`
+               después, y stubea con `page.route` las tablas cuyos datos importen:
+               un array, salvo cuando la petición trae
+               `Accept: application/vnd.pgrst.object+json` (`.single()`), que
+               espera UN objeto, o un 406 `{"code":"PGRST116"}` si no hay fila.
+               `stubEmptyTables` responde `[]` también a esas: una pantalla que
+               falla por eso es el stub, no un hallazgo. Corré
+               `npx playwright test tests/e2e/_revision-claude --retries=0`.
+               Guardá capturas en `tests/e2e/_revision-claude/capturas/<nombre>.png`.
+               Un error de consola, una pantalla que no monta o un flujo que se
+               rompe es un hallazgo; un stub que te faltó no lo es. Si un hallazgo
+               quedó reproducido, decilo («Reproducido con Playwright»), nombrá la
+               captura y enlazá el artefacto `revision-claude-capturas` de
+               CORRIDA. No le dediques más de unos 15 minutos.
+            6. No publiques comentario general ni resumen. Si no encontrás nada, no
+               comentes nada: el paso siguiente del workflow publica el resultado.
+
+            Escribí en español; los identificadores de código van tal cual.
+          claude_args: |
+            --model claude-opus-5-5
+            --effort high
+            --max-turns 90
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Read,Grep,Glob,Write(./tests/e2e/_revision-claude/**),Edit(./tests/e2e/_revision-claude/**),Bash(npx playwright test tests/e2e/_revision-claude:*)"
+          # Levantar Vite y correr un spec pasa del límite por defecto de Bash.
+          settings: '{"env": {"BASH_DEFAULT_TIMEOUT_MS": "300000", "BASH_MAX_TIMEOUT_MS": "600000"}}'
+
+      - name: Guardar capturas
+        if: always() && steps.ui.outputs.playwright == 'si'
+        uses: actions/upload-artifact@v4
+        with:
+          name: revision-claude-capturas
+          path: tests/e2e/_revision-claude/capturas/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Un solo comentario por PR, que cada corrida actualiza: dice si hubo
+      # hallazgos, si no hubo, o si la revisión no pudo correr. Sin esto, «sin
+      # comentarios» no distingue una cabeza limpia de una que nadie revisó.
+      # No lo escribe Claude: lo cuenta el workflow desde los hilos.
+      - name: Resultado en el PR
+        if: always() && steps.credencial.outputs.hay == 'true'
+        # Informar no puede trabar la entrega: si publicar falla, el check sigue verde.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RESULTADO: ${{ steps.revisar.outcome }}
+          PLAYWRIGHT: ${{ steps.ui.outputs.playwright }}
+          DEPENDENCIAS: ${{ steps.dependencias.outcome }}
+          CORRIDA: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Sin esto, un `gh` que falla dentro de `gh … | jq -s` pasa por éxito.
+          set -o pipefail
+          marca='<!-- revision-claude -->'
+          corta="${SHA:0:8}"
+          # Una lectura fallida no es «sin hallazgos»: se dice que no se pudo leer.
+          if ! hilos="$(gh api "repos/$REPO/pulls/$PR/comments" --paginate \
+              --jq '.[] | {id, in_reply_to_id, login: .user.login, sha: .original_commit_id, cuerpo: (.body | gsub("\n"; " "))}' \
+              | jq -s .)"; then
+            hilos=""
+          fi
+          contar() { jq "[.[] | select(.login == \"github-actions[bot]\" and .in_reply_to_id == null and $1)] | length" <<<"$hilos"; }
+          if [ -n "$hilos" ]; then
+            total=$(contar ".sha == \"$SHA\"")
+            p1=$(contar ".sha == \"$SHA\" and (.cuerpo | test(\"badge/P1-\"))")
+            p2=$(contar ".sha == \"$SHA\" and (.cuerpo | test(\"badge/P2-\"))")
+            p3=$(contar ".sha == \"$SHA\" and (.cuerpo | test(\"badge/P3-\"))")
+            # Hallazgos de cabezas anteriores que nadie contestó todavía.
+            pendientes=$(jq '[.[] | select(.in_reply_to_id != null) | .in_reply_to_id] as $contestados
+              | [.[] | select(.login == "github-actions[bot]" and .in_reply_to_id == null
+                and .sha != "'"$SHA"'" and (.id as $i | $contestados | index($i) | not))] | length' <<<"$hilos")
+          fi
+          if [ "$RESULTADO" != success ]; then
+            linea="⚠️ **Revisión Claude** sobre \`$corta\`: **no pudo completarse** ($RESULTADO). Esta cabeza queda sin revisar; ver la [corrida]($CORRIDA)."
+          elif [ -z "$hilos" ]; then
+            linea="⚠️ **Revisión Claude** sobre \`$corta\`: terminó, pero **no se pudieron leer los hilos** para contar los hallazgos; mirá los comentarios del PR o la [corrida]($CORRIDA)."
+          elif [ "$total" -eq 0 ]; then
+            linea="✅ **Revisión Claude** sobre \`$corta\`: **sin hallazgos nuevos**."
+          else
+            linea="🔎 **Revisión Claude** sobre \`$corta\`: **$total hallazgo(s)** (P1: $p1, P2: $p2, P3: $p3), en los hilos de este PR."
+          fi
+          if [ -n "$hilos" ] && [ "$pendientes" -gt 0 ]; then
+            linea="$linea Quedan **$pendientes hallazgo(s) sin contestar** de cabezas anteriores."
+          fi
+          if [ "$PLAYWRIGHT" != si ]; then
+            pw="Playwright: no corrió (el PR no toca \`src/\`)."
+          elif [ "$DEPENDENCIAS" != success ]; then
+            pw="Playwright: **no se pudo instalar** ($DEPENDENCIAS); la revisión solo leyó el código. Ver la [corrida]($CORRIDA)."
+          else
+            # Lo que Playwright dejó, no lo que pudo haber hecho.
+            capturas=$(find tests/e2e/_revision-claude/capturas -name '*.png' 2>/dev/null | wc -l)
+            if [ "$capturas" -gt 0 ]; then
+              pw="Playwright: corrió y dejó $capturas captura(s) en el artefacto \`revision-claude-capturas\` de la [corrida]($CORRIDA)."
+            else
+              pw="Playwright: estaba disponible, pero la revisión no dejó capturas."
+            fi
+          fi
+          printf '%s\n%s\n\n%s\n' "$marca" "$linea" "$pw" > resultado.md
+          id="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marca\"))) | .id" | tail -n 1)" || id=""
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@resultado.md >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@resultado.md >/dev/null
+          fi

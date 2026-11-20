@@ -1,0 +1,49 @@
+{
+  "repo": "example-org/acme-intake",
+  "owner": "felipearosr",
+  "baseBranch": "main",
+  "displayName": "Acme intake",
+  "secrets": {
+    "runner": "doppler",
+    "project": "acme-intake",
+    "config": "prd",
+    "withhold": []
+  },
+  "refuseFiles": [],
+  "envCheck": [],
+  "requiredChecks": [],
+  "gates": {},
+  "promptFragment": ".ralph/prompt.md",
+  "coderFragment": ".ralph/coder.md",
+  "plan": ".ralph/plan.md",
+  "journal": {
+    "dir": "journal/acme-intake"
+  },
+  "appLabels": { "backoffice": "acme-backoffice", "pwa": "acme-pwa" },
+  "clerk": {
+    "mode": "shadow",
+    "prRepos": ["example-org/acme-backoffice", "example-org/acme-pwa"],
+    "channel": "C0TESTCHAN1",
+    "shadowCanvas": "F0SHADOWCV1",
+    "operator": "U0OPERATOR1",
+    "kpiReport": {
+      "mode": "draft",
+      "recipients": ["U0RECIPNT1", "U0RECIPNT2"],
+      "time": "09:00",
+      "timezone": "America/Santiago",
+      "weekdays": true,
+      "quietDays": 7
+    },
+    "jira": {
+      "site": "example.atlassian.net",
+      "project": "OA",
+      "intakeProject": "OAI"
+    }
+  },
+  "loops": [
+    {
+      "name": "clara",
+      "role": "clerk"
+    }
+  ]
+}

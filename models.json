@@ -1,0 +1,407 @@
+{
+  "$comment": [
+    "The model lineup for every stage of the loop. `ralph/models.ts` resolves it;",
+    "`ralph/README.md` documents it. Change a model HERE, not in a script.",
+    "",
+    "A block is a COMPLETE lineup: naming a loop means spelling out all five",
+    "stages, so a block can be read on its own without diffing it against",
+    "`default`. `default` is what a loop without its own block runs.",
+    "",
+    "Loop blocks nest under their PROJECT id, because loop names repeat across",
+    "projects: { \"loggd\": { \"ralph\": {…}, \"default\": {…} } }. A loop resolves",
+    "<project>.<loop>, then <project>.@<role>, then <project>.default, then the",
+    "top-level `default`. The project id is RALPH_PROJECT_ID (ralph.sh exports",
+    "it), else the directory of the repo's main checkout. A bare loop block at",
+    "the top level is refused.",
+    "",
+    "A @<role> key is the project's default lineup for every loop in that role,",
+    "so a second triager needs no block of its own. It is complete over THAT",
+    "role's stages (`ralph/roles.ts`) and is refused for naming any other: a",
+    "triager names orchestrator, mapper and review.spec, and never an executor.",
+    "The `default` blocks name all five, because every role falls back to them.",
+    "",
+    "`review.correctness` is the third review axis, a bug hunt over the diff. A",
+    "block may leave it out and then runs claude-opus-5-5 at high, so lineups",
+    "written before it existed still resolve; every checked-in block names it.",
+    "",
+    "A clerk resolves `orchestrator` and `code-context` (ralph#499): the model its",
+    "code-context iterations read the application code with, `claude` only, and",
+    "the one stage a block may leave out — it then runs claude-opus-5-5 at high.",
+    "Name it in a project's `@clerk` block; every other block refuses it.",
+    "",
+    "Every stage names a RUNNER as well as a model, because a model is only",
+    "reachable through a harness that can host it:",
+    "",
+    "  orchestrator      claude | codex         owns the iteration",
+    "  executor          opencode | claude | codex  delegate.sh starts the process",
+    "  mapper, review.*  claude | opencode | codex",
+    "",
+    "The executor on the `claude` runner is a `claude -p` process under the rails",
+    "in `ralph/claude-executor-settings.json`, and takes a FULL model id (never",
+    "one of the four aliases) so the usage ledger can attribute what it spent.",
+    "",
+    "On the `claude` runner those last three are named subagents ralph.sh defines",
+    "per run (ralph-mapper, ralph-review-standards, ralph-review-spec,",
+    "ralph-review-correctness), and take an",
+    "alias — opus, sonnet, haiku, fable — or a full claude-… id, plus an optional",
+    "`effort`. On any other runner they are a process `ralph/inspect.sh` starts,",
+    "and take that harness's own model ids: provider/model for opencode, a bare",
+    "id for codex.",
+    "",
+    "A read-only stage on a NON-claude runner may also name `fallback` as an",
+    "ordered array of model ids. provider/model ids run through OpenCode, bare",
+    "ids through Codex, and opus/sonnet/haiku/fable as an ad-hoc Agent call.",
+    "The next route is tried when inspect.sh exits 2 (unavailable) or 4 (failed).",
+    "A legacy scalar alias still loads; new edits write the array form. With no",
+    "field the chain defaults to [\"opus\"]. A claude primary takes no fallback",
+    "because that stage already runs in-session.",
+    "",
+    "The orchestrator runs on Claude Code or Codex. The rendered prompt routes",
+    "Claude inspection stages through external processes when hosted by Codex,",
+    "and each runner reports the same supervisor control sigils.",
+    "",
+    "The environment still wins for a one-off: RALPH_MODEL_<STAGE> and",
+    "RALPH_RUNNER_<STAGE> for every stage, plus RALPH_MODEL_<STAGE>_EFFORT.",
+    "Moving a stage to another harness usually means setting both.",
+    "",
+    "`effort` controls the Claude orchestrator's effort, a named Claude stage",
+    "agent's effort, or any Codex stage's reasoning. opencode takes none, and",
+    "neither does an executor on `claude` (delegate.sh hands it no effort).",
+    "Token accounting accepts every model id. Context occupancy is available",
+    "when `ralph/usage.py` knows the model's context window."
+  ],
+  "default": {
+    "orchestrator": {
+      "runner": "claude",
+      "model": "claude-opus-5",
+      "effort": "medium"
+    },
+    "executor": {
+      "runner": "opencode",
+      "model": "opencode-go/deepseek-v4-flash"
+    },
+    "mapper": {
+      "runner": "opencode",
+      "model": "opencode-go/deepseek-v4-flash",
+      "fallback": [
+        "opencode-go/glm-5.3-flash",
+        "opus"
+      ]
+    },
+    "review": {
+      "standards": {
+        "runner": "opencode",
+        "model": "opencode-go/deepseek-v4-flash",
+        "fallback": [
+          "opencode-go/glm-5.3-flash",
+          "opus"
+        ]
+      },
+      "spec": {
+        "runner": "opencode",
+        "model": "opencode-go/deepseek-v4-flash",
+        "fallback": [
+          "opencode-go/glm-5.3-flash",
+          "opus"
+        ]
+      },
+      "correctness": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "high"
+      }
+    }
+  },
+  "$comment_loops": [
+    "Each named loop in the roster gets a block of its own so it never falls to",
+    "`default` unannounced — that is the rule. WHICH model sits in each seat is",
+    "not: these blocks are the bench, and moving a stage onto another model or",
+    "another runner for a day's comparison is the point of the file. The tests",
+    "pin the rule, not the picks, so an experiment costs one edit here and no",
+    "test edit.",
+    "",
+    "A `@<role>` default satisfies that rule for every loop in its role: the",
+    "stages resolve with source `role`, so nothing falls to `default` unheard,",
+    "and a roster the file cannot read — another project's — needs no block per",
+    "name. A loop that wants its own lineup still overrides the role block",
+    "wholly, exactly as it overrides `default`.",
+    "",
+    "What a comparison needs to stay readable: move one variable at a time and",
+    "hold the rest equal across the loops being compared, or a cheaper day says",
+    "the lineup is cheaper and never which part of it did the work. The",
+    "orchestrator is the usual variable, since it is the stage with an effort",
+    "flag and the one that decides the shape of an iteration; the review axes",
+    "are the usual thing to hold expensive, because the pre-PR review is often",
+    "the only review a change gets, and a reviewer at the executor’s own tier",
+    "shares its blind spots.",
+    "",
+    "Anthropic models run through `claude`, OpenCode Go models through",
+    "`opencode`; the resolver refuses the crossed pair, so that one is not a",
+    "judgement call."
+  ],
+  "loggd": {
+    "ralph": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "executor": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "effort": "xhigh"
+      },
+      "mapper": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "fallback": [
+          "gpt-6-sol",
+          "opus"
+        ],
+        "effort": "xhigh"
+      },
+      "review": {
+        "standards": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "correctness": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        }
+      }
+    },
+    "rafa": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "executor": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "effort": "xhigh"
+      },
+      "mapper": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "fallback": [
+          "gpt-6-sol",
+          "opus"
+        ],
+        "effort": "xhigh"
+      },
+      "review": {
+        "standards": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "correctness": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        }
+      }
+    },
+    "remo": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "executor": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "effort": "xhigh"
+      },
+      "mapper": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "fallback": [
+          "gpt-6-sol",
+          "opus"
+        ],
+        "effort": "xhigh"
+      },
+      "review": {
+        "standards": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "correctness": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        }
+      }
+    },
+    "rulo": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "executor": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "effort": "xhigh"
+      },
+      "mapper": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "fallback": [
+          "gpt-6-sol",
+          "opus"
+        ],
+        "effort": "xhigh"
+      },
+      "review": {
+        "standards": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "correctness": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        }
+      }
+    },
+    "@triager": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      "mapper": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "review": {
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        }
+      }
+    },
+    "@ci-doctor": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "executor": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "effort": "xhigh"
+      },
+      "mapper": {
+        "runner": "codex",
+        "model": "gpt-6-luna",
+        "fallback": [
+          "gpt-6-sol",
+          "opus"
+        ],
+        "effort": "xhigh"
+      },
+      "review": {
+        "standards": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "correctness": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        }
+      }
+    },
+    "@pr-medic": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "executor": {
+        "runner": "claude",
+        "model": "claude-opus-5-5"
+      },
+      "mapper": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "review": {
+        "standards": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        },
+        "correctness": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        }
+      }
+    }
+  },
+  "software-factory": {
+    "@triager": {
+      "orchestrator": {
+        "runner": "claude",
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      "mapper": {
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      },
+      "review": {
+        "spec": {
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "medium"
+        }
+      }
+    }
+  }
+}

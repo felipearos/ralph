@@ -1,0 +1,29 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin e4397977ed662e9bdf18da141d7f8d8f7b804035
+$ git -c advice.detachedHead=false checkout -f e4397977ed662e9bdf18da141d7f8d8f7b804035
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ node_modules/typescript7/bin/tsc --noEmit
+$ bun x vitest run --coverage
+ ❯ src/server/queries/set-state-writes.integration.test.ts (6 tests | 1 failed) 655ms
+ FAIL  src/server/queries/set-state-writes.integration.test.ts > replay-safe set-state writes > leaves one show-follow row after the same follow request is delivered twice
+Error: [vitest] No "revalidateTag" export is defined on the "next/cache" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+vi.mock(import("next/cache"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+ Test Files  1 failed | 555 passed (556)
+      Tests  1 failed | 8193 passed (8194)
+error: script "test:coverage" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

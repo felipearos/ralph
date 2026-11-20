@@ -1,0 +1,40 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-3/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-3/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin f4226b71f5f16d0b788b951dd614170ed2bd4c19
+$ git -c advice.detachedHead=false checkout -f f4226b71f5f16d0b788b951dd614170ed2bd4c19
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ -z "$TMDB_API_KEY" ]; then echo "TMDB_API_KEY not set — skipping Playwright E2E."; exit 0; fi
+$ bash scripts/ensure-signing-key.sh
+$ bash scripts/reap-supabase-stack.sh
+$ bun x vitest run --config vitest.security.config.ts
+$ bun run scripts/seed-e2e.ts
+$ playwright test
+  1) [chromium-authenticated] › e2e/feed-controls.spec.ts:82:3 › Private feed controls @authenticated › category choices persist and reset restores the feed 
+
+    Test timeout of 30000ms exceeded.
+
+    Error: page.goto: Test timeout of 30000ms exceeded.
+    Call log:
+      - navigating to "http://localhost:3000/settings/feed", waiting until "load"
+
+
+  2) [chromium] › e2e/soft-404.spec.ts:103:5 › soft-404 policy › episode: an HTML-limited crawler gets noindex inside <head> 
+
+    Error: the robots meta streamed into <body>; an HTML-limited crawler will not read it there. Has `htmlLimitedBots` been narrowed, or has Next's default list changed? See docs/soft-404-policy.md.
+
+    expect(received).toBeLessThan(expected)
+
+    Expected: < 7003
+    Received:   152715
+
+  1 failed
+error: script "test:e2e" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Uploading artifacts
+$ /usr/local/bin/buildkite-agent artifact upload playwright-report/**/*
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

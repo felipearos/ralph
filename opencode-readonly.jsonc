@@ -1,0 +1,207 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // Rails for the loop's READ-ONLY stages: the mapper and the two review axes,
+  // when their runner is `opencode`. Loaded only via OPENCODE_CONFIG from
+  // ralph/inspect.sh, so it never affects an interactive `opencode` run or the
+  // user's global config.
+  //
+  // The executor's rails live in ralph/opencode-executor.jsonc and are deliberately
+  // looser — it exists to write code. These stages exist to read it, so the
+  // difference is not a tightening of the same list but a different shape:
+  // `edit` is denied outright, and bash is deny-by-default with a short allow
+  // list rather than allow-by-default with a long deny list. A reader that
+  // gains a new capability by default has gained something it was never meant
+  // to have; an executor that does is merely inconvenient.
+  //
+  // The allow list is verbs AND punctuation, because a verb alone does not
+  // make a command a read — see the note above `bash` below. The codex runner
+  // uses its own read-only write sandbox plus bubblewrap's filesystem view;
+  // it does not use this command matcher.
+
+  "model": "{env:RALPH_MODEL_INSPECT}",
+  "autoupdate": false,
+  "share": "disabled",
+
+  "permission": {
+    // DENY EVERY TOOL THAT IS NOT NAMED BELOW. First, because last match wins,
+    // so this is the floor the rest of this block stands on.
+    //
+    // `OPENCODE_CONFIG` does not REPLACE the user's configuration, it merges
+    // into it — the global plugin from `~/.config/opencode/plugins` shows up in
+    // `opencode debug config` under these very rails, which is the proof. So an
+    // MCP server the user registers globally would be registered for this stage
+    // too, `--auto` approves anything left undecided, and a reviewer would
+    // quietly acquire a database. There is no MCP server configured on this
+    // machine today; this is here so that the day one is added is not the day
+    // the read-only stage stops being read-only.
+    //
+    // It is also why the tools this stage DOES have are listed by name below
+    // even where the answer is "allow": under this floor, a name that is not
+    // written down is a tool the stage does not get. The same rule as the rest
+    // of these rails — a reader that gains a capability by default has gained
+    // something it was never meant to have.
+    "*": "deny",
+
+    // THE CONFINEMENT RAIL. `external_directory` is opencode's own gate for a
+    // file tool reaching outside the project: `read`, `grep`, `glob` and `list`
+    // each resolve their path and, when it lands outside the worktree, ask this
+    // permission before doing anything; the shell tool parses its command and
+    // asks it for every directory the command names outside the tree. Denied
+    // here, so the answer is no, once, for all of them.
+    //
+    // This is what closes the hole a denylist could not. The harness needs HOME
+    // to find its own credential store, so `~/.config/gh/hosts.yml`,
+    // `~/.doppler/.doppler.yaml` and every other secret this user owns are
+    // reachable unless something says otherwise — and an earlier revision said
+    // it by listing the stores it had thought of, which is a list that grows
+    // every time this user installs a tool, and which `grep` walked straight
+    // past anyway: `grep`'s own permission patterns match the SEARCH REGEX, not
+    // the path, so no path rule of any shape could scope it. `read`'s match the
+    // path RELATIVE TO THE WORKTREE, so an absolute allow prefix never fires
+    // there either. Both verified by probe. The reviewer is here to read this
+    // checkout; `external_directory` is the one knob that says exactly that.
+    "external_directory": "deny",
+
+    // Belt and braces, inside the tree, where `external_directory` has nothing
+    // to say: a checkout has its own `.env`, and a credential store can be
+    // symlinked into one. Patterns are worktree-RELATIVE and last match wins.
+    "read": {
+      "*": "allow",
+      "**/.local/share/opencode/**": "deny",
+      "**/.codex/**": "deny",
+      "**/.ssh/**": "deny",
+      "**/.aws/**": "deny",
+      "**/.netrc": "deny",
+      "**/auth.json": "deny",
+      "**/credentials*": "deny",
+      ".env": "deny",
+      "**/.env": "deny",
+      ".env.*": "deny",
+      "**/.env.*": "deny"
+    },
+    // Left whole: their permission patterns are the search regex and the glob,
+    // not a path, so an object here would fence the wrong string. Where they
+    // point is `external_directory`'s job, above. There is no `list` tool to
+    // name beside them — opencode's registry is bash, read, edit, glob, grep,
+    // webfetch, websearch, task, todowrite, lsp, skill, write, apply_patch,
+    // question — and `read` is what returns a directory's entries.
+    "glob": "allow",
+    "grep": "allow",
+
+    // The whole point of the stage. A reviewer that can edit is a reviewer
+    // whose findings you cannot trust to be findings.
+    // Redundant under the `"*": "deny"` floor above, and kept anyway: these
+    // four are the capabilities a reviewer must not have, and a rail you can
+    // read is worth more than one you have to derive.
+    "edit": "deny",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "question": "deny",
+
+    // Named so it survives the floor: `todowrite` is the harness's own
+    // scratchpad and touches nothing outside the session.
+    "todowrite": "allow",
+
+    // Denied by name as well as by the floor, because each is a capability
+    // somebody would otherwise be tempted to grant back. `task` is a second
+    // model on rails nobody wrote; `write` and `apply_patch` are `edit` under
+    // other names; `skill` and `lsp` are the two that are merely reads — and a
+    // reviewer that needs a language server to read a diff is reviewing the
+    // wrong thing.
+    "task": "deny",
+    "write": "deny",
+    "apply_patch": "deny",
+    "skill": "deny",
+    "lsp": "deny",
+
+    // inspect.sh passes --auto, which approves anything not denied here.
+    // ORDER MATTERS: last match wins, so the catch-all comes FIRST — the
+    // executor's rails learned that the hard way, with `git commit` running
+    // under a deny list that sat above an allow-all.
+    "bash": {
+      "*": "deny",
+
+      // Reading the change under review, and nothing else. Opening files,
+      // grepping and listing all have a native tool above, and a tool cannot
+      // be made to write the way a shell line can — so bash is left holding
+      // only the thing no tool does, which is git.
+      //
+      // TWO entries per verb, and the space in the second one is the whole
+      // point. `git diff*` is a prefix match on a string, so it also allows
+      // `git diff-evil` — and `alias.diff-evil = !touch X`, which the executor
+      // can write into `.git/config`, is a shell command. Reproduced before
+      // fixing. A verb has to end at a boundary: either the command ends
+      // there, or a space follows it.
+      "git diff": "allow",
+      "git diff *": "allow",
+      "git log": "allow",
+      "git log *": "allow",
+      "git show": "allow",
+      "git show *": "allow",
+      "git status": "allow",
+      "git status *": "allow",
+      "git rev-parse": "allow",
+      "git rev-parse *": "allow",
+      "git merge-base": "allow",
+      "git merge-base *": "allow",
+      "git ls-files": "allow",
+      "git ls-files *": "allow",
+      "git blame": "allow",
+      "git blame *": "allow",
+
+      // LAST, so these win: an allowed verb is still a shell line, and a shell
+      // line can redirect, chain or substitute its way somewhere that is not a
+      // read. `git diff > file` matches `git diff*` and writes; `find . -exec`
+      // runs anything at all, and `HOME` is in this stage's environment so
+      // "anything" includes an authenticated `gh`. A read-only rail made of
+      // verbs alone is not read-only, and denying the metacharacters is what
+      // closes the gap without a sandbox.
+      // `git diff --output=report.md` writes the diff to a file with no shell
+      // metacharacter anywhere in it — the verb is a read, the option is not.
+      // `--ext-diff` and `--textconv` likewise hand the work to a configured
+      // external command.
+      // `git diff --no-index -- /dev/null ~/.local/share/opencode/auth.json`
+      // is a read of any file this user can read, printed into the report, and
+      // it matches `git diff*` with no punctuation and no write. The verb is
+      // not the permission; the arguments are.
+      "*--no-index*": "deny",
+      "*--contents*": "deny",
+
+      "*--output*": "deny",
+      "*--ext-diff*": "deny",
+      "*--textconv*": "deny",
+
+      // A SECOND line, not the first one. A newline is a command separator, so
+      // `git status\ncat ~/.ssh/id_ed25519` reads as an allowed prefix followed
+      // by a shell line that is not a read. It does not in fact get through:
+      // opencode parses the command with a real bash parser and asks this
+      // permission once per parsed command, denying if ANY of them is denied —
+      // probed against the rails as they stood WITHOUT these two rules, and the
+      // multiline form came back refused. They are here because that behaviour
+      // lives in the harness rather than in this file, and the day the parser
+      // changes is not the day to discover the allow list is a prefix match on
+      // a string bash reads as a script.
+      "*\n*": "deny",
+      "*\r*": "deny",
+
+      "*>*": "deny",
+      "*<*": "deny",
+      "*|*": "deny",
+      "*;*": "deny",
+      "*&*": "deny",
+      "*`*": "deny",
+      "*$(*": "deny",
+      "*-exec*": "deny"
+    }
+  },
+
+  "agent": {
+    "ralph-inspector": {
+      "mode": "primary",
+      "description": "Reads a change and reports on it. Never edits, never commits, never runs a gate.",
+      "model": "{env:RALPH_MODEL_INSPECT}",
+      "temperature": 0
+    }
+  }
+}

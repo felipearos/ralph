@@ -1,0 +1,16 @@
+{
+  "repo": "your-org/your-repo",
+  "owner": "your-github-login",
+  "baseBranch": "main",
+  "displayName": "Your Project",
+  "secrets": { "runner": "none", "withhold": [] },
+  "refuseFiles": [".env.local"],
+  "envCheck": [],
+  "requiredChecks": [],
+  "gates": { "test": "npm test", "typecheck": "npx tsc --noEmit" },
+  "promptFragment": ".ralph/prompt.md",
+  "coderFragment": ".ralph/coder.md",
+  "plan": ".ralph/plan.md",
+  "journal": { "dir": "journal/your-project" },
+  "loops": ["ralph"]
+}

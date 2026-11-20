@@ -1,0 +1,50 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin refs/pull/1814/head 97191aa4641edacc05ff67c85d3b3e2073547dc0
+$ git -c advice.detachedHead=false checkout -f 97191aa4641edacc05ff67c85d3b3e2073547dc0
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+$ node ../node_modules/typescript7/bin/tsc --noEmit
+$ node_modules/typescript7/bin/tsc --noEmit
+$ bun x vitest run --coverage
+ ❯ src/server/imports/library-merge.integration.test.ts (19 tests | 1 failed) 11826ms
+ FAIL  src/server/queries/scoreAggregate.deletion.integration.test.ts [ src/server/queries/scoreAggregate.deletion.integration.test.ts ]
+Error: Hook timed out in 10000ms.
+If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+ ❯ src/server/queries/scoreAggregate.deletion.integration.test.ts:19:1
+     17| let beforePublish: (() => Promise<void>) | undefined;
+     18| 
+     19| beforeAll(async () => {
+       | ^
+     20|   await migrate();
+ FAIL  src/server/queries/scoreAggregate.read-path.integration.test.ts [ src/server/queries/scoreAggregate.read-path.integration.test.ts ]
+Error: Hook timed out in 10000ms.
+If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+ ❯ src/server/queries/scoreAggregate.read-path.integration.test.ts:29:1
+     27| const reviewScans = () => statements.filter((s) => s.includes('from "review"'));
+     28| 
+     29| beforeAll(async () => {
+       | ^
+     30|   await migrate();
+ FAIL  src/server/imports/library-merge.integration.test.ts > Library Merge > returns exact counts over several batches and totals matching real account counts
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/server/imports/library-merge.integration.test.ts:237:3
+    235|   });
+    236| 
+    237|   it("returns exact counts over several batches and totals matching real account counts", async () => {
+       |   ^
+    238|     await testDb.insert(schema.watchStatus).values([
+ Test Files  3 failed | 597 passed (600)
+      Tests  1 failed | 8922 passed | 14 skipped (8937)
+error: script "test:coverage" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

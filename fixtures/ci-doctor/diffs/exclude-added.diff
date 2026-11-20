@@ -1,0 +1,11 @@
+diff --git a/vitest.config.ts b/vitest.config.ts
+index 1111111..2222222 100644
+--- a/vitest.config.ts
++++ b/vitest.config.ts
+@@ -10,6 +10,7 @@ export default defineConfig({
+     exclude: [
+       "node_modules/**",
++      "src/app/api/v1/media-mode-conformance.test.ts",
+     ],
+   },
+ });

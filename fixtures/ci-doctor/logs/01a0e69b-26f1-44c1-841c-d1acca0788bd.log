@@ -1,0 +1,103 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-1/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin e7c4a904f1f631d66440bb2e1924b961d51b4f13
+$ git -c advice.detachedHead=false checkout -f e7c4a904f1f631d66440bb2e1924b961d51b4f13
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ "$(scripts/ci-scope-verdict.sh web)" = "skip" ] && [ "$(scripts/ci-scope-verdict.sh mobile)" = "skip" ]; then echo "This commit affects neither the web nor mobile app — skipping the quality step."; exit 0; fi
+$ eslint src/ mobile/ packages/
+$ eslint .
+$ jest
+ FAIL  lib/__tests__/query-cache-relaunch.test.tsx
+  ● query cache across a relaunch (#1395) › paints Home's persisted rows for the same account before any network response
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+  ● query cache across a relaunch (#1395) › never shows one account's persisted rows to another, and deletes them
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+  ● query cache across a relaunch (#1395) › writes only allowlisted queries to storage
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+  ● query cache across a relaunch (#1395) › shows a stale restored entry and refetches it in the background
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+ FAIL  __tests__/onboarding-flow.test.tsx
+ FAIL  __tests__/pending-intent-resume.test.tsx
+ FAIL  __tests__/onboarding-gate-lazy-flow.test.tsx
+ FAIL  __tests__/push-tap-pending-intent.test.tsx
+ FAIL  __tests__/sign-up.test.tsx
+ FAIL  lib/__tests__/query-cache-relaunch.test.tsx
+  ● query cache across a relaunch (#1395) › paints Home's persisted rows for the same account before any network response
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+  ● query cache across a relaunch (#1395) › never shows one account's persisted rows to another, and deletes them
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+  ● query cache across a relaunch (#1395) › writes only allowlisted queries to storage
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+  ● query cache across a relaunch (#1395) › shows a stale restored entry and refetches it in the background
+
+    TypeError: (0 , _apiClient.setUnauthorizedHandler) is not a function
+
+      322 | // out does, less push cleanup: that DELETE is authenticated and would only be
+      323 | // refused too. Local scope, because the server has already refused the token.
+    > 324 | setUnauthorizedHandler(() => endSession({ scope: "local" }));
+          |                       ^
+      325 |
+ FAIL  __tests__/onboarding-flow.test.tsx
+ FAIL  __tests__/pending-intent-resume.test.tsx
+ FAIL  __tests__/onboarding-gate-lazy-flow.test.tsx
+ FAIL  __tests__/push-tap-pending-intent.test.tsx
+ FAIL  __tests__/sign-up.test.tsx
+Test Suites: 6 failed, 323 passed, 329 total
+Tests:       4 failed, 3565 passed, 3569 total
+error: script "test" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

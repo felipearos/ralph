@@ -1,0 +1,18 @@
+node_modules/
+# Per-worktree loop state lives in the project's .ralph/ directory, never here.
+.loop-name
+# Tests and hand runs from inside this checkout treat it as the project, so its
+# per-worktree state stays ignored. Ralph is also a Ralph project: its committed
+# config and prompt fragments are the four files below.
+/.ralph/*
+!/.ralph/config.json
+!/.ralph/prompt.md
+!/.ralph/coder.md
+!/.ralph/plan.md
+/logs/
+__pycache__/
+*.pyc
+# Agent worktrees Claude Code creates inside this checkout.
+.claude/worktrees/
+# The remote dashboard's static build (dashboard/remote/build-static.ts).
+/dashboard/remote/dist/

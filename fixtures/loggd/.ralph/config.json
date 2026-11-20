@@ -1,0 +1,107 @@
+{
+  "repo": "felipearos/loggd",
+  "owner": "felipearosr",
+  "baseBranch": "main",
+  "displayName": "Loggd",
+  "secrets": {
+    "runner": "doppler",
+    "project": "loggd-web",
+    "config": "dev",
+    "withhold": [
+      "PRODUCTION_MIGRATIONS_DATABASE_URL",
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "SELF_HOSTED_RUNNER_GH_PAT",
+      "BUILDKITE_AGENT_TOKEN",
+      "BUILDKITE_API_TOKEN",
+      "BUILDKITE_OPERATOR_TOKEN",
+      "RENOVATE_TOKEN"
+    ]
+  },
+  "refuseFiles": [
+    ".env.local"
+  ],
+  "envCheck": [
+    "bun",
+    "--no-env-file",
+    "scripts/check-loop-env.ts"
+  ],
+  "requiredChecks": [
+    "buildkite/loggd"
+  ],
+  "gates": {
+    "test": "bun run test",
+    "typecheck": "bun run typecheck",
+    "shadcn": "bun run lint:shadcn",
+    "build": "bun run build"
+  },
+  "promptFragment": ".ralph/prompt.md",
+  "coderFragment": ".ralph/coder.md",
+  "plan": ".ralph/plan.md",
+  "journal": {
+    "dir": "journal/loggd"
+  },
+  "ciDoctor": {
+    "fixScope": [
+      "**/*.test.ts",
+      "**/*.test.tsx",
+      "**/__tests__/**",
+      "src/test/**"
+    ],
+    "neverTouch": [
+      ".buildkite/**",
+      ".mergify.yml",
+      ".github/workflows/**",
+      ".ralph/**"
+    ],
+    "pollSeconds": 300,
+    "windowHours": 72,
+    "autoRevert": true,
+    "retry": {
+      "perCandidate": 1,
+      "perDay": 6
+    }
+  },
+  "prMedic": {
+    "branches": [
+      "felipearosr/*"
+    ],
+    "quietMinutes": 15,
+    "maxPushes": 3
+  },
+  "loops": [
+    "ralph",
+    "rafa",
+    "remo",
+    "rulo",
+    "testo",
+    {
+      "name": "doc",
+      "role": "ci-doctor"
+    },
+    {
+      "name": "medi",
+      "role": "pr-medic"
+    },
+    {
+      "name": "tria",
+      "role": "triager"
+    },
+    {
+      "name": "senti",
+      "role": "sentinel"
+    }
+  ],
+  "sentinel": {
+    "reporter": {
+      "kind": "sentry",
+      "org": "faros-o9",
+      "project": "loggd",
+      "environment": "production"
+    },
+    "lookbackHours": 24,
+    "minEvents": 10,
+    "minUsers": 2,
+    "maxPerDay": 5,
+    "mode": "file"
+  }
+}

@@ -1,0 +1,29 @@
+# The remote-dashboard bridge, supervised (felipearos/ralph#170, spec #165 §6).
+#
+# It reads the local dashboard and runs what the remote page queues, so it needs
+# the dashboard up: Requires= stops it with the dashboard, After= starts it once
+# the dashboard has. Every secret comes from Doppler (project software-factory,
+# config bridge, in the Personal workspace); this file holds none. --scope picks
+# the CLI login for that workspace: %h/ralph itself resolves to another one.
+# Installed by ../install-units.sh; enabling it is the operator's step.
+[Unit]
+Description=Ralph remote-dashboard bridge
+Requires=ralph-dashboard.service
+After=ralph-dashboard.service network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ralph
+Environment=RALPH_HOME=%h/ralph
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=doppler run --scope %h/doppler-new-ws --project software-factory --config bridge -- bun %h/ralph/dashboard/remote/bridge.ts
+Restart=always
+RestartSec=5
+# A background pusher: it yields CPU and disk to the loops, and its memory is
+# capped well below anything that would squeeze them.
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

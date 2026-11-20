@@ -1,0 +1,42 @@
+{
+  "$comment": [
+    "Rails for EVERY claude ORCHESTRATOR session — the `claude -p` in",
+    "`ralph.sh` that reads tickets and comments. `ralph.sh` adds it with",
+    "`--settings` whenever the orchestrator runner is claude; a role that",
+    "names its own `orchestratorSettings` in `roles.ts` carries that file",
+    "INSTEAD, so every role file must contain every rule here",
+    "(`claude-executor-rails.test.ts` checks the superset).",
+    "",
+    "The iteration runs under the project's secrets manager with the withheld",
+    "names (`secrets.withhold` in `.ralph/config.json`) stripped from its",
+    "environment. The manager's CLI is still authenticated on the host, so a",
+    "session that ran it by hand would get every withheld value back. The",
+    "executor has been denied that since its rails existed",
+    "(`claude-executor-settings.json`); this file is the same rule for the",
+    "session that reads untrusted ticket text.",
+    "",
+    "Both spellings, `Bash(x *)` and `Bash(x:*)`, for the reason",
+    "`claude-executor-settings.json` gives. Like that file's path rules it is a",
+    "tripwire, not a boundary: `env doppler …` or a token read out of",
+    "`~/.doppler` would go round it. The boundary is a manager config that does",
+    "not hold the withheld names at all.",
+    "",
+    "The tracker credential directory (`tracker/credentials.ts`) is denied for",
+    "the same reason: a Linear or Jira token lives there, and the session",
+    "reaches the tracker only through `tracker.ts`, which reads it itself.",
+    "The Slack plugin's settings directory (`plugins/slack/plugin.ts`) holds a",
+    "bot token, and is denied the same way. So is the screenshot credential",
+    "directory (`ui-shots.ts`): it holds a test account's password, and the",
+    "session reaches it only through `ui-shots.ts capture`, which reads it itself."
+  ],
+  "permissions": {
+    "deny": [
+      "Bash(doppler *)", "Bash(doppler:*)",
+      "Bash(* ~/.doppler/*)",
+      "Read(~/.doppler/**)",
+      "Bash(* ~/.config/ralph/trackers/*)", "Read(~/.config/ralph/trackers/**)",
+      "Bash(* ~/.config/ralph/slack/*)", "Read(~/.config/ralph/slack/**)",
+      "Bash(* ~/.config/ralph/screenshots/*)", "Read(~/.config/ralph/screenshots/**)"
+    ]
+  }
+}

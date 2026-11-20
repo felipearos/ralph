@@ -1,0 +1,10 @@
+diff --git a/src/app/auth-connection-conformance.test.ts b/src/app/auth-connection-conformance.test.ts
+index 1111111..2222222 100644
+--- a/src/app/auth-connection-conformance.test.ts
++++ b/src/app/auth-connection-conformance.test.ts
+@@ -30,7 +30,7 @@ describe("auth connection", () => {
+   it("reconnects after a dropped socket", async () => {
+     await expect(reconnect()).resolves.toBe("open");
+-  }, 5000);
++  }, 60000);
+ });

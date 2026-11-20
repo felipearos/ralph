@@ -1,0 +1,256 @@
+{
+  "$comment": [
+    "The one place the loop's runner-observability patterns live.",
+    "",
+    "Two languages read this file: `ralph/runner-failure.ts`, which classifies a",
+    "finished stage and writes the durable record, and `ralph/delegate-render.py`,",
+    "which is the only thing standing between a harness's event stream and a log",
+    "an operator reads. Both have to redact the same values and recognise the same",
+    "denials, and a second copy of either list is how a redactor comes to strip a",
+    "token in one place and print it in the other.",
+    "",
+    "Every pattern here must therefore parse as BOTH a JavaScript and a Python",
+    "regular expression, and is applied case-insensitively by both readers: no",
+    "inline flags, no lookbehind, no named groups, no possessive quantifiers.",
+    "Keep them to the vocabulary the two engines share, and note the two places",
+    "they still differ, neither of which any pattern here may depend on:",
+    "`$` matches before a trailing newline in Python and only at the end in",
+    "JavaScript, so anchor on `$` for a whole NAME and never for a line; and",
+    "case-insensitivity is full Unicode folding in Python against simple folding",
+    "in JavaScript, so keep the patterns ASCII. `ralph/delegate-render.test.ts`",
+    "runs every entry below through both engines and fails on any disagreement."
+  ],
+  "version": 1,
+
+  "$comment_evidence": [
+    "How much of a matching line is kept as evidence, read by both readers so",
+    "the bound cannot be 300 in one and 400 in the other. A harness that fails",
+    "with a 400KB JSON body must not put all of it in a durable record."
+  ],
+  "evidenceMaxChars": 300,
+
+  "secretEnvNames": {
+    "$comment": [
+      "A variable whose NAME matches any of these is treated as carrying a secret,",
+      "and its VALUE is struck from every line before it is printed or recorded.",
+      "Name-shaped rather than an explicit roster because the loop runs under",
+      "Doppler: a credential added there next month reaches the environment without",
+      "anyone touching this file, and a roster would silently not cover it.",
+      "",
+      "`ralph.sh` withholds seven variables from the iteration outright. These",
+      "rules cover those names too — withholding is the first fence and this is the",
+      "second, because the executor and the read-only stages are not the only",
+      "things that can echo a value back."
+    ],
+    "match": [
+      "TOKEN",
+      "SECRET",
+      "PASSWORD",
+      "PASSWD",
+      "APIKEY",
+      "API_KEY",
+      "_KEY$",
+      "^KEY$",
+      "CREDENTIAL",
+      "PRIVATE",
+      "SESSION",
+      "COOKIE",
+      "^DATABASE_URL$",
+      "_DB_URL$",
+      "_DSN$",
+      "_PAT$",
+      "AUTH"
+    ],
+    "never": {
+      "$comment": [
+        "Names that match a rule above but hold nothing secret. `_KEY$` catches",
+        "`SUPABASE_SERVICE_ROLE_KEY`, which is the point, and `SORT_KEY`, which is",
+        "not; `AUTH` catches `SUPABASE_AUTH_URL`. Redacting a non-secret is not",
+        "harmless here — the value is often the very identifier an operator needs",
+        "to read the failure. `except` names the ones that ARE secret after all:",
+        "the database URLs, and the RALPH_BUILDKITE_* tokens a role declares as",
+        "its named secrets (`roles.ts`) — RALPH_ names, but credentials. Every",
+        "name in a role descriptor's `secrets.named` belongs here;",
+        "`observe.test.ts` fails if one is missing, because a credential the",
+        "redactor does not know by name is struck only if its SHAPE is listed."
+      ],
+      "match": [
+        "^RALPH_",
+        "^NEXT_PUBLIC_",
+        "^EXPO_PUBLIC_",
+        "PUBLISHABLE",
+        "_URL$",
+        "_HOST$",
+        "_PORT$",
+        "_ENABLED$",
+        "^AUTH_TRUST_HOST$"
+      ],
+      "except": ["^DATABASE_URL$", "_DB_URL$", "^RALPH_BUILDKITE_READ_TOKEN$", "^RALPH_BUILDKITE_RETRY_TOKEN$", "^RALPH_CLERK_SLACK_TOKEN$", "^RALPH_CLERK_JIRA_TOKEN$", "^RALPH_VERIFIER_SENTRY_TOKEN$", "^RALPH_VERIFIER_VERCEL_TOKEN$", "_SENTRY_TOKEN$", "_VERCEL_TOKEN$"]
+    },
+    "minimumValueLength": 8
+  },
+
+  "secretPatterns": {
+    "$comment": [
+      "Secret SHAPES, for the credentials that never passed through this process's",
+      "environment at all — the executor's own OpenCode token, a key a model read",
+      "out of a file, a `Bearer` header quoted back in an API error body. The",
+      "environment sweep cannot see any of those."
+    ],
+    "patterns": [
+      { "label": "github-token", "pattern": "\\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})" },
+      { "label": "anthropic-key", "pattern": "\\bsk-ant-[A-Za-z0-9_-]{16,}" },
+      { "label": "openai-key", "pattern": "\\bsk-(proj-)?[A-Za-z0-9_-]{20,}" },
+      { "label": "doppler-token", "pattern": "\\bdp\\.(pt|st|ct|sa|scim|audit)\\.[A-Za-z0-9_-]{10,}" },
+      { "label": "supabase-key", "pattern": "\\bsb_(secret|publishable)_[A-Za-z0-9_-]{10,}" },
+      { "label": "aws-key", "pattern": "\\b(AKIA|ASIA)[A-Z0-9]{16}" },
+      { "label": "jwt", "pattern": "\\beyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*" },
+      { "label": "bearer", "pattern": "(authorization[ \\t]*:[ \\t]*)?\\bbearer[ \\t]+[A-Za-z0-9._~+/=-]{8,}" },
+      { "label": "buildkite-token", "pattern": "\\bbkua_[A-Za-z0-9]{20,}" },
+      { "label": "slack-token", "pattern": "\\bxox[abposre]-[A-Za-z0-9-]{10,}" },
+      { "label": "atlassian-token", "pattern": "\\bATATT[A-Za-z0-9_=-]{20,}" },
+      { "label": "connection-string", "pattern": "\\b[a-z][a-z0-9+.-]*://[^\\s:/@]+:[^\\s/@]+@[^\\s]+" },
+      { "label": "private-key", "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----" }
+    ]
+  },
+
+  "failureSignals": {
+    "$comment": [
+      "How a stage failed, in the kinds an operator acts on differently, ordered",
+      "MOST ACTIONABLE FIRST — the order is the precedence, so a run that both",
+      "timed out and hit a denial is reported as the denial. A missing grant is a",
+      "one-line repair; a timeout on top of it is a consequence.",
+      "",
+      "These are matched against a harness's ERROR output only — a tool result",
+      "that failed, a diagnostic line, a non-zero stage's stderr. Never against",
+      "assistant prose: a review that says 'this code path is permission denied'",
+      "is a working review, and classifying it as a denial would make every",
+      "careful security report look like a broken runner.",
+      "",
+      "Nor against a TOOL's output — what a command the model ran printed — except",
+      "for the kinds in `toolOutputKinds`. A rail refusal comes back inside a failed",
+      "command's output and nowhere else; a credential or provider failure is",
+      "reported on the harness's own channel (its stderr, a codex `error` or",
+      "`turn.failed` event, Claude's `permission_denials`). On 2026-09-23 a failing",
+      "test's 'Internal server error' and a source comment about 'an unauthorized",
+      "request' were recorded as api-error and authentication, and paged the operator",
+      "about a credential that was fine. Both readers label each signal with the",
+      "channel it came from (`source`: runner | tool)."
+    ],
+    "toolOutputKinds": ["permission-denied"],
+    "$comment_benignLines": [
+      "Runner lines that match a kind's pattern but are background chatter, not",
+      "the stage failing: neither reader raises a signal for a line matching one",
+      "of these. On 2026-09-29 a codex stage that exited 0 was recorded as a",
+      "stage timeout because codex logged that its model-list refresh timed out."
+    ],
+    "benignLines": ["failed to refresh available models"],
+    "kinds": [
+      {
+        "kind": "permission-denied",
+        "summary": "the runner asked to do something its rails refuse",
+        "patterns": [
+          "requires approval",
+          "permission denied",
+          "permission was denied",
+          "denied by the permission",
+          "permissiondenied",
+          "permission to use .* has been denied",
+          "this command requires approval",
+          "not permitted by the (sandbox|permission)",
+          "operation not permitted",
+          "is not on the allow ?list",
+          "not allowed by",
+          "blocked by the sandbox",
+          "sandbox denied",
+          "read-only file ?system",
+          "external_directory",
+          "refusing to run"
+        ]
+      },
+      {
+        "kind": "authentication",
+        "summary": "the runner has no usable credential",
+        "patterns": [
+          "not logged ?in",
+          "auth(entication)? (failed|error|required)",
+          "authentication_error",
+          "status (code )?401",
+          "invalid api key",
+          "no [a-z.-]* ?credential",
+          "auth login",
+          "codex login",
+          "unauthorized",
+          "token (has )?expired",
+          "expired credential",
+          "api key has expired",
+          "subscription is required",
+          "could not run under the (executor|stage)'s cleared environment"
+        ]
+      },
+      {
+        "kind": "usage-limit",
+        "summary": "the Claude subscription's usage limit is spent until it resets",
+        "$comment": [
+          "Ahead of api-error because the repair differs: nothing is broken, the",
+          "loop has to wait for the window to reset. On 2026-10-21 thirteen loops",
+          "stopped on a five_hour rejection that the dashboard called an api-error,",
+          "and the reset time was only in the iteration log."
+        ],
+        "patterns": [
+          "rate limit rejected",
+          "hit your [a-z ]*limit",
+          "usage limit"
+        ]
+      },
+      {
+        "kind": "api-error",
+        "summary": "the model provider refused or could not serve the call",
+        "patterns": [
+          "rate.?limit",
+          "too many requests",
+          "status (code )?(403|429)",
+          "overloaded",
+          "5\\d\\d [a-z ]*(server error|bad gateway|service unavailable)",
+          "internal server error",
+          "service unavailable",
+          "quota (exceeded|exhausted)",
+          "insufficient (credit|quota|balance)",
+          "api error",
+          "upstream error",
+          "unexpected server error"
+        ]
+      },
+      {
+        "kind": "timeout",
+        "summary": "the runner exceeded a stage or watchdog timeout",
+        "patterns": [
+          "timed out",
+          "timeout after",
+          "deadline exceeded",
+          "opencode-run: watchdog-killed:"
+        ]
+      },
+      {
+        "kind": "spawn-failure",
+        "summary": "the process could not be started at all",
+        "patterns": ["etxtbsy", "text file is busy", "posix_spawn", "cannot execute binary file"]
+      },
+      {
+        "kind": "unavailable",
+        "summary": "the harness is not installed or does not run this stage",
+        "patterns": [
+          "not on PATH",
+          "not installed",
+          "runs in-session on this lineup",
+          "make the Agent call yourself"
+        ]
+      },
+      {
+        "kind": "no-report",
+        "summary": "the harness exited cleanly and never said anything",
+        "patterns": ["never produced a report", "emitted tool activity and no final message"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ralph lineup editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0e1116;
+        --surface: #161b22;
+        --raised: #1c2330;
+        --border: #2a313b;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --good: #3fb950;
+        --warn: #d29922;
+        --bad: #f85149;
+        --idle: #58a6ff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main,
+      header {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 1rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+        font-weight: 650;
+        margin: 0;
+      }
+      h2 {
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        margin: 0 0 0.75rem;
+      }
+      code {
+        font: 0.85em ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .stamp,
+      .absent {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .notice {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--idle);
+        background: var(--surface);
+        border-radius: 8px;
+        padding: 0.7rem 1rem;
+        margin-bottom: 1rem;
+      }
+      .notice p {
+        margin: 0.2rem 0;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+        gap: 1rem;
+      }
+      @media (max-width: 760px) {
+        body {
+          padding: 1rem;
+        }
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+      section.panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 1rem;
+        min-width: 0;
+      }
+      nav ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      nav li {
+        margin-bottom: 0.3rem;
+      }
+      nav button {
+        width: 100%;
+        text-align: left;
+        display: flex;
+        justify-content: space-between;
+        gap: 0.4rem;
+      }
+      nav button[aria-current="true"] {
+        border-color: var(--idle);
+        background: var(--raised);
+      }
+      button,
+      select,
+      input {
+        font: inherit;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.3rem 0.6rem;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button.primary {
+        border-color: var(--good);
+      }
+      button.danger {
+        border-color: var(--bad);
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.4rem 0.5rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 0.72rem;
+        padding: 0.05rem 0.45rem;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .badge.env {
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+      .badge.loop {
+        color: var(--idle);
+        border-color: var(--idle);
+      }
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+        margin: 0.75rem 0 0;
+      }
+      form.stage {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 0.6rem;
+        background: var(--raised);
+        border-radius: 8px;
+        padding: 0.75rem;
+      }
+      form.stage label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .problems {
+        color: var(--bad);
+        margin: 0.5rem 0 0;
+        padding-left: 1.2rem;
+      }
+      .warning {
+        color: var(--warn);
+        margin: 0.3rem 0 0;
+        font-size: 0.85rem;
+      }
+      .ok {
+        color: var(--good);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Ralph lineup editor</h1>
+      <span id="root-picker"></span>
+      <span class="stamp" id="stamp">loading…</span>
+    </header>
+    <main>
+      <div class="notice">
+        <p id="apply-timing"></p>
+        <p>
+          To apply a saved change to a loop that is already running, restart it from the loop controls on
+          the Ralph dashboard (<code>bun dashboard/server.ts</code>,
+          <a href="http://127.0.0.1:8791/" style="color: var(--idle)">127.0.0.1:8791</a>). This page does
+          not restart or reload anything.
+        </p>
+      </div>
+      <div class="layout">
+        <nav class="panel-nav">
+          <section class="panel">
+            <h2>Loops</h2>
+            <ul id="loops"></ul>
+          </section>
+        </nav>
+        <div>
+          <section class="panel">
+            <h2 id="editor-title">Lineup</h2>
+            <div id="editor"></div>
+          </section>
+          <section class="panel">
+            <h2 id="preview-title">Resolved preview</h2>
+            <div id="preview"></div>
+          </section>
+          <section class="panel">
+            <h2>Save</h2>
+            <div id="save"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <script type="module">
+      import {
+        APPLY_TIMING,
+        DEFAULT_LOOP,
+        buildChange,
+        createLineupClient,
+        draftFor,
+        draftProblems,
+        hasBlock,
+        loopNames,
+        previewRows,
+        shadowWarning,
+        stageControls,
+        stageValues,
+      } from "./lineup-view.js";
+
+      const client = createLineupClient(fetch);
+      const $ = (id) => document.getElementById(id);
+
+      // The saved file and the candidate being edited are separate: every edit
+      // replaces `candidate` with the server's edited copy and its re-resolved
+      // preview, and only an accepted save moves `saved`.
+      const state = {
+        roots: [],
+        root: undefined,
+        loop: null,
+        known: [],
+        schema: null,
+        saved: null,
+        candidate: null,
+        preview: null,
+        editing: null,
+        draft: null,
+        busy: false,
+        error: null,
+        saveResult: null,
+      };
+
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function button(label, onClick, options) {
+        const node = el("button", options && options.className, label);
+        node.type = "button";
+        node.disabled = state.busy || Boolean(options && options.disabled);
+        node.addEventListener("click", onClick);
+        return node;
+      }
+
+      function badge(text, className) {
+        return el("span", "badge" + (className ? " " + className : ""), text);
+      }
+
+      function problemList(problems) {
+        const list = el("ul", "problems");
+        for (const problem of problems) list.append(el("li", "", problem));
+        return list;
+      }
+
+      function describeError(error) {
+        return error && error.message ? error.message : String(error);
+      }
+
+      const dirty = () => JSON.stringify(state.candidate) !== JSON.stringify(state.saved);
+
+      function remember(loop) {
+        if (loop && !state.known.includes(loop)) state.known.push(loop);
+      }
+
+      // Every server call goes through here, so the page is never mid-edit on
+      // two requests at once and an error is always shown rather than dropped.
+      async function run(task) {
+        state.busy = true;
+        state.error = null;
+        render();
+        try {
+          await task();
+        } catch (error) {
+          state.error = describeError(error);
+        } finally {
+          state.busy = false;
+          render();
+        }
+      }
+
+      function load() {
+        return run(async () => {
+          if (state.roots.length === 0) state.roots = await client.roots();
+          const read = await client.read({ root: state.root, loop: state.loop ?? undefined });
+          state.root = read.root;
+          state.loop = read.loop;
+          remember(read.loop);
+          Object.keys(read.config).forEach((key) => !key.startsWith("$") && remember(key));
+          state.schema = read.schema;
+          state.saved = read.config;
+          state.candidate = structuredClone(read.config);
+          state.preview = { valid: true, problems: [], resolved: read.resolved, shadows: read.shadows };
+          state.editing = null;
+          state.saveResult = null;
+          $("stamp").textContent = "read " + new Date().toLocaleTimeString();
+        });
+      }
+
+      function selectLoop(loop) {
+        state.loop = loop;
+        state.editing = null;
+        return run(async () => {
+          state.preview = await client.preview({ root: state.root, loop, config: state.candidate });
+        });
+      }
+
+      function applyEdit(edit) {
+        return run(async () => {
+          const edited = await client.edit({ root: state.root, loop: state.loop, config: state.candidate, edit });
+          state.candidate = edited.config;
+          state.preview = edited;
+          state.saveResult = null;
+          state.editing = null;
+        });
+      }
+
+      function save() {
+        return run(async () => {
+          const result = await client.save({ root: state.root, loop: state.loop, config: state.candidate });
+          state.saveResult = result;
+          if (result.valid) state.saved = structuredClone(state.candidate);
+        });
+      }
+
+      function startEdit(stage) {
+        state.editing = stage;
+        state.draft = draftFor(state.candidate, state.loop, stage);
+        render();
+      }
+
+      function renderRootPicker() {
+        const holder = $("root-picker");
+        holder.replaceChildren();
+        if (state.roots.length < 2) {
+          if (state.root) holder.append(el("code", "absent", state.root + "/models.json"));
+          return;
+        }
+        const select = el("select");
+        for (const root of state.roots) {
+          const option = el("option", "", root);
+          option.value = root;
+          option.selected = root === state.root;
+          select.append(option);
+        }
+        select.disabled = state.busy;
+        select.addEventListener("change", () => {
+          if (dirty() && !confirm("Discard unsaved edits and switch checkout?")) {
+            select.value = state.root;
+            return;
+          }
+          state.root = select.value;
+          load();
+        });
+        holder.append(select);
+      }
+
+      function renderLoops() {
+        const list = $("loops");
+        list.replaceChildren();
+        if (!state.candidate) return;
+        for (const loop of loopNames(state.candidate, state.known)) {
+          const item = el("li");
+          const pick = button(loop, () => selectLoop(loop));
+          pick.setAttribute("aria-current", String(loop === state.loop));
+          if (loop !== DEFAULT_LOOP) {
+            pick.append(hasBlock(state.candidate, loop) ? badge("own block", "loop") : badge("runs default"));
+          }
+          item.append(pick);
+          list.append(item);
+        }
+        const add = el("li");
+        const form = el("form", "row-actions");
+        const name = el("input");
+        name.placeholder = "another loop";
+        name.size = 10;
+        form.append(name, button("Add", () => form.requestSubmit()));
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const loop = name.value.trim();
+          if (loop === "" || loop.startsWith("$")) return;
+          remember(loop);
+          selectLoop(loop);
+        });
+        add.append(form);
+        list.append(add);
+      }
+
+      function field(label, control) {
+        const wrap = el("label", "", label);
+        wrap.append(control);
+        return wrap;
+      }
+
+      function selectOf(options, value, onChange, blank) {
+        const select = el("select");
+        if (blank !== undefined) {
+          const option = el("option", "", blank);
+          option.value = "";
+          select.append(option);
+        }
+        for (const choice of options) {
+          const option = el("option", "", choice);
+          option.value = choice;
+          select.append(option);
+        }
+        if (blank === undefined && !options.includes(value)) {
+          const option = el("option", "", value === "" ? "choose…" : value + " (not allowed)");
+          option.value = value;
+          select.prepend(option);
+        }
+        select.value = value;
+        select.addEventListener("change", () => onChange(select.value));
+        return select;
+      }
+
+      function modelPlaceholder(runner) {
+        const rule = state.schema.modelId.providerPrefix[runner];
+        if (rule === "required") return "provider/model";
+        if (rule === "forbidden") return "model id, no provider prefix";
+        return "model id";
+      }
+
+      function renderStageForm(stage) {
+        const draft = state.draft;
+        const controls = stageControls(state.schema, stage, draft.runner);
+        const form = el("form", "stage");
+        const redraw = () => render();
+
+        form.append(
+          field(
+            "runner",
+            selectOf(controls.runners, draft.runner, (value) => {
+              draft.runner = value;
+              redraw();
+            }),
+          ),
+        );
+
+        let model;
+        if (controls.modelChoices) {
+          model = selectOf(controls.modelChoices, draft.model, (value) => {
+            draft.model = value;
+            redraw();
+          });
+        } else {
+          model = el("input");
+          model.value = draft.model;
+          model.placeholder = modelPlaceholder(draft.runner);
+          model.spellcheck = false;
+          model.addEventListener("input", () => {
+            draft.model = model.value;
+            updateProblems();
+          });
+        }
+        form.append(field("model", model));
+
+        if (controls.effort) {
+          const effort = el("input");
+          effort.value = draft.effort;
+          effort.placeholder = "the CLI default";
+          effort.addEventListener("input", () => {
+            draft.effort = effort.value;
+            updateProblems();
+          });
+          form.append(field("effort", effort));
+        }
+        if (controls.fallback) {
+          const fallback = el("input");
+          fallback.value = draft.fallback.join(", ");
+          fallback.placeholder = "ordered model ids (comma separated); default: " + controls.defaultFallbacks.join(" → ");
+          fallback.spellcheck = false;
+          fallback.addEventListener("input", () => {
+            draft.fallback = fallback.value.split(",").map((value) => value.trim()).filter(Boolean);
+            updateProblems();
+          });
+          form.append(field("fallback order", fallback));
+        }
+
+        const problems = el("div");
+        const apply = button("Apply", () => form.requestSubmit(), { className: "primary" });
+        const actions = el("div", "row-actions");
+        actions.append(apply, button("Cancel", () => { state.editing = null; render(); }));
+        form.append(actions);
+
+        function updateProblems() {
+          const found = draftProblems(state.schema, stage, draft);
+          problems.replaceChildren(found.length ? problemList(found) : "");
+          apply.disabled = state.busy || found.length > 0;
+        }
+        updateProblems();
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          if (draftProblems(state.schema, stage, draft).length > 0) return;
+          applyEdit({ kind: "stage", stage, change: buildChange(state.schema, stage, draft) });
+        });
+
+        const wrap = el("div");
+        wrap.append(form, problems);
+        return wrap;
+      }
+
+      function describeStage(values) {
+        if (!values) return el("span", "absent", "missing");
+        const parts = [values.runner ?? "?", values.model ?? "?"];
+        if (values.effort) parts.push("effort " + values.effort);
+        if (values.fallback?.length) parts.push("falls back to " + values.fallback.join(" → "));
+        return el("span", "", parts.join(" · "));
+      }
+
+      function renderEditor() {
+        const editor = $("editor");
+        editor.replaceChildren();
+        if (!state.candidate || !state.schema) return;
+        const loop = state.loop;
+        const own = loop === DEFAULT_LOOP || hasBlock(state.candidate, loop);
+        $("editor-title").textContent = "Lineup · " + loop;
+
+        if (!own) {
+          editor.append(
+            el(
+              "p",
+              "absent",
+              "'" + loop + "' has no block of its own and runs the default lineup. " +
+                "Editing any stage gives it a complete block, every stage copied from default.",
+            ),
+          );
+        }
+
+        const table = el("table");
+        const head = el("tr");
+        ["stage", own ? "in the file" : "from default", ""].forEach((label) => head.append(el("th", "", label)));
+        table.append(head);
+        for (const stage of state.schema.stages) {
+          const row = el("tr");
+          const values = stageValues(state.candidate, own ? loop : DEFAULT_LOOP, stage);
+          const action = el("td");
+          action.append(button("Edit", () => startEdit(stage), { disabled: state.editing === stage }));
+          row.append(el("td", "", stage), el("td"), action);
+          row.children[1].append(describeStage(values));
+          table.append(row);
+          if (state.editing === stage) {
+            const formRow = el("tr");
+            const cell = el("td");
+            cell.colSpan = 3;
+            cell.append(renderStageForm(stage));
+            formRow.append(cell);
+            table.append(formRow);
+          }
+        }
+        const wrap = el("div", "table-wrap");
+        wrap.append(table);
+        editor.append(wrap);
+
+        if (loop !== DEFAULT_LOOP) {
+          const actions = el("div", "row-actions");
+          if (own) {
+            actions.append(
+              button("Remove block — fall back to default", () => applyEdit({ kind: "remove" }), { className: "danger" }),
+            );
+          } else {
+            actions.append(button("Create block from default", () => applyEdit({ kind: "create" })));
+          }
+          editor.append(actions);
+        }
+      }
+
+      function renderPreview() {
+        const holder = $("preview");
+        holder.replaceChildren();
+        $("preview-title").textContent = "Resolved preview · " + (state.loop ?? "");
+        const preview = state.preview;
+        if (!preview || !state.schema) return;
+        if (!preview.valid) {
+          holder.append(
+            el(
+              "p",
+              "",
+              "This candidate cannot be resolved for '" + state.loop + "' under the editor's environment. Every problem:",
+            ),
+            problemList(preview.problems),
+          );
+          return;
+        }
+        holder.append(
+          el(
+            "p",
+            "absent",
+            "What an iteration of '" + state.loop + "' would run with this candidate and the editor's environment. " +
+              "Source: env = an environment override, loop = the loop's own block, default = the default block.",
+          ),
+        );
+        const table = el("table");
+        const head = el("tr");
+        ["stage", "runner", "model", "effort / fallback", "source"].forEach((label) => head.append(el("th", "", label)));
+        table.append(head);
+        for (const row of previewRows(state.schema, preview.resolved, preview.shadows)) {
+          const tr = el("tr");
+          const source = el("td");
+          source.append(badge(row.source, row.source));
+          const detail = row.effort ? "effort " + row.effort : row.fallback?.length ? "falls back to " + row.fallback.join(" → ") : "—";
+          const stage = el("td", "", row.stage);
+          for (const shadow of row.overrides) stage.append(el("p", "warning", shadowWarning(shadow)));
+          tr.append(stage, el("td", "", row.runner), el("td", "", row.model), el("td", "", detail), source);
+          table.append(tr);
+        }
+        const wrap = el("div", "table-wrap");
+        wrap.append(table);
+        holder.append(wrap);
+      }
+
+      function renderSave() {
+        const holder = $("save");
+        holder.replaceChildren();
+        if (state.error) holder.append(el("p", "problems", state.error));
+        if (!state.candidate) return;
+        const changed = dirty();
+        holder.append(
+          el("p", changed ? "" : "absent", changed ? "Unsaved edits to models.json." : "No unsaved edits."),
+        );
+        const result = state.saveResult;
+        if (result && result.valid) {
+          holder.append(el("p", "ok", "Saved. It applies at the next start.sh; a running supervisor is unchanged."));
+        } else if (result) {
+          holder.append(el("p", "", "Save refused — nothing was written. Every problem:"), problemList(result.problems));
+        }
+        const actions = el("div", "row-actions");
+        actions.append(
+          button("Save models.json", save, { className: "primary", disabled: !changed }),
+          button("Discard edits", load, { disabled: !changed }),
+        );
+        holder.append(actions);
+      }
+
+      function render() {
+        renderRootPicker();
+        renderLoops();
+        renderEditor();
+        renderPreview();
+        renderSave();
+      }
+
+      $("apply-timing").textContent = APPLY_TIMING;
+      window.addEventListener("beforeunload", (event) => {
+        if (state.candidate && dirty()) event.preventDefault();
+      });
+      load();
+    </script>
+  </body>
+</html>

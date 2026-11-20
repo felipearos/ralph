@@ -1,0 +1,10 @@
+diff --git a/src/components/media/poster-slot-conformance.test.ts b/src/components/media/poster-slot-conformance.test.ts
+index 1111111..2222222 100644
+--- a/src/components/media/poster-slot-conformance.test.ts
++++ b/src/components/media/poster-slot-conformance.test.ts
+@@ -18,7 +18,7 @@ describe("poster slots", () => {
+   it("resolves every slot against the live tree", () => {
+     expect(unresolved(scan(ROOT))).toEqual([]);
+-  }, 5000);
++  }, 20000);
+ });

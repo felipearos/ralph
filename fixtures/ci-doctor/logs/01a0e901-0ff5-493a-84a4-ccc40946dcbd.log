@@ -1,0 +1,28 @@
+~~~ Preparing working directory
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ cd /data/buildkite/git-mirrors
+$ cd /data/buildkite/builds/home-loggd-2/felipe-aros/loggd
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+$ git fetch -v --prune -- origin a558af9a7c345a5fc518228b26b95e62619a38c2
+$ git -c advice.detachedHead=false checkout -f a558af9a7c345a5fc518228b26b95e62619a38c2
+$ git clean -ffxdq -e node_modules -e .next/cache -e .next-test/cache -e tsconfig.tsbuildinfo
+~~~ Running commands
+$ if [ -z "$TMDB_API_KEY" ]; then echo "TMDB_API_KEY not set — skipping Playwright E2E."; exit 0; fi
+$ bash scripts/ensure-signing-key.sh
+$ bash scripts/reap-supabase-stack.sh
+$ bun x vitest run --config vitest.security.config.ts
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Startup Error ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: Supabase Auth was not stable within 120000ms after 240 attempts; required 3 consecutive healthy responses; longest healthy streak 0; observations: HTTP 502 x239, connection failed or timed out x1
+    at Object.waitForSupabaseAuth [as waitForAuth] (/data/buildkite/builds/home-loggd-2/felipe-aros/loggd/scripts/wait-for-supabase-auth.ts:102:9)
+    at runNextTicks (node:internal/process/task_queues:64:5)
+    at listOnTimeout (node:internal/timers:547:9)
+    at processTimers (node:internal/timers:521:7)
+    at resetSupabase (/data/buildkite/builds/home-loggd-2/felipe-aros/loggd/security/harness/global-setup.ts:114:3)
+    at TestProject._teardownGlobalSetup (file:///data/buildkite/builds/home-loggd-2/felipe-aros/loggd/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:10042:68)
+    at file:///data/buildkite/builds/home-loggd-2/felipe-aros/loggd/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:12917:54
+error: script "test:security" exited with code 1
+🚨 Error: The command exited with status 1
+~~~ Uploading artifacts
+$ /usr/local/bin/buildkite-agent artifact upload playwright-report/**/*
+~~~ Running repository pre-exit hook
+$ .buildkite/hooks/pre-exit

@@ -1,0 +1,14 @@
+{
+  "bunVersion": "1.x",
+  "regions": ["gru1"],
+  "installCommand": "bun install --frozen-lockfile",
+  "buildCommand": "bun dashboard/remote/build-static.ts",
+  "outputDirectory": "dashboard/remote/dist",
+  "functions": { "api/index.ts": { "maxDuration": 30 } },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/p/(.*)", "destination": "/index.html" },
+    { "source": "/(loops/.*|factory|notifications|usage|backlog|ci|learnings|evals|ownership|reconciliation|labels|settings|states|intake)", "destination": "/index.html" }
+  ],
+  "ignoreCommand": "sh dashboard/remote/vercel-ignore.sh"
+}
