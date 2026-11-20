@@ -1,7 +1,7 @@
 <!-- ralph:section CONVENTIONS -->
 ## Conventions
 
-- Read `CLAUDE.md` at the repository root; match the surrounding code's style,
+- Read `AGENTS.md` at the repository root; match the surrounding code's style,
   naming and comment density.
 
 <!-- ralph:section GATES -->

@@ -15,9 +15,11 @@ const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
 
 describe("ralph's own fragments", () => {
   it("point at an entry doc that exists", () => {
-    expect(existsSync(join(ROOT, "CLAUDE.md"))).toBe(true);
-    expect(read(".ralph/prompt.md")).toContain("CLAUDE.md");
-    expect(read(".ralph/coder.md")).toContain("CLAUDE.md");
+    expect(existsSync(join(ROOT, "AGENTS.md"))).toBe(true);
+    // CLAUDE.md is only the import, so a loop that reads it by hand finds nothing else.
+    expect(read("CLAUDE.md").trim()).toBe("@AGENTS.md");
+    expect(read(".ralph/prompt.md")).toContain("AGENTS.md");
+    expect(read(".ralph/coder.md")).toContain("AGENTS.md");
   });
 
   it("name bun gates, never npm", () => {

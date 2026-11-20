@@ -2,7 +2,7 @@ The operator has granted this loop permission to merge its own PRs when the
 gates below pass.
 
 <!-- ralph:section IMPLEMENT_ROUTING -->
-Read `CLAUDE.md` at the repository root before writing a brief: it names the
+Read `AGENTS.md` at the repository root before writing a brief: it names the
 commands, where the supervisor, frontier, dashboard and roles live, and the
 rules a change to the test suite must follow.
 
@@ -18,7 +18,7 @@ Never create an env file to get a gate past validation; a gate that fails on
 environment is a finding to report.
 
 <!-- ralph:section TRIAGER -->
-This backlog is the harness itself. Read `CLAUDE.md` at the repository root
+This backlog is the harness itself. Read `AGENTS.md` at the repository root
 before you judge a ticket: it names where the supervisor, the frontier, the
 leases, the roles, the dashboard and the journal live, and the test rules a
 change must follow. Many tickets here are filed by loops working OTHER projects
