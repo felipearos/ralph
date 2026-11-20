@@ -5,6 +5,10 @@ issues of a project (today: loggd, and this repository itself). Nothing here
 may hang, halt or lose a claim while nobody is watching: a missing or
 malformed signal falls back to existing behaviour, never to a stuck loop.
 
+Issue and PR numbers written before the move (#1–#888) in code, docs, journals
+and commit messages refer to the private repository this public one replaced on
+2026-11-20, where that history stays; this repository numbers from #1 again.
+
 ## Commands
 
 | Purpose | Command | Notes |
@@ -17,9 +21,9 @@ malformed signal falls back to existing behaviour, never to a stuck loop.
 | Dashboard | `bun dashboard/server.ts` | local, 127.0.0.1:8791 |
 | Render a prompt | `bun models.ts --render-prompt prompt.md` | run from a project worktree |
 
-CI (`.github/workflows/ci.yml`) runs typecheck, lint and test on a self-hosted
-runner that is also the host of the live loops, so the suite must pass on a
-loaded machine.
+CI (`.github/workflows/ci.yml`) runs typecheck, lint and test on a
+GitHub-hosted runner. A loop's own `test` gate runs the same suite on the host
+of the live loops, so it must also pass on a loaded machine.
 
 ## Where things live
 
@@ -59,6 +63,9 @@ loaded machine.
 - `publish-journal.ts`, `journal/`, `learnings/` — what every iteration
   records, pushed to this repository's `main`.
 - `.ralph/` — this repository's own project config: ralph is a Ralph project.
+- `name-guard.ts` — the pre-push hook that refuses a push naming a client
+  (house rule 5); install it in every clone a loop pushes from with
+  `bun name-guard.ts --install`.
 
 Docs: `README.md` (operations, 2000+ lines), `dashboard/README.md`,
 `lineup/README.md`, `adding-an-agent.md`, `journal/README.md`,
@@ -85,16 +92,17 @@ exists; the "Rules for changes" below are the day-to-day conventions.
    the supervisor's back, and a process boundary keeps that true.
 4. **Tests survive a loaded host.** *Where:* every `*.test.ts`. A test that
    spawns a process calls `subprocessSuite(...)`; wait on a predicate, never a
-   fixed sleep; never raise `testTimeout`. *Why:* CI runs on the same machine
-   as the live loops, so a test that only passes on an idle host fails every
-   loop's PR at night.
+   fixed sleep; never raise `testTimeout`. *Why:* each loop's `test` gate runs
+   on the same machine as the other live loops, so a test that only passes on
+   an idle host fails every loop's PR at night.
 5. **No client lives in the harness.** *Where:* code, prompts, tests, fixtures
    and docs. A deployment's names (repos, labels, boards, Slack ids, people)
    belong in that project's `.ralph/config.json` or on the host; tests use
-   `acme-*` / `example-org` placeholders. *Why:* the harness serves several
-   projects and is shared publicly; a default spelled with one client's names
-   leaked them into every other project and into this repository's history
-   (#883).
+   `acme-*` / `example-org` placeholders. `name-guard.ts`, a pre-push hook
+   reading a list kept on the host, refuses a push that adds one. *Why:* the
+   harness serves several projects and is public; a default spelled with one
+   client's names leaked them into every other project and into the history
+   of the private repository this one replaced.
 
 ## Rules for changes
 

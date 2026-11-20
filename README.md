@@ -3780,6 +3780,26 @@ place of Vitest's 5 s, and a hang still fails. Don't raise `testTimeout` in
 `vitest.config.ts`. The worker count follows the host's free cores
 ([test-workers.ts](test-workers.ts)); `RALPH_TEST_MAX_WORKERS=<n>` overrides it.
 
+## The name guard
+
+This repository is public and the loops push to it unattended, so every clone
+a loop pushes from carries a pre-push hook, [name-guard.ts](name-guard.ts). It
+refuses a push whose new commits add a name the host keeps private: in an
+added line, a path, a commit message or an author. The names are not in the
+repository (that would publish them). They live on the host, one
+case-insensitive regex per line, in `~/.config/ralph/name-guard` (or the file
+`RALPH_NAME_GUARD` names).
+
+```bash
+bun ~/ralph/name-guard.ts --install          # run inside each clone
+bun ~/ralph/name-guard.ts --scan origin/main # check existing commits by hand
+```
+
+The guard fails closed: with the hook installed and no list, every push is
+refused with the reason. A refused journal publish leaves its draft in place,
+and a refused loop push fails that iteration; neither publishes anything.
+Removed lines are not scanned, so a commit that deletes a name passes.
+
 ## The journal
 
 [The journal guide](journal/README.md) owns naming and format. Journals live in
