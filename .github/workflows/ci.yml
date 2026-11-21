@@ -11,7 +11,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a pull request supersedes its old run. A push to main does
+  # not: each merge needs its own result, or a red main cannot be traced to
+  # the merge that caused it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -20,10 +23,16 @@ jobs:
     # (the self-hosted runner there serves only the private archive).
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Actions are pinned to a commit, not a tag: a green run is what lets a
+    # loop merge unattended, so what runs here must not change when a tag
+    # moves upstream. The comment names the release; bump both together.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Nothing in this job pushes; keep the token out of .git/config.
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.x
 
