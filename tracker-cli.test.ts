@@ -191,6 +191,20 @@ describe("tracker.ts", () => {
     expect(github.out.slice(5, 7)).toEqual(["- [ ] Fixes `#12`'s retry too", "- [ ] builds on AND-185 and `acme/web#3`"]);
   });
 
+  it("quotes a link that names a ticket whole, leaves other links alone, and closes a fence left open", async () => {
+    const body = "## Acceptance criteria\n- [ ] Fixes https://github.com/acme/web/issues/12 too\n- [ ] see [AND-185](https://linear.app/acme/issue/AND-185/retry)\n- [ ] docs at https://example.com/guide\n```\nopen\n";
+    const { out, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 184, body }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(4)).toEqual([
+      "- [ ] Fixes `https://github.com/acme/web/issues/12` too",
+      "- [ ] see `[AND-185](https://linear.app/acme/issue/AND-185/retry)`",
+      "- [ ] docs at https://example.com/guide",
+      "```",
+      "open",
+      "```",
+    ]);
+  });
+
   it("finds a heading the sections anchor allows, with two spaces", async () => {
     const { out, run } = cli({ issues: [{ number: 7, body: "##  Acceptance criteria\n- [ ] one\n" }] });
     expect(await run("pr-ref", "7", "--criteria")).toBe(EXIT.ok);

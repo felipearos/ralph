@@ -155,8 +155,13 @@ export function acceptanceCriteria(body: string): string[] | null {
 export function inertReferences(lines: readonly string[], key: string | null): string[] {
   const keyed = key === null ? "" : `|\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+\\b`;
   const reference = new RegExp(`(?:\\b[\\w.-]+\\/[\\w.-]+)?#\\d+\\b${keyed}`, "g");
+  // A URL or markdown link is one token: wrapping a reference inside it would
+  // break the link, so one that names a ticket (an issue URL closes on merge
+  // like `#12` does) is quoted whole, and any other is left alone.
+  const link = /(\[[^\]\n]*\]\([^)\s]*\)|https?:\/\/[^\s)>\]]+)/;
+  const namesTicket = (token: string): boolean => new RegExp(reference.source).test(token) || /\/(?:issues|pull)\/\d+/.test(token);
   let fence: string | null = null;
-  return lines.map((line) => {
+  const out = lines.map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence !== null) {
       if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
@@ -168,9 +173,22 @@ export function inertReferences(lines: readonly string[], key: string | null): s
     }
     return line
       .split(/(`[^`\n]*`)/)
-      .map((part, at) => (at % 2 === 1 ? part : part.replace(reference, (ref) => `\`${ref}\``)))
+      .map((part, at) => {
+        if (at % 2 === 1) return part;
+        return part
+          .split(link)
+          .map((piece, index) => {
+            if (index % 2 === 0) return piece.replace(reference, (ref) => `\`${ref}\``);
+            return namesTicket(piece) ? `\`${piece}\`` : piece;
+          })
+          .join("");
+      })
       .join("");
   });
+  // A section cut short inside a fenced block would turn the rest of the PR
+  // body into code; close it where the copy ends.
+  if (fence !== null) out.push(fence);
+  return out;
 }
 
 function defaultTracker(): Tracker {
