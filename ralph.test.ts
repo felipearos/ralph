@@ -190,6 +190,8 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // And it sizes a ticket by the section under one heading (#150's rescue
     // work moved that anchor to a leaf so three layers could share it).
     'sections.ts',
+    // And it skips ticket keys a PR body quotes as code (#17).
+    'markdown-code.ts',
     'executor-budget.ts',
     'frontier/next-tasks.ts',
     'frontier/github-rate-limit.ts',
