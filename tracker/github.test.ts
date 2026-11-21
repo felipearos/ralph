@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { CommandError } from "./command";
 import { trackerContract, type Seed } from "./contract";
-import { createGithubTracker } from "./github";
+import { createGithubTracker, missingIssueNumber } from "./github";
 
 const REPO = "acme/widgets";
 
@@ -42,7 +42,12 @@ function emulatedGh(seed: Seed) {
     const at = args.indexOf(name);
     return at === -1 ? undefined : args[at + 1];
   };
-  const get = (raw: string) => issues.get(Number(raw)) ?? fail(`Could not resolve to an issue with the number of ${raw}`);
+  // Shaped as `run` reports it: the argv, then gh's own stderr line.
+  const get = (args: string[]) =>
+    issues.get(Number(args[2])) ??
+    (() => {
+      throw new CommandError(`gh ${args.join(" ")} failed: GraphQL: Could not resolve to an issue with the number of ${args[2]}`, "");
+    })();
   const shape = (issue: NonNullable<ReturnType<typeof issues.get>>, fields: string) => {
     const full: Record<string, unknown> = {
       number: issue.number,
@@ -142,7 +147,7 @@ function emulatedGh(seed: Seed) {
       });
       return `https://github.com/${REPO}/issues/${number}\n`;
     }
-    const issue = get(args[2]!);
+    const issue = get(args);
     switch (verb) {
       case "view":
         return JSON.stringify(shape(issue, flag(args, "--json")!));
@@ -193,6 +198,7 @@ trackerContract("github (emulated gh)", {
   createsLabels: true,
   cancelsAs: "canceled",
   listsPullRequests: false,
+  raisesNotFound: true,
   make: (seed) => {
     const { gh } = emulatedGh(seed);
     return createGithubTracker({ repo: REPO, owner: seed.self, gh, read: gh });
@@ -211,6 +217,19 @@ describe("github tracker", () => {
     const { gh, calls } = emulatedGh(seed);
     await createGithubTracker({ repo: REPO, owner: "felipe", gh, read: gh }).claim(9, "ralph-wip");
     expect(calls).toEqual([["issue", "edit", "9", "--repo", REPO, "--add-label", "ralph-wip"]]);
+  });
+
+  it("keeps a label-not-found error whose label is named after the missing-issue phrase", async () => {
+    const { gh } = emulatedGh(seed);
+    const label = "Could not resolve to an issue with the number of 9";
+    const error = await createGithubTracker({ repo: REPO, owner: "felipe", gh, read: gh })
+      .addLabels(9, [label])
+      .then(
+        () => null,
+        (thrown: unknown) => thrown,
+      );
+    expect(error).toBeInstanceOf(CommandError);
+    expect((error as Error).message).toContain(`'${label}' not found`);
   });
 
   it("cancels by closing as not planned, and leaves an already-closed issue alone", async () => {
@@ -286,5 +305,20 @@ describe("github tracker", () => {
     const error = new CommandError("gh: You have exceeded a secondary rate limit (HTTP 403)", "HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 4870\n\n{}");
     expect(tracker.classifyFailure(error)).toEqual({ kind: "secondary", retryAfterSeconds: null });
     expect(tracker.classifyFailure(new Error("gh: Not Found (HTTP 404)"))).toBeNull();
+  });
+});
+
+describe("missingIssueNumber", () => {
+  it("reads the number from both of gh's wordings of a missing issue", () => {
+    expect(missingIssueNumber("GraphQL: Could not resolve to an issue or pull request with the number of 999.")).toBe(999);
+    expect(missingIssueNumber("warning: something\nCould not resolve to an issue with the number of 42")).toBe(42);
+  });
+
+  it("is null for every other failure", () => {
+    expect(missingIssueNumber("HTTP 401: Bad credentials")).toBeNull();
+    expect(missingIssueNumber("API rate limit exceeded")).toBeNull();
+    expect(missingIssueNumber("")).toBeNull();
+    // A label-not-found error echoing a label named after the phrase.
+    expect(missingIssueNumber("'Could not resolve to an issue with the number of 1' not found")).toBeNull();
   });
 });

@@ -243,6 +243,7 @@ trackerContract("linear (emulated GraphQL)", {
   createsLabels: true,
   cancelsAs: "canceled",
   listsPullRequests: true,
+  raisesNotFound: false,
   make: (seed) => tracker(seed),
 });
 

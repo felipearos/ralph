@@ -8,6 +8,8 @@ import { listStore } from "./park-store";
 
 import { EXIT, main } from "./tracker";
 import { createFakeTracker, type FakeTrackerOptions } from "./tracker/fake";
+import { CommandError } from "./tracker/command";
+import { createGithubTracker } from "./tracker/github";
 import { TrackerUnavailableError } from "./tracker/types";
 import { RateLimitedError } from "./frontier/github-rate-limit";
 import type { RecordFields, SpeedKind } from "./speed";
@@ -226,6 +228,63 @@ describe("tracker.ts", () => {
     tracker.failNext("withLabel", new RateLimitedError("quota", 60, "fake"));
     expect(await run("claimed")).toBe(EXIT.throttled);
     expect(await run("view", "99")).toBe(EXIT.failed);
+  });
+});
+
+describe("tracker.ts on a missing issue (#18)", () => {
+  /** The CLI over the real GitHub adapter, its gh stubbed to fail every call with `failure`. */
+  const failingGithub = async (argv: string[], failure: Error | ((args: string[]) => Error)) => {
+    const stub = async (args: string[]): Promise<string> => {
+      throw typeof failure === "function" ? failure(args) : failure;
+    };
+    const tracker = createGithubTracker({ repo: "acme/widgets", owner: "felipe", gh: stub, read: stub });
+    const err: string[] = [];
+    const code = await main(argv, { tracker: () => tracker, loop: () => "ralph", out: () => {}, err: (line) => err.push(line) });
+    return { code, err };
+  };
+  /** gh's answer for a missing issue, after the argv the way `run` reports it. */
+  const missing = (number: number) => (args: string[]) =>
+    new CommandError(`gh ${args.join(" ")} failed: GraphQL: Could not resolve to an issue or pull request with the number of ${number}.`, "");
+
+  it("says the issue does not exist instead of gh's GraphQL text, and exits 1", async () => {
+    const { code, err } = await failingGithub(["view", "999"], missing(999));
+    expect(code).toBe(EXIT.failed);
+    expect(err).toEqual(["tracker: no issue #999 in acme/widgets"]);
+  });
+
+  it("names a missing issue on writes too", async () => {
+    for (const argv of [["comment", "999", "--body", "hi"], ["label", "add", "999", "ralph-wip"], ["label", "remove", "999", "ralph-wip"]]) {
+      const { code, err } = await failingGithub(argv, missing(999));
+      expect(code).toBe(EXIT.failed);
+      expect(err).toEqual(["tracker: no issue #999 in acme/widgets"]);
+    }
+  });
+
+  it("keeps any other failure's own message, and exits 1", async () => {
+    const { code, err } = await failingGithub(["view", "999"], new CommandError("gh issue view 999 failed: HTTP 401: Bad credentials", ""));
+    expect(code).toBe(EXIT.failed);
+    expect(err).toEqual(["tracker: gh issue view 999 failed: HTTP 401: Bad credentials"]);
+  });
+
+  it("never reads a quoted phrase in the argv as gh's answer", async () => {
+    // `run` puts the whole argv in the message: a comment quoting the phrase
+    // that fails for another reason must keep that reason.
+    const quoted = "GraphQL: Could not resolve to an issue or pull request with the number of 4021.";
+    const failure = new CommandError(`gh issue comment 17 --repo acme/widgets --body ${quoted} failed: HTTP 502: Bad Gateway`, "");
+    const { code, err } = await failingGithub(["comment", "17", "--body", quoted], failure);
+    expect(code).toBe(EXIT.failed);
+    expect(err).toEqual([`tracker: ${failure.message}`]);
+  });
+
+  it("names nothing when gh's missing number is not the issue asked for", async () => {
+    const { code, err } = await failingGithub(["view", "17"], missing(999));
+    expect(code).toBe(EXIT.failed);
+    expect(err[0]).not.toContain("no issue");
+  });
+
+  it("keeps a throttle a throttle: exit 75", async () => {
+    const { code } = await failingGithub(["view", "999"], new RateLimitedError("quota", 60, "gh"));
+    expect(code).toBe(EXIT.throttled);
   });
 });
 

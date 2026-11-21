@@ -21,6 +21,7 @@ import {
 } from "../frontier/github-rate-limit";
 import { CommandError, run } from "./command";
 import {
+  TrackerIssueNotFoundError,
   wipLabelsOn,
   type Tracker,
   type TrackerBlocker,
@@ -213,6 +214,47 @@ function retryingRead(gh: (args: string[]) => Promise<string>): (args: string[])
   return (args) => withRateLimitRetry(() => gh(args), classifyGhFailure, deps, retryPolicy(), budget);
 }
 
+/**
+ * The issue number in gh's "that issue does not exist" failure, or null for
+ * any other failure. GitHub words it "issue" or "issue or pull request"
+ * depending on the command. Only a line gh itself starts with the phrase
+ * counts: a label-not-found error echoes the label's name, and a label named
+ * after the phrase must not make an existing issue read as missing.
+ */
+export function missingIssueNumber(message: string): number | null {
+  const found = /^(?:GraphQL: )?Could not resolve to an issue(?: or pull request)? with the number of ([0-9]+)/m.exec(message);
+  return found === null ? null : Number(found[1]);
+}
+
+/**
+ * `call` with gh's missing-issue failure raised as `TrackerIssueNotFoundError`.
+ * It wraps the call from outside, after any rate-limit retry, so a throttle
+ * still surfaces as itself; every other failure is rethrown unchanged.
+ *
+ * Only a call aimed at one issue (`issue <verb> <n>`) is translated, and only
+ * when gh's own text names that same number: `run` puts the whole argv in the
+ * message, so a comment or title quoting the phrase must not turn an
+ * unrelated failure (a 502, a throttle on a write) into "no issue".
+ */
+function namingMissingIssues(
+  call: (args: string[]) => Promise<string>,
+  repo: string,
+): (args: string[]) => Promise<string> {
+  return async (args) => {
+    try {
+      return await call(args);
+    } catch (error) {
+      const target = args[0] === "issue" && /^[1-9][0-9]*$/.test(args[2] ?? "") ? Number(args[2]) : null;
+      if (target === null) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      const command = `gh ${args.join(" ")} failed: `;
+      const said = message.startsWith(command) ? message.slice(command.length) : message;
+      if (missingIssueNumber(said) !== target) throw error;
+      throw new TrackerIssueNotFoundError(`#${target}`, repo, { cause: error });
+    }
+  };
+}
+
 interface GhIssueView {
   number: number;
   title: string;
@@ -234,8 +276,11 @@ export function createGithubTracker(options: GithubTrackerOptions): Tracker {
   const pinned = options.pinned ?? true;
   const repoFlag = pinned ? ["--repo", repo] : [];
   const apiRepo = pinned ? repo : "{owner}/{repo}";
-  const gh = options.gh ?? ((args: string[]) => run("gh", args));
-  const read = options.read ?? retryingRead(gh);
+  const rawGh = options.gh ?? ((args: string[]) => run("gh", args));
+  // The retry wraps the raw gh, and the missing-issue translation wraps the
+  // retry: classifying after the retry keeps a throttle a throttle.
+  const gh = namingMissingIssues(rawGh, repo);
+  const read = namingMissingIssues(options.read ?? retryingRead(rawGh), repo);
   const readJson = async <T>(args: string[]): Promise<T> => JSON.parse(await read(args)) as T;
   const onIssue = (verb: string, number: number, ...rest: string[]): string[] => [
     "issue",

@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { IssueComment } from "../block-reason";
-import type { Tracker, TrackerKind } from "./types";
+import { TrackerIssueNotFoundError, type Tracker, type TrackerKind } from "./types";
 
 /** One issue as a test arranges it. Numbers are what the tracker numbers them, whatever its key. */
 export interface SeedIssue {
@@ -60,6 +60,11 @@ export interface ContractSetup {
   cancelsAs: "completed" | "canceled";
   /** Whether `issue()` lists the PRs linked to it (false: it reports none). */
   listsPullRequests: boolean;
+  /**
+   * Whether an unknown number raises `TrackerIssueNotFoundError` (false: it
+   * only throws). The Linear and Jira adapters adopt it later.
+   */
+  raisesNotFound: boolean;
   make(seed: Seed): Tracker | Promise<Tracker>;
 }
 
@@ -392,8 +397,27 @@ export function trackerContract(name: string, setup: ContractSetup): void {
       expect((await tracker.live(2)).labels).toContain("tria-wip");
     });
 
-    it("throws reading an issue that does not exist", async () => {
-      await expect((await fresh()).issue(999)).rejects.toThrow();
+    it("names an issue that does not exist, on reads and writes", async () => {
+      const tracker = await fresh();
+      if (!setup.raisesNotFound) {
+        await expect(tracker.issue(999)).rejects.toThrow();
+        return;
+      }
+      // Reads and writes alike name the missing issue, so the CLI can say so.
+      const missing = { name: "TrackerIssueNotFoundError", ref: setup.ref(999) };
+      for (const call of [
+        () => tracker.issue(999),
+        () => tracker.live(999),
+        () => tracker.comment(999, "hello"),
+        () => tracker.addLabels(999, ["ralph-wip"]),
+      ]) {
+        const error = await call().then(
+          () => null,
+          (thrown: unknown) => thrown,
+        );
+        expect(error).toBeInstanceOf(TrackerIssueNotFoundError);
+        expect(error).toMatchObject(missing);
+      }
     });
   });
 }
