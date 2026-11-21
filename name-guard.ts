@@ -179,8 +179,10 @@ function main(argv: string[]): number {
   const cwd = process.cwd();
   try {
     if (mode === "--install") {
-      const hook = install(cwd);
+      // The list first: a hook installed without one refuses every push
+      // from this clone, which is a broken host, not a guarded one.
       loadList(process.env.RALPH_NAME_GUARD || DEFAULT_LIST);
+      const hook = install(cwd);
       console.log(`name-guard: installed ${hook}`);
       return 0;
     }
