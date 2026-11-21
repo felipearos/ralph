@@ -13,6 +13,8 @@
  *                                           (--json: `gh issue list`'s number,title,labels shape)
  *   bun tracker.ts view <n> [--json]        the issue, its labels and every comment
  *   bun tracker.ts comment <n> --body <text> | --body-file <path|->
+ *   bun tracker.ts create --title <text> (--body <text> | --body-file <path|->) [--label <name>]...
+ *                                           open one issue; prints `<ref>\t<url>`
  *   bun tracker.ts label add|remove <n> <label>...
  *   bun tracker.ts claimed [--loop <name>]  open issues carrying <loop>-wip, one number per line
  *   bun tracker.ts done <n> [--loop <name>] [--pr <url>]     close it, drop its *-wip, add <loop>-done
@@ -62,6 +64,7 @@ const USAGE = `usage:
   tracker.ts list [--limit <n>] [--json]
   tracker.ts view <n> [--json]
   tracker.ts comment <n> --body <text> | --body-file <path|->
+  tracker.ts create --title <text> (--body <text> | --body-file <path|->) [--label <name>]...
   tracker.ts label add|remove <n> <label>...
   tracker.ts claimed [--loop <name>]
   tracker.ts done <n> [--loop <name>] [--pr <url>]
@@ -219,6 +222,32 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         const text = body ?? (deps.readFile ?? ((path: string) => readFileSync(path === "-" ? 0 : path, "utf8")))(file!);
         if (text.trim() === "") throw new UsageError("refusing to post an empty comment");
         await tracker().comment(issueNumber(args[0]), text);
+        return EXIT.ok;
+      }
+      case "create": {
+        const title = takeFlag(args, "--title");
+        const body = takeFlag(args, "--body");
+        const file = takeFlag(args, "--body-file");
+        const labels: string[] = [];
+        for (let label = takeFlag(args, "--label"); label !== undefined; label = takeFlag(args, "--label")) labels.push(label);
+        onlyPositional(args, 0, "create takes no issue number");
+        if (title === undefined || title.trim() === "") throw new UsageError("create needs a non-empty --title");
+        if ((body === undefined) === (file === undefined)) throw new UsageError("create needs exactly one of --body or --body-file");
+        // Read before the tracker is built, so an empty file is a usage error
+        // that never reaches the tracker.
+        const text = body ?? (deps.readFile ?? ((path: string) => readFileSync(path === "-" ? 0 : path, "utf8")))(file!);
+        if (text.trim() === "") throw new UsageError("refusing to open an issue with an empty body");
+        const t = tracker();
+        // GitHub and Linear refuse an unknown label on create; checking first
+        // means a label we cannot make leaves no half-labelled issue behind.
+        const { missing } = await t.ensureLabels(labels);
+        if (missing.length > 0) {
+          err(`tracker: cannot create label(s) ${missing.join(", ")}; nothing was opened`);
+          return EXIT.failed;
+        }
+        const created = await t.create({ title, body: text, labels });
+        out(`${t.ref(created.number)}\t${created.url}`);
+        if (created.warning !== null) err(`tracker: ${t.ref(created.number)}: ${created.warning}`);
         return EXIT.ok;
       }
       case "label": {
