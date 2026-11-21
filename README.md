@@ -3491,6 +3491,34 @@ closed, timeout, unreadable — are findings to act on or hand off, never a
 merge. Being behind the base branch is no longer a reason to rebase; the queue
 builds the combination itself, and a rebase is reserved for a real conflict.
 
+### A Qodo review as a merge condition
+
+A project whose PRs Qodo Code Review reviews can make that review a merge
+condition: its `.ralph/prompt.md` reviewer section (`CODEX`, spliced just
+before §5 step 6) tells the loop to run
+
+```bash
+bun ~/ralph/qodo-review.ts <pr> [--wait <seconds>] [--json]
+```
+
+It reads Qodo's "Code Review by Qodo" summary comment and answers whether a
+finished review covers the PR head: the summary names the reviewed commit,
+is not a failed run, and carries a finished body (the counts line, numbered
+findings, "no issues found" or "no open findings"). Exit 0 reviewed with no open finding,
+1 reviewed with open findings (listed by number, severity, type and link,
+read from the summary: Qodo publishes them there, not as review threads),
+3 pending, 4 gave up, 5 unreadable, 75 throttled. A failed Qodo run ("Sorry,
+something went wrong"), or a review of an older commit five minutes after the
+head was first seen, is asked again with `/agentic_review`, once per head.
+The wait is bounded: each call polls for at most `--wait` seconds (240,
+capped at 480), and past `RALPH_QODO_REVIEW_MINUTES` (30) from when the tool
+first saw the head it exits 4, which the prompt turns into a hand-off to a
+person, never a merge. When it first saw each head, and whether it asked
+again, is kept in `<git-common-dir>/ralph/qodo-review.json`. The loop answers
+the findings in one PR comment starting `@qodo `, so Qodo reads it. This
+repository's own gate (fix valid High and Medium findings, report Low ones,
+stop after two rounds) is in its `.ralph/prompt.md`.
+
 ### Controlling a loop
 
 ```bash
