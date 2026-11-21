@@ -52,7 +52,7 @@ describe("ralph's own plan", () => {
     ).toEqual([]);
     // …and the heading still parses, so the assertion above cannot pass by
     // matching nothing at all.
-    expect(fences.outOfScope).toContain(176);
+    expect(fences.outOfScope).toContain(8);
     expect(fences.closureParents.length).toBeGreaterThan(0);
   });
 });
