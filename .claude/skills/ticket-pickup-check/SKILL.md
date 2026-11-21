@@ -71,10 +71,19 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
      triager's Oversize bucket.
    - `## Blocked by` and `## Parent`: on GitHub the frontier reads every
      `#<n>` under them as an issue of THIS repository - including the number
-     in `owner/other-repo#<n>`. List each reference and, through
-     `bun "$H/tracker.ts" view <ref> --json`, whether it exists here and is
-     open. A reference to another repository, or to an issue that does not
-     exist here, is a problem to report.
+     in `owner/other-repo#<n>`. So look up the NUMBER the frontier reads,
+     never the `owner/repo#<n>` text (the tracker takes a bare number only):
+
+     ```bash
+     for ref in <each n>; do printf '#%s ' "$ref"; bun "$H/tracker.ts" view "$ref" --json 2>/dev/null | jq -c '{state, title}' || echo "does not exist here"; done
+     ```
+
+     Report every reference written as `owner/repo#<n>` and every number
+     that does not exist here. Say what it does to the frontier: a missing
+     `## Blocked by` issue is not in its census, so it blocks NOTHING - the
+     ticket can be offered with that dependency unmet; a missing `## Parent`
+     becomes a phantom spec (step 4 shows it as `spec` with `title: null`).
+     In `issue.json`, `labels` is a list of plain strings, not objects.
    - `## Staffing group`, if present, must be the LAST section's single value
      with no footer after it; a "Generated with" line inside it has made the
      whole frontier throw before.
@@ -99,7 +108,11 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
    jq -c --argjson n "$N" '[paths(objects and .number? == $n)] | map(.[0]) | unique' "$OUT/frontier.json"
    jq -c --argjson n "$N" '[.tree[] | .. | objects | select(.number? == $n and has("state")) | {state, detail, stuck, human, otherBlockers, heldBy}]' "$OUT/frontier.json"
    jq -c --argjson n "$N" '.ready[] | select(any(.tickets[]; .number == $n)) | {spec: .spec.number, staffingGroup}' "$OUT/frontier.json"
+   jq -c --argjson n "$N" '.tree[] | select(any(.. | objects; .number? == $n)) | .spec' "$OUT/frontier.json"
    ```
+
+   The last line is the spec the frontier files the ticket under; a `title`
+   of `null` there means its `## Parent` names no issue of this repository.
 
    Exit 75: throttled - stop and report. Another non-zero exit, or output
    that is not JSON: stop, and quote the first lines of `frontier.err`.
