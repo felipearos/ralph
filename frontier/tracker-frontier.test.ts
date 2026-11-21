@@ -126,6 +126,16 @@ describe("linkKeyedPullRequests", () => {
       linkKeyedPullRequests([{ number: 13, headRefName: "nova/184-x", body: "OA-184" }], "AND", loops),
     ).toEqual([{ number: 13, closingIssuesReferences: [] }]);
   });
+
+  it("does not tie a PR to a key it quotes as code", () => {
+    expect(
+      linkKeyedPullRequests(
+        [{ number: 14, headRefName: "feature/y", body: "Ticket: AND-184 https://x\n\n- [ ] builds on `AND-185`\n\n```\nAND-186\n```" }],
+        "AND",
+        loops,
+      ),
+    ).toEqual([{ number: 14, closingIssuesReferences: [{ number: 184 }] }]);
+  });
 });
 
 describe("claiming on a keyed tracker", () => {

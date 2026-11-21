@@ -50,6 +50,7 @@ import { recordBlockPark, type BlockParkDeps } from "./block-park";
 import { RATE_LIMITED_EXIT, isRateLimited } from "./frontier/github-rate-limit";
 import { READY_LABEL, currentLoop, doneLabelFor, stuckLabelFor, wipLabelFor } from "./frontier/next-tasks";
 import { projectRoot } from "./paths";
+import { sectionIfPresent } from "./sections";
 import { configuredParkStorePath } from "./park-store";
 import { recordSpeedEvent, type RecordFields, type SpeedKind } from "./speed";
 import { loadProjectConfig } from "./project-config";
@@ -131,17 +132,45 @@ function onlyPositional(args: string[], count: number, what: string): void {
  * The lines under the body's `## Acceptance criteria` heading, up to the next
  * `## ` heading (a `### ` sub-heading stays inside), verbatim but without the
  * blank lines around them; null when there is no such section or it is empty.
+ * The anchor is `sections.ts`'s, so this finds the section exactly where the
+ * frontier sizing a ticket and the triager rewriting one find it.
  */
 export function acceptanceCriteria(body: string): string[] | null {
-  const lines = body.split(/\r?\n/);
-  const start = lines.findIndex((line) => /^## acceptance criteria\s*$/i.test(line));
-  if (start === -1) return null;
-  let end = lines.findIndex((line, at) => at > start && line.startsWith("## "));
-  if (end === -1) end = lines.length;
-  const section = lines.slice(start + 1, end);
+  const text = sectionIfPresent(body, "Acceptance criteria");
+  if (text === null) return null;
+  const section = text.split(/\r?\n/);
   while (section.length > 0 && section[0]!.trim() === "") section.shift();
   while (section.length > 0 && section.at(-1)!.trim() === "") section.pop();
   return section.length === 0 ? null : section;
+}
+
+/**
+ * Copied lines with every ticket reference wrapped as code: `#12`,
+ * `owner/repo#12` and, on a keyed tracker, `KEY-12`. A PR body is read for
+ * what it carries — GitHub closes a `Closes #12` on merge, and the frontier
+ * fences a ticket a body names — and a criterion that mentions a sibling
+ * ticket must do neither. Neither reads inside code (`withoutCode`). Lines in
+ * a fenced block and spans already in backticks are left as they are.
+ */
+export function inertReferences(lines: readonly string[], key: string | null): string[] {
+  const keyed = key === null ? "" : `|\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+\\b`;
+  const reference = new RegExp(`(?:\\b[\\w.-]+\\/[\\w.-]+)?#\\d+\\b${keyed}`, "g");
+  let fence: string | null = null;
+  return lines.map((line) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence !== null) {
+      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      return line;
+    }
+    if (marker !== undefined) {
+      fence = marker;
+      return line;
+    }
+    return line
+      .split(/(`[^`\n]*`)/)
+      .map((part, at) => (at % 2 === 1 ? part : part.replace(reference, (ref) => `\`${ref}\``)))
+      .join("");
+  });
 }
 
 function defaultTracker(): Tracker {
@@ -217,7 +246,11 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         const lines = acceptanceCriteria(issue.body);
         // A ticket without the section still gets its PR: say so instead of failing.
         if (lines === null) out("_The ticket has no acceptance criteria section._");
-        else for (const line of lines) out(line);
+        else {
+          // A keyed tracker spells its tickets `KEY-n`; GitHub's `#n` is fenced either way.
+          const key = t.kind === "github" ? null : (/^(.+)-\d+$/.exec(t.ref(number))?.[1] ?? null);
+          for (const line of inertReferences(lines, key)) out(line);
+        }
         return EXIT.ok;
       }
       case "view": {

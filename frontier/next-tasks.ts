@@ -364,6 +364,16 @@ export interface OpenPullRequest {
 }
 
 /**
+ * A PR body with its fenced blocks and backtick spans removed: text quoted as
+ * code is cited, not claimed, so no reference inside it ties the PR to a
+ * ticket. `tracker.ts pr-ref --criteria` relies on it, wrapping the ticket
+ * references in the acceptance criteria it copies into a PR body (#17).
+ */
+export function withoutCode(body: string | null | undefined): string {
+  return (body ?? "").replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, "").replace(/`[^`\n]*`/g, "");
+}
+
+/**
  * Same-repository issues a PR body names with a non-closing keyword. A bare
  * `#n` in prose and a cross-repo `owner/repo#n` do not count: PR bodies cite
  * issues in passing, and a passing mention must not fence a ticket. Code is
@@ -372,7 +382,7 @@ export interface OpenPullRequest {
  */
 export function parseBodyReferences(body: string | null | undefined): number[] {
   const numbers: number[] = [];
-  const prose = (body ?? "").replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, "").replace(/`[^`\n]*`/g, "");
+  const prose = withoutCode(body);
   const pattern = /\b(?:part of|references|refs?|related to)\s*:?\s*#(\d+)(?![\w/])/gi;
   for (const match of prose.matchAll(pattern)) {
     const number = Number(match[1]);
@@ -3040,7 +3050,7 @@ let readHeads: () => Promise<OpenPullRequestHead[]> = readOpenPullRequestHeads;
 /**
  * Which tickets each open PR carries, on a tracker that cannot see GitHub
  * (felipearos/ralph#333): a PR whose head branch is `<loop>/<n>-…` for a loop
- * of this project, or whose body names `<KEY>-n`. Shaped like GitHub's
+ * of this project, or whose body names `<KEY>-n` outside code. Shaped like GitHub's
  * `closingIssuesReferences`, so the census and the live re-read fence it the
  * same way.
  */
@@ -3054,7 +3064,9 @@ export function linkKeyedPullRequests(
     const numbers = new Set<number>();
     const branch = /^([a-z][a-z0-9]*)\/([1-9][0-9]*)(?:-|$)/.exec(pr.headRefName);
     if (branch !== null && loops.includes(branch[1]!)) numbers.add(Number(branch[2]));
-    for (const match of (pr.body ?? "").matchAll(keyRef)) numbers.add(Number(match[1]));
+    // Code is a citation, as it is for parseBodyReferences: a PR quoting
+    // another ticket's key (pr-ref --criteria does) must not fence it.
+    for (const match of withoutCode(pr.body).matchAll(keyRef)) numbers.add(Number(match[1]));
     return { number: pr.number, closingIssuesReferences: [...numbers].map((number) => ({ number })) };
   });
 }

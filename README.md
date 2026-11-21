@@ -227,9 +227,11 @@ finishing moves it to the done state, removes every `-wip` and adds
 `<loop>-done`; a stuck ticket gets `<loop>-blocked` and keeps its state. A
 failed state move is a warning: the label is the fence. The tracker cannot see
 GitHub, so an open PR fences its ticket when its branch is `<loop>/<n>-…` or its
-body names `<KEY>-n`, and the PR body carries `tracker.ts pr-ref <n>`'s line
+body names `<KEY>-n` outside code, and the PR body carries `tracker.ts pr-ref <n>`'s line
 (`Ticket: AND-184 <link>`) instead of `Closes #184`, which would close an
-unrelated GitHub issue.
+unrelated GitHub issue. With `--criteria` it also prints the ticket's
+`## Acceptance criteria` section, every ticket reference in it quoted as code,
+so a criterion naming a sibling ticket neither closes nor fences it.
 
 **Roles.** Coder loops and the triager run on Linear or Jira. There the triager
 does the Slack intake only (#396): an open `slack-intake` report in scope with
