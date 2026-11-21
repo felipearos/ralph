@@ -233,20 +233,18 @@ describe("tracker.ts", () => {
 
 describe("tracker.ts on a missing issue (#18)", () => {
   /** The CLI over the real GitHub adapter, its gh stubbed to fail every call with `failure`. */
-  const failingGithub = async (argv: string[], failure: Error) => {
-    const stub = async (): Promise<string> => {
-      throw failure;
+  const failingGithub = async (argv: string[], failure: Error | ((args: string[]) => Error)) => {
+    const stub = async (args: string[]): Promise<string> => {
+      throw typeof failure === "function" ? failure(args) : failure;
     };
     const tracker = createGithubTracker({ repo: "acme/widgets", owner: "felipe", gh: stub, read: stub });
     const err: string[] = [];
     const code = await main(argv, { tracker: () => tracker, loop: () => "ralph", out: () => {}, err: (line) => err.push(line) });
     return { code, err };
   };
-  const missing = (number: number) =>
-    new CommandError(
-      `gh issue view ${number} --repo acme/widgets --json number,title failed: GraphQL: Could not resolve to an issue or pull request with the number of ${number}.`,
-      "",
-    );
+  /** gh's answer for a missing issue, after the argv the way `run` reports it. */
+  const missing = (number: number) => (args: string[]) =>
+    new CommandError(`gh ${args.join(" ")} failed: GraphQL: Could not resolve to an issue or pull request with the number of ${number}.`, "");
 
   it("says the issue does not exist instead of gh's GraphQL text, and exits 1", async () => {
     const { code, err } = await failingGithub(["view", "999"], missing(999));

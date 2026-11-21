@@ -217,10 +217,12 @@ function retryingRead(gh: (args: string[]) => Promise<string>): (args: string[])
 /**
  * The issue number in gh's "that issue does not exist" failure, or null for
  * any other failure. GitHub words it "issue" or "issue or pull request"
- * depending on the command.
+ * depending on the command. Only a line gh itself starts with the phrase
+ * counts: a label-not-found error echoes the label's name, and a label named
+ * after the phrase must not make an existing issue read as missing.
  */
 export function missingIssueNumber(message: string): number | null {
-  const found = /Could not resolve to an issue(?: or pull request)? with the number of ([0-9]+)/.exec(message);
+  const found = /^(?:GraphQL: )?Could not resolve to an issue(?: or pull request)? with the number of ([0-9]+)/m.exec(message);
   return found === null ? null : Number(found[1]);
 }
 

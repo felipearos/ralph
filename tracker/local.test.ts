@@ -40,7 +40,7 @@ trackerContract("local, file-backed", {
   createsLabels: true,
   cancelsAs: "canceled",
   listsPullRequests: true,
-  raisesNotFound: false,
+  raisesNotFound: true,
   make: (seed) => createLocalTracker({ file: seededFile(seed), key: "LOC", self: seed.self }),
 });
 

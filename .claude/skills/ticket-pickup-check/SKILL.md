@@ -92,7 +92,8 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
      done
      ```
 
-     "Could not resolve to an issue" in the error means it does not exist
+     An error starting `tracker: no issue #` (or, from an older harness,
+     containing "Could not resolve to an issue") means it does not exist
      here; any other failure is unknown, not missing - say so.
 
      Report every reference written as `owner/repo#<n>` and every number
