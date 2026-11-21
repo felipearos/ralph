@@ -400,9 +400,10 @@ export interface Io {
 const POLL_SECONDS = 30;
 
 function minutesKnob(env: Record<string, string | undefined>, name: string, fallback: number): number {
-  const raw = Number(env[name]);
   // A malformed knob falls back to the default, never to "no wait" or "forever".
-  return env[name] !== undefined && env[name] !== "" && Number.isFinite(raw) && raw >= 0 ? raw : fallback;
+  // Only a plain number counts: `Number(" ")` is 0, which would turn a wait off.
+  const text = (env[name] ?? "").trim();
+  return /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : fallback;
 }
 
 function budgetMinutes(env: Record<string, string | undefined>): number {

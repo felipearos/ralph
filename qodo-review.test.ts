@@ -163,6 +163,9 @@ describe("judge", () => {
     const fresh = { ...comment(BOT, clean(HEAD), 1), updatedAt: at(1) };
     const fake = fakeRun([state([fresh])]);
     expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_QUIET_MINUTES: "soon" })).toBe(3);
+    // Blank is malformed too, not zero (PR #33 review).
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_QUIET_MINUTES: " " })).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_QUIET_MINUTES: "0" })).toBe(0);
   });
 
   it("a review of the head still passes after the budget", () => {
