@@ -63,6 +63,8 @@ const comment = (author: string, body: string, minute = 1): IssueComment => ({
 const state = (comments: IssueComment[]): PrState => ({ head: HEAD, headAt: at(0), comments });
 const seenAt = (minute: number, askedAt?: string): HeadSeen => ({ firstSeen: at(minute), ...(askedAt ? { askedAt } : {}) });
 const minute = (m: number) => new Date(at(m));
+// The run tests are about polling, not the settle window, which judge's own tests pin.
+const QUIET0 = { RALPH_QODO_QUIET_MINUTES: "0" };
 
 describe("reading a summary", () => {
   it("reads a clean review's counts and every reviewed commit", () => {
@@ -99,13 +101,13 @@ describe("reading a summary", () => {
 
 describe("judge", () => {
   it("passes a finished clean review of the head", () => {
-    const verdict = judge(state([comment(BOT, prSummary), comment(BOT, clean(HEAD))]), seenAt(1), minute(3));
+    const verdict = judge(state([comment(BOT, prSummary), comment(BOT, clean(HEAD))]), seenAt(1), minute(7));
     expect(verdict).toMatchObject({ kind: "reviewed", counts: { bugs: 0, rules: 0, requirements: 0 }, findings: [] });
     expect(exitOf(verdict)).toBe(0);
   });
 
   it("lists a review's open findings as exit 1, and a resolved-only review as 0", () => {
-    const verdict = judge(state([comment(BOT, withFindings(HEAD))]), seenAt(1), minute(3));
+    const verdict = judge(state([comment(BOT, withFindings(HEAD))]), seenAt(1), minute(7));
     expect(verdict.kind).toBe("reviewed");
     expect(exitOf(verdict)).toBe(1);
     expect(exitOf({ kind: "reviewed", counts: null, findings: [{ ...findingsOf(withFindings(HEAD))[2]! }], url: "" })).toBe(0);
@@ -144,6 +146,23 @@ describe("judge", () => {
     expect(judge(state([]), seenAt(50), minute(81))).toMatchObject({ kind: "gave-up" });
     // Without a record the commit date is the fallback.
     expect(judge(state([]), null, minute(31))).toMatchObject({ kind: "gave-up" });
+  });
+
+  it("waits for a finished-looking summary to stop changing before it counts", () => {
+    // PR #26: an intermediate edit named the head and read "no open findings";
+    // the finished review, with a High finding, landed 15 s after the merge.
+    const edited = (m: number): IssueComment => ({ ...comment(BOT, clean(HEAD), 1), updatedAt: at(m) });
+    expect(judge(state([edited(10)]), seenAt(1), minute(12))).toMatchObject({ kind: "pending", retrigger: false });
+    expect(judge(state([edited(10)]), seenAt(1), minute(15)).kind).toBe("reviewed");
+    expect(judge(state([edited(10)]), seenAt(1), minute(11), 30, 0).kind).toBe("reviewed");
+    // No edit time at all: the creation time stands in for it.
+    expect(judge(state([comment(BOT, clean(HEAD), 1)]), seenAt(1), minute(3)).kind).toBe("pending");
+  });
+
+  it("a malformed settle knob falls back to the default", async () => {
+    const fresh = { ...comment(BOT, clean(HEAD), 1), updatedAt: at(1) };
+    const fake = fakeRun([state([fresh])]);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_QUIET_MINUTES: "soon" })).toBe(3);
   });
 
   it("a review of the head still passes after the budget", () => {
@@ -193,8 +212,7 @@ describe("the seen store", () => {
   });
 });
 
-describe("run", () => {
-  function fakeIo(states: PrState[], startMinute = 1) {
+function fakeRun(states: PrState[], startMinute = 1) {
     let clock = Date.parse(at(startMinute));
     const log: string[] = [];
     const asked: number[] = [];
@@ -214,40 +232,43 @@ describe("run", () => {
       log: (line) => log.push(line),
     };
     return { io, log, asked, seen, reads: () => reads };
-  }
+}
+
+describe("run", () => {
+  const fakeIo = fakeRun;
 
   it("polls until the review lands, then exits 0", async () => {
     const fake = fakeIo([state([]), state([comment(BOT, prSummary)]), state([comment(BOT, clean(HEAD))])]);
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 240 }, fake.io, {})).toBe(0);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 240 }, fake.io, QUIET0)).toBe(0);
     expect(fake.reads()).toBe(3);
     expect(fake.log.at(-1)).toContain("no open findings");
   });
 
   it("lists open findings and exits 1", async () => {
     const fake = fakeIo([state([comment(BOT, withFindings(HEAD))])]);
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {})).toBe(1);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, QUIET0)).toBe(1);
     expect(fake.log.at(-1)).toContain("1. [High] Bug — Delayed pushes fail the review gate");
     expect(fake.log.at(-1)).not.toContain("Already handled");
   });
 
   it("answers pending (3) once its own wait is spent", async () => {
     const fake = fakeIo([state([])]);
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 60 }, fake.io, {})).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 60 }, fake.io, QUIET0)).toBe(3);
     expect(fake.reads()).toBe(3);
   });
 
   it("asks Qodo again once on a failed run, across calls, and exits 4 past the budget", async () => {
     const fake = fakeIo([state([comment(BOT, failed)])], 1);
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 60 }, fake.io, {})).toBe(3);
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 60 }, fake.io, {})).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 60 }, fake.io, QUIET0)).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 60 }, fake.io, QUIET0)).toBe(3);
     expect(fake.asked).toEqual([7]);
-    expect(await run({ pr: 7, repo: null, json: true, waitSeconds: 0 }, fake.io, { RALPH_QODO_REVIEW_MINUTES: "1" })).toBe(4);
+    expect(await run({ pr: 7, repo: null, json: true, waitSeconds: 0 }, fake.io, { ...QUIET0, RALPH_QODO_REVIEW_MINUTES: "1" })).toBe(4);
     expect(JSON.parse(fake.log.at(-1)!)).toMatchObject({ pr: 7, kind: "gave-up" });
   });
 
   it("a malformed budget knob falls back to the default, never to no wait", async () => {
     const fake = fakeIo([state([])], 20);
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_REVIEW_MINUTES: "soon" })).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { ...QUIET0, RALPH_QODO_REVIEW_MINUTES: "soon" })).toBe(3);
   });
 
   it(`records ${RETRIGGER} only once posted, so a failed post is asked again`, async () => {
@@ -256,19 +277,19 @@ describe("run", () => {
     fake.io.retrigger = async () => {
       throw new Error("gh pr failed");
     };
-    await expect(run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {})).rejects.toThrow();
+    await expect(run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, QUIET0)).rejects.toThrow();
     expect([...fake.seen.values()][0]?.askedAt).toBeUndefined();
     fake.io.retrigger = post;
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {})).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, QUIET0)).toBe(3);
     expect(fake.asked).toEqual([7]);
   });
 
   it("prints the finding counts in text mode", async () => {
     const fake = fakeIo([state([comment(BOT, clean(HEAD))])]);
-    await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {});
+    await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, QUIET0);
     expect(fake.log.at(-1)).toContain("counts: 0 bugs, 0 rule violations, 0 requirement gaps");
     const withF = fakeIo([state([comment(BOT, withFindings(HEAD))])]);
-    await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, withF.io, {});
+    await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, withF.io, QUIET0);
     expect(withF.log.at(-1)).toContain("counts: 2 bugs, 1 rule violations, 1 requirement gaps (from the findings)");
   });
 
@@ -281,10 +302,10 @@ describe("run", () => {
       fake.asked.push(pr);
       posted = [{ ...comment(SELF, RETRIGGER), createdAt: fake.io.now().toISOString() }];
     };
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 120 }, fake.io, {})).toBe(3);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 120 }, fake.io, QUIET0)).toBe(3);
     expect(fake.asked).toEqual([7]);
     // The budget falls back to the commit date (minute 0), so it still ends.
     expect(fallbackSeen(state([]))).toEqual({ firstSeen: at(0) });
-    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_REVIEW_MINUTES: "3" })).toBe(4);
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { ...QUIET0, RALPH_QODO_REVIEW_MINUTES: "3" })).toBe(4);
   });
 });

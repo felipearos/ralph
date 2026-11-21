@@ -64,6 +64,8 @@ export interface IssueComment {
   author: string | null;
   body: string;
   createdAt: string;
+  /** When the comment was last edited; Qodo edits its summary in place while it reviews. */
+  updatedAt?: string;
   url: string;
 }
 
@@ -113,6 +115,15 @@ export const DEFAULT_BUDGET_MINUTES = 30;
 /** How long a stale review is left for Qodo's own push review before asking. */
 export const STALE_GRACE_MINUTES = 5;
 export const MAX_WAIT_SECONDS = 480;
+/**
+ * How long Qodo's summary must have gone unedited before a finished-looking
+ * review counts. Qodo rewrites the summary in place group by group, and an
+ * intermediate edit already names the new head and reads "Nice, no open
+ * findings for this group": on PR #26 the gate passed on such an edit, the
+ * PR merged at 19:18:44, and the finished review, with a High finding,
+ * landed at 19:18:59.
+ */
+export const DEFAULT_QUIET_MINUTES = 5;
 
 const isQodo = (login: string | null): boolean => login !== null && /^qodo(-code-review|-merge)?(\[bot\])?$/i.test(login);
 
@@ -180,9 +191,19 @@ export function finishedReviewOf(body: string, head: string): boolean {
 }
 
 /** What the PR's Qodo review says about its head. Pure; the test table is the contract. */
-export function judge(state: PrState, seen: HeadSeen | null, now: Date, budgetMinutes: number = DEFAULT_BUDGET_MINUTES): Verdict {
+export function judge(
+  state: PrState,
+  seen: HeadSeen | null,
+  now: Date,
+  budgetMinutes: number = DEFAULT_BUDGET_MINUTES,
+  quietMinutes: number = DEFAULT_QUIET_MINUTES,
+): Verdict {
   const summary = [...state.comments].reverse().find((c) => isQodo(c.author) && c.body.includes("Code Review by Qodo"));
-  if (summary && finishedReviewOf(summary.body, state.head)) {
+  const finished = summary !== undefined && finishedReviewOf(summary.body, state.head);
+  const editedAt = Date.parse(summary?.updatedAt ?? summary?.createdAt ?? "");
+  // An unknown edit time cannot prove the summary settled; it waits like a fresh edit.
+  const settledFor = Number.isNaN(editedAt) ? 0 : (now.getTime() - editedAt) / 60_000;
+  if (summary && finished && settledFor >= quietMinutes) {
     return { kind: "reviewed", counts: countsOf(summary.body), findings: findingsOf(summary.body), url: summary.url };
   }
   // The budget runs from when the head was first seen here, which is after it
@@ -195,6 +216,10 @@ export function judge(state: PrState, seen: HeadSeen | null, now: Date, budgetMi
   }
   const asked = seen?.askedAt !== undefined;
   if (!summary) return { kind: "pending", why: `Qodo has not commented on ${short} yet`, retrigger: false };
+  if (finished) {
+    const ago = Math.max(0, Math.round(settledFor * 60));
+    return { kind: "pending", why: `Qodo edited its review of ${short} ${ago}s ago; waiting ${quietMinutes} min for it to settle`, retrigger: false };
+  }
   if (/something went wrong/i.test(summary.body)) {
     return { kind: "pending", why: `Qodo's review failed${asked ? "; already asked again for this head" : ""}`, retrigger: !asked };
   }
@@ -274,8 +299,14 @@ export function parseComments(lines: string): IssueComment[] {
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => {
-      const c = JSON.parse(line) as { author?: string | null; body?: string; createdAt?: string; url?: string };
-      return { author: c.author ?? null, body: String(c.body ?? ""), createdAt: String(c.createdAt ?? ""), url: String(c.url ?? "") };
+      const c = JSON.parse(line) as { author?: string | null; body?: string; createdAt?: string; updatedAt?: string; url?: string };
+      return {
+        author: c.author ?? null,
+        body: String(c.body ?? ""),
+        createdAt: String(c.createdAt ?? ""),
+        ...(c.updatedAt ? { updatedAt: String(c.updatedAt) } : {}),
+        url: String(c.url ?? ""),
+      };
     });
 }
 
@@ -368,15 +399,21 @@ export interface Io {
 
 const POLL_SECONDS = 30;
 
-function budgetMinutes(env: Record<string, string | undefined>): number {
-  const raw = Number(env.RALPH_QODO_REVIEW_MINUTES);
+function minutesKnob(env: Record<string, string | undefined>, name: string, fallback: number): number {
+  const raw = Number(env[name]);
   // A malformed knob falls back to the default, never to "no wait" or "forever".
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BUDGET_MINUTES;
+  return env[name] !== undefined && env[name] !== "" && Number.isFinite(raw) && raw >= 0 ? raw : fallback;
+}
+
+function budgetMinutes(env: Record<string, string | undefined>): number {
+  const raw = minutesKnob(env, "RALPH_QODO_REVIEW_MINUTES", DEFAULT_BUDGET_MINUTES);
+  return raw > 0 ? raw : DEFAULT_BUDGET_MINUTES;
 }
 
 export async function run(options: Options, io: Io, env: Record<string, string | undefined> = process.env): Promise<number> {
   const repo = options.repo ?? (await io.repo());
   const budget = budgetMinutes(env);
+  const quiet = minutesKnob(env, "RALPH_QODO_QUIET_MINUTES", DEFAULT_QUIET_MINUTES);
   const started = io.now().getTime();
   for (;;) {
     const state = await io.read(options.pr, repo);
@@ -389,7 +426,7 @@ export async function run(options: Options, io: Io, env: Record<string, string |
       // the commit date, and any /agentic_review posted since (PR #26 review).
       seen = io.seen.get(key) ?? fallbackSeen(state);
     }
-    const verdict = judge(state, seen, io.now(), budget);
+    const verdict = judge(state, seen, io.now(), budget, quiet);
     if (verdict.kind === "pending" && verdict.retrigger) {
       // Recorded only once the post succeeded: a post that failed is asked again next time.
       await io.retrigger(options.pr, repo);
@@ -418,7 +455,7 @@ export async function main(argv: string[]): Promise<number> {
     read: async (pr, repo) => {
       const { head, headAt } = parseHead(await ghPatiently(["pr", "view", String(pr), "--repo", repo, "--json", "headRefOid,commits"], budget));
       // Every page: on a busy PR the summary can sit past the last hundred comments.
-      const jq = ".[] | {author: .user.login, body, createdAt: .created_at, url: .html_url}";
+      const jq = ".[] | {author: .user.login, body, createdAt: .created_at, updatedAt: .updated_at, url: .html_url}";
       const comments = parseComments(await ghPatiently(["api", "--paginate", `repos/${repo}/issues/${pr}/comments`, "--jq", jq], budget));
       return { head, headAt, comments };
     },

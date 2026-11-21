@@ -3514,7 +3514,9 @@ The wait is bounded: each call polls for at most `--wait` seconds (240,
 capped at 480), and past `RALPH_QODO_REVIEW_MINUTES` (30) from when the tool
 first saw the head it exits 4, which the prompt turns into a hand-off to a
 person, never a merge. When it first saw each head, and whether it asked
-again, is kept in `<git-common-dir>/ralph/qodo-review.json`. The loop answers
+again, is kept in `<git-common-dir>/ralph/qodo-review.json`. Qodo edits its summary in
+place while it reviews, so a finished-looking summary counts only once it
+has gone unedited for `RALPH_QODO_QUIET_MINUTES` (5). The loop answers
 the findings in one PR comment starting `@qodo `, so Qodo reads it. This
 repository's own gate (fix valid High and Medium findings, report Low ones,
 stop after two rounds) is in its `.ralph/prompt.md`.
