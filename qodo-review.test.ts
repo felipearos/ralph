@@ -6,6 +6,7 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import {
   countsOf,
   exitOf,
+  fallbackSeen,
   findingsOf,
   finishedReviewOf,
   judge,
@@ -59,7 +60,7 @@ const comment = (author: string, body: string, minute = 1): IssueComment => ({
   createdAt: at(minute),
   url: `https://github.com/example-org/acme/pull/7#issuecomment-${minute}`,
 });
-const state = (comments: IssueComment[]): PrState => ({ head: HEAD, headAt: at(0), self: SELF, comments });
+const state = (comments: IssueComment[]): PrState => ({ head: HEAD, headAt: at(0), comments });
 const seenAt = (minute: number, askedAt?: string): HeadSeen => ({ firstSeen: at(minute), ...(askedAt ? { askedAt } : {}) });
 const minute = (m: number) => new Date(at(m));
 
@@ -76,6 +77,11 @@ describe("reading a summary", () => {
       { number: 3, title: "Already handled ✓ Resolved", type: "Rule violation", severity: "Medium", resolved: true, view: "https://app.qodo.ai/findings/f3" },
       { number: 4, title: "A naming nit", type: "Requirement gap", severity: "Low", resolved: false, view: "https://app.qodo.ai/findings/f4" },
     ]);
+  });
+
+  it("reads Qodo's resolution marks, not the words, as resolved", () => {
+    const body = `<img src="https://img.shields.io/badge/Medium-1?x" alt="Remediation recommended">\n` + finding(1, "Outdated cache entries are served");
+    expect(findingsOf(body)[0]).toMatchObject({ title: "Outdated cache entries are served", resolved: false });
   });
 
   it("calls a review finished only with the head, a finished body, and no failure", () => {
@@ -241,12 +247,41 @@ describe("run", () => {
     expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_REVIEW_MINUTES: "soon" })).toBe(3);
   });
 
-  it(`posts ${RETRIGGER} only after recording it, so a failed post is not repeated`, async () => {
+  it(`records ${RETRIGGER} only once posted, so a failed post is asked again`, async () => {
     const fake = fakeIo([state([comment(BOT, failed)])]);
+    const post = fake.io.retrigger;
     fake.io.retrigger = async () => {
       throw new Error("gh pr failed");
     };
     await expect(run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {})).rejects.toThrow();
-    expect([...fake.seen.values()][0]?.askedAt).toBeDefined();
+    expect([...fake.seen.values()][0]?.askedAt).toBeUndefined();
+    fake.io.retrigger = post;
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {})).toBe(3);
+    expect(fake.asked).toEqual([7]);
+  });
+
+  it("prints the finding counts in text mode", async () => {
+    const fake = fakeIo([state([comment(BOT, clean(HEAD))])]);
+    await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, {});
+    expect(fake.log.at(-1)).toContain("counts: 0 bugs, 0 rule violations, 0 requirement gaps");
+    const withF = fakeIo([state([comment(BOT, withFindings(HEAD))])]);
+    await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, withF.io, {});
+    expect(withF.log.at(-1)).toContain("counts: 2 bugs, 1 rule violations, 1 requirement gaps (from the findings)");
+  });
+
+  it("with a store that keeps nothing, neither re-asks every poll nor restarts the budget", async () => {
+    let posted: IssueComment[] = [];
+    const fake = fakeIo([state([comment(BOT, failed)])], 5);
+    fake.io.seen = { get: () => null, set: () => {} };
+    fake.io.read = async () => state([comment(BOT, failed), ...posted]);
+    fake.io.retrigger = async (pr) => {
+      fake.asked.push(pr);
+      posted = [{ ...comment(SELF, RETRIGGER), createdAt: fake.io.now().toISOString() }];
+    };
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 120 }, fake.io, {})).toBe(3);
+    expect(fake.asked).toEqual([7]);
+    // The budget falls back to the commit date (minute 0), so it still ends.
+    expect(fallbackSeen(state([]))).toEqual({ firstSeen: at(0) });
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { RALPH_QODO_REVIEW_MINUTES: "3" })).toBe(4);
   });
 });

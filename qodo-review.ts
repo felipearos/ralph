@@ -71,8 +71,6 @@ export interface PrState {
   head: string;
   /** When the head commit was committed: only a fallback for `since`, see `HeadSeen`. */
   headAt: string;
-  /** The account the loop posts as. */
-  self: string;
   comments: IssueComment[];
 }
 
@@ -160,7 +158,8 @@ export function findingsOf(body: string): Finding[] {
       title: strip(summary.replace(/<code>[^<]*<\/code>\s*$/, "")),
       type: type.replace(/^[^A-Za-z]+/, "").trim(),
       severity,
-      resolved: /<s>|<del>|Resolved|Dismissed|Outdated/.test(summary),
+      // Qodo's marks, not the words: a title may say "Outdated" and still be open.
+      resolved: /<s>|<del>|[\u2713\u2717\u2296]\s*(?:Resolved|Dismissed|Outdated)/.test(summary),
       view: /\[View[^\]]*\]\((https:[^)]+)\)/.exec(rest)?.[1] ?? null,
     };
   });
@@ -205,6 +204,13 @@ export function judge(state: PrState, seen: HeadSeen | null, now: Date, budgetMi
   };
 }
 
+/** What the PR alone says about a head, for when the host-local record is unavailable. */
+export function fallbackSeen(state: PrState): HeadSeen {
+  const since = Date.parse(state.headAt);
+  const ask = state.comments.find((c) => c.body.trim().startsWith(RETRIGGER) && Date.parse(c.createdAt) >= since);
+  return { firstSeen: state.headAt, ...(ask ? { askedAt: ask.createdAt } : {}) };
+}
+
 /** The exit code a verdict maps to. */
 export function exitOf(verdict: Verdict): number {
   if (verdict.kind === "reviewed") return verdict.findings.some((f) => !f.resolved) ? 1 : 0;
@@ -221,6 +227,13 @@ export function render(pr: number, verdict: Verdict): string {
       : `PR #${pr}: Qodo reviewed the head — ${open.length} open finding${open.length === 1 ? "" : "s"}`,
     `  summary: ${verdict.url}`,
   ];
+  const c = verdict.counts;
+  const by = (type: string) => verdict.findings.filter((f) => f.type.startsWith(type)).length;
+  lines.push(
+    c === null
+      ? `  counts: ${by("Bug")} bugs, ${by("Rule")} rule violations, ${by("Requirement")} requirement gaps (from the findings)`
+      : `  counts: ${c.bugs} bugs, ${c.rules} rule violations, ${c.requirements} requirement gaps`,
+  );
   for (const f of open) {
     lines.push(`  ${f.number}. [${f.severity ?? "?"}] ${f.type || "finding"} — ${f.title}${f.view ? `\n     ${f.view}` : ""}`);
   }
@@ -240,10 +253,15 @@ const retryDeps: RetryDeps = {
   random: Math.random,
 };
 
+/** When this run must have answered by: `--wait` plus one poll of slack. Set by `main`. */
+let deadline = Number.POSITIVE_INFINITY;
+
 function ghPatiently(args: string[], budget: RetryBudget): Promise<string> {
   const policy = retryPolicy(process.env);
-  // Same cap as review-threads.ts: the Bash call running this must outlive the wait.
-  const capped = { ...policy, budgetSeconds: Math.min(policy.budgetSeconds, 60) };
+  // Same cap as review-threads.ts, and never past the caller's --wait: a
+  // throttle that outlasts it ends as exit 75 rather than overrunning.
+  const left = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+  const capped = { ...policy, budgetSeconds: Math.min(policy.budgetSeconds, 60, left) };
   const classify = (error: unknown) => classifyRateLimit(error instanceof Error ? error.message : String(error));
   return withRateLimitRetry(async () => gh(args), classify, retryDeps, capped, budget);
 }
@@ -363,14 +381,17 @@ export async function run(options: Options, io: Io, env: Record<string, string |
     const key = `${repo}#${options.pr}@${state.head}`;
     let seen = io.seen.get(key);
     if (seen === null) {
-      seen = { firstSeen: io.now().toISOString() };
-      io.seen.set(key, seen);
+      io.seen.set(key, { firstSeen: io.now().toISOString() });
+      // A store that cannot keep the record must not restart the budget, or
+      // re-ask Qodo, on every poll: fall back to what GitHub itself shows —
+      // the commit date, and any /agentic_review posted since (PR #26 review).
+      seen = io.seen.get(key) ?? fallbackSeen(state);
     }
     const verdict = judge(state, seen, io.now(), budget);
     if (verdict.kind === "pending" && verdict.retrigger) {
-      // Recorded before the write: a write that fails after posting must not ask twice.
-      io.seen.set(key, { ...seen, askedAt: io.now().toISOString() });
+      // Recorded only once the post succeeded: a post that failed is asked again next time.
       await io.retrigger(options.pr, repo);
+      io.seen.set(key, { ...seen, askedAt: io.now().toISOString() });
       io.log(`qodo-review: asked Qodo to review PR #${options.pr} again (${RETRIGGER}): ${verdict.why}`);
     }
     const waited = (io.now().getTime() - started) / 1000;
@@ -389,15 +410,15 @@ export async function main(argv: string[]): Promise<number> {
     return 64;
   }
   const budget: RetryBudget = { waitedSeconds: 0 };
+  deadline = Date.now() + (options.waitSeconds + POLL_SECONDS) * 1000;
   const io: Io = {
     repo: async () => (await ghPatiently(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], budget)).trim(),
     read: async (pr, repo) => {
       const { head, headAt } = parseHead(await ghPatiently(["pr", "view", String(pr), "--repo", repo, "--json", "headRefOid,commits"], budget));
-      const self = (await ghPatiently(["api", "user", "--jq", ".login"], budget)).trim();
       // Every page: on a busy PR the summary can sit past the last hundred comments.
       const jq = ".[] | {author: .user.login, body, createdAt: .created_at, url: .html_url}";
       const comments = parseComments(await ghPatiently(["api", "--paginate", `repos/${repo}/issues/${pr}/comments`, "--jq", jq], budget));
-      return { head, headAt, self, comments };
+      return { head, headAt, comments };
     },
     retrigger: async (pr, repo) => {
       await ghPatiently(["pr", "comment", String(pr), "--repo", repo, "--body", RETRIGGER], budget);
