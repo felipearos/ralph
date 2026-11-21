@@ -64,6 +64,9 @@ of the live loops, so it must also pass on a loaded machine.
 - `publish-journal.ts`, `journal/`, `learnings/` — what every iteration
   records, pushed to this repository's `main`.
 - `.ralph/` — this repository's own project config: ralph is a Ralph project.
+- `.claude/skills/` — procedures a Claude Code session loads on demand
+  (Agent Skills format): `ticket-pickup-check` says whether a loop will take
+  an issue and why not.
 - `name-guard.ts` — the pre-push hook that refuses a push naming a client
   (house rule 5); install it in every clone a loop pushes from with
   `bun name-guard.ts --install`.
