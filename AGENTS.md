@@ -1,7 +1,8 @@
-# Ralph — the harness for autonomous backlog loops
+# Software Factory — autonomous backlog loops
 
-Ralph runs Claude Code iterations unattended, overnight, against the GitHub
-issues of a project (today: loggd, and this repository itself). Nothing here
+Software Factory runs Claude Code iterations unattended, overnight, against the
+GitHub issues of a project (today: loggd, and this repository itself). Its
+harness is called Ralph: `ralph.sh`, the `RALPH_*` settings, `.ralph/` configs. Nothing here
 may hang, halt or lose a claim while nobody is watching: a missing or
 malformed signal falls back to existing behaviour, never to a stuck loop.
 
