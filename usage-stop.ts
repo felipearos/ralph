@@ -442,7 +442,9 @@ function loopWorktrees(root: string, rosterNames: string[]): { byLoop: Map<strin
     const at = lastEventsMs(path);
     let name = "";
     try {
-      name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").trim();
+      // Every whitespace character goes, as ralph.sh's `tr -d '[:space:]'` drops
+      // it, so a name ralph.sh runs under is the name credited here.
+      name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").replace(/\s+/g, "");
     } catch {
       // No name file, or an unreadable one: it names no loop.
     }
@@ -494,7 +496,9 @@ function showRoster(root: string, json: boolean): number {
   const override = readOverride(overridePath(root));
   const { byLoop, unnamed } = loopWorktrees(root, config.roster.map((entry) => entry.name));
   const assessments = config.roster.map((entry) => assessWith(byLoop.get(entry.name) ?? null, entry.name, config, override));
-  const unnamedEvents = unnamed.map((path) => ({ path, events: eventCount(path) }));
+  // An events file with no lines (an iteration killed before it wrote one) is
+  // no events: such a worktree has not run, so it is not listed.
+  const unnamedEvents = unnamed.map((path) => ({ path, events: eventCount(path) })).filter(({ events }) => events > 0);
   if (json) {
     console.log(JSON.stringify({ loops: assessments, unnamed: unnamedEvents }, null, 2));
     return 0;

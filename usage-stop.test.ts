@@ -388,9 +388,11 @@ describe("the CLI", () => {
     );
     // Run from a worktree that never ran and names nothing: it is not listed.
     const bare = join(root, "wt", "bare");
-    spawnSync("git", ["worktree", "add", "-q", "--detach", bare], { cwd: root });
+    expect(spawnSync("git", ["worktree", "add", "-q", "--detach", bare], { cwd: root }).status).toBe(0);
     mkdirSync(join(bare, ".ralph", "logs"), { recursive: true });
     writeFileSync(join(bare, ".ralph", "config.json"), readFileSync(join(root, ".ralph", "config.json")));
+    // An events file with no lines is no run either.
+    writeFileSync(join(bare, ".ralph", "logs", "iter-1.events.jsonl"), "");
     const lines = cliIn(bare, "show").stdout.split("\n");
     expect(lines).toHaveLength(5);
     for (const line of lines.slice(1, 3)) {
@@ -409,7 +411,17 @@ describe("the CLI", () => {
     ]);
   });
 
-  it("shows a lapsed waiver as none", () => {
+  it("reads a name file as ralph.sh does, dropping every whitespace character", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    writeFileSync(join(dirs.rafa!, ".ralph", "loop-name"), " ra fa\n");
+    spendIn(dirs.rafa!, 0.97);
+    const lines = cli("show").stdout.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[1]!.split("\t")[4]).toBe("park");
+  });
+
+    it("shows a lapsed waiver as none", () => {
     project(ROSTER_CONFIG);
     const lapsed = { waiveUntil: new Date(NOW - 3600_000).toISOString(), at: new Date(NOW - 7200_000).toISOString() };
     writeFileSync(join(root, "override.json"), JSON.stringify({ entries: { ralph: lapsed } }));
