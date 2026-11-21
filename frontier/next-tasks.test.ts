@@ -118,6 +118,7 @@ process.env.RALPH_PROJECT_OWNER = 'felipearosr';
 // in-process reads resolve to.
 process.env.RALPH_PROJECT = scratchProject('next-tasks');
 
+// oxlint-disable-next-line no-control-regex -- matching the ANSI escape byte is the point
 const stripAnsi = (s: string): string => s.replace(/\x1b\[\d+m/g, '');
 
 /**
@@ -843,6 +844,7 @@ describe('render', () => {
     // Guards the helper above: a stripAnsi that misses the escape byte would
     // make every assertion in this block quietly weaker.
     const raw = [issue(1, 'a', '')];
+    // oxlint-disable-next-line no-control-regex -- matching the ANSI escape byte is the point
     expect(show(buildTickets(raw, [[]]))).not.toMatch(/\x1b/);
   });
 });
@@ -1016,6 +1018,7 @@ describe('frontierReport', () => {
       [545, 'occupied', 544],
     ]);
     // The document is plain data: no colour escapes reach a consumer.
+    // oxlint-disable-next-line no-control-regex -- matching the ANSI escape byte is the point
     expect(JSON.stringify(report)).not.toMatch(/\x1b/);
   });
 

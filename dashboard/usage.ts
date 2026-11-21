@@ -435,7 +435,7 @@ export function createUsageReader(): { read(targets: readonly UsageTarget[]): Lo
       });
       // Forget files that are gone, so a pruned worktree does not pin memory.
       for (const cache of [events, ledgers, externalCosts] as Map<string, unknown>[]) {
-        for (const path of [...cache.keys()]) if (!seen.has(path)) cache.delete(path);
+        for (const path of cache.keys()) if (!seen.has(path)) cache.delete(path);
       }
       return logs;
     },

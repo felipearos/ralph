@@ -69,7 +69,6 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { currentLoop } from "./frontier/next-tasks";
 import { isPhase, PHASES, type Phase } from "./phase";

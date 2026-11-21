@@ -1135,7 +1135,7 @@ describe("the ci-doctor's prompt", () => {
     // `finish` is the resumed session every `AWAIT_PR` lands in, and the
     // journal obligations are in the last of its sections.
     const finish = PROMPT_SECTIONS.finish.map((n) => headings.get(n) ?? '');
-    expect(finish.some((title) => /^Journal/.test(title)), 'the finish phase no longer carries the journal section').toBe(true);
+    expect(finish.some((title) => title.startsWith('Journal')), 'the finish phase no longer carries the journal section').toBe(true);
 
     // And the prompt's own §Phases table, which is free prose the heading
     // check above cannot see: the supervisor injects `PHASE_SECTIONS`'

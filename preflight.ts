@@ -69,7 +69,6 @@
 import { execFile } from "node:child_process";
 import { access, constants, stat, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveLineup, type Runner } from "./models";
 import { loopRoster, type LoopName } from "./frontier/next-tasks";

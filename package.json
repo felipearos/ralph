@@ -10,7 +10,7 @@
   "scripts": {
     "test": "bun x vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p dashboard/ui",
-    "lint": "bun x oxlint@1.83.0 --ignore-pattern node_modules .",
+    "lint": "bun x oxlint@1.83.0 --deny-warnings --ignore-pattern node_modules .",
     "next": "bun frontier/next.ts",
     "dashboard": "bun dashboard/server.ts",
     "dashboard:preview": "bun dashboard/preview.ts",
