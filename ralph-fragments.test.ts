@@ -32,6 +32,37 @@ describe("ralph's own fragments", () => {
   });
 });
 
+describe("ralph's own review gate", () => {
+  // The CODEX section is spliced in just before §5 step 6's merge conditions,
+  // which is what makes Qodo's review of the head a condition of the merge here.
+  const gate = (): string => {
+    const prompt = read(".ralph/prompt.md");
+    const start = prompt.indexOf("<!-- ralph:section CODEX -->");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = prompt.indexOf("<!-- ralph:section", start + 1);
+    return prompt.slice(start, end === -1 ? undefined : end);
+  };
+
+  it("waits on a Qodo review of the head through the tool that exists", () => {
+    expect(gate()).toContain('bun "$RALPH_HOME/qodo-review.ts" <pr>');
+    expect(existsSync(join(ROOT, "qodo-review.ts"))).toBe(true);
+  });
+
+  it("states the fix threshold, the Low report, and the stall stop", () => {
+    const text = gate();
+    expect(text).toMatch(/Fix every \*valid\* \*\*High\*\* or \*\*Medium\*\*/);
+    expect(text).toContain("### Low findings for the");
+    expect(text).toContain("Stall stop.");
+    // A reply Qodo is not addressed in never reaches it.
+    expect(text).toContain("starts with `@qodo `");
+  });
+
+  it("never merges past an unmet gate: exit 4 hands the PR to a person", () => {
+    expect(gate()).toMatch(/\*\*Exit 4\*\*[\s\S]*Do\s+not merge/);
+    expect(gate()).toContain('tracker.ts"\n   handoff <n> --pr <pr-url>');
+  });
+});
+
 describe("ralph's own plan", () => {
   // The fences are machine-read, and `issueRefsUnderHeading` matches `#<n>`
   // against the section's raw text — an HTML comment included. So a note
