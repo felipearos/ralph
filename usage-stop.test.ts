@@ -258,6 +258,66 @@ describe("the CLI", () => {
     expect(Date.parse(file.entries.ralph.waiveUntil)).toBe((RESET + 120) * 1000);
   });
 
+  const ROSTER_CONFIG = { ...BASE_CONFIG, usageStop: { percent: 80 }, loops: ["ralph", "rafa", { name: "tria", role: "triager" }] };
+
+  it("shows every loop of the roster, one line each, in roster order", () => {
+    project(ROSTER_CONFIG);
+    spend(0.85);
+    expect(cli("set", "--loop", "rafa", "--percent", "90").status).toBe(0);
+    expect(cli("waive", "--loop", "tria").status).toBe(0);
+    const out = cli("show");
+    expect(out.status).toBe(0);
+    const lines = out.stdout.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines.map((line) => line.split("\t")[0])).toEqual(["ralph", "rafa", "tria"]);
+    expect(lines[0]!.split("\t")).toEqual(["ralph", "seven_day 80%/95%", "config", "-", "drain", expect.stringContaining("85%")]);
+    expect(lines[1]!.split("\t").slice(0, 5)).toEqual(["rafa", "seven_day 90%/95%", "override", "-", "run"]);
+    expect(lines[2]!.split("\t").slice(0, 5)).toEqual([
+      "tria",
+      "seven_day 80%/95%",
+      "config",
+      `waived until ${new Date((RESET + 120) * 1000).toISOString()}`,
+      "run",
+    ]);
+  });
+
+  it("shows the roster as JSON, each element what show --loop prints", () => {
+    project(ROSTER_CONFIG);
+    spend(0.85);
+    const out = cli("show", "--json");
+    expect(out.status).toBe(0);
+    const all = JSON.parse(out.stdout);
+    expect(all).toHaveLength(3);
+    ["ralph", "rafa", "tria"].forEach((name, index) => expect(all[index]).toEqual(JSON.parse(cli("show", "--loop", name).stdout)));
+  });
+
+  it("says each loop has no reading yet, and exits 0", () => {
+    project(ROSTER_CONFIG);
+    const out = cli("show");
+    expect(out.status).toBe(0);
+    const lines = out.stdout.split("\n");
+    expect(lines).toHaveLength(3);
+    for (const line of lines) expect(line).toContain("no seven_day reading yet");
+  });
+
+  it("keeps show --loop a single JSON object", () => {
+    project(ROSTER_CONFIG);
+    const out = cli("show", "--loop", "ralph");
+    expect(out.status).toBe(0);
+    const shown = JSON.parse(out.stdout);
+    expect(Array.isArray(shown)).toBe(false);
+    expect(Object.keys(shown)).toEqual(["loop", "rule", "source", "waiveUntil", "reading", "decision"]);
+    expect(out.stdout).toBe(JSON.stringify(shown, null, 2));
+  });
+
+  it("refuses the roster form when the config is unreadable", () => {
+    project(ROSTER_CONFIG);
+    writeFileSync(join(root, ".ralph", "config.json"), "{");
+    const out = cli("show");
+    expect(out.status).toBe(2);
+    expect(out.stderr).toContain("no roster to show");
+  });
+
   it("runs when the override is garbage or the config unreadable", () => {
     project({ ...BASE_CONFIG, usageStop: { percent: 80 } });
     spend(0.99);

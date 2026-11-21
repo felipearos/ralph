@@ -41,8 +41,10 @@
  *       and its reset, which dedupes a park's notification, or `-` when there
  *       is none (a tab is whitespace to bash's `read`, so an empty field
  *       between two would vanish). Always exit 0.
- *   usage-stop.ts show --loop <name>
- *       the rule, its source, the reading and the verdict, as JSON.
+ *   usage-stop.ts show [--loop <name>] [--json]
+ *       the rule, its source, the reading and the verdict, as JSON. Without
+ *       --loop, every loop of the roster in roster order: one line each, or
+ *       with --json an array of what `show --loop` prints for each.
  *   usage-stop.ts set --loop <name|*> --percent <n> [--window <w>] [--hard <n>]
  *   usage-stop.ts set --loop <name|*> --off
  *       write the override (`--off`: no stop for it, whatever the config says).
@@ -354,8 +356,12 @@ interface Assessment {
 }
 
 function assess(root: string, loop: string): Assessment {
-  const override = readOverride(overridePath(root));
-  const { rule, source } = effectiveRule(loop, readConfig(root), override);
+  return assessWith(root, loop, readConfig(root), readOverride(overridePath(root)));
+}
+
+/** `assess` with the config and override already read, so a roster pass reads each once. */
+function assessWith(root: string, loop: string, config: ProjectConfig | null, override: Override | null): Assessment {
+  const { rule, source } = effectiveRule(loop, config, override);
   const waiveUntil = override?.entries[loop]?.waiveUntil ?? null;
   const reading = rule === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
   const margin = knob(process.env.RALPH_USAGE_RESET_MARGIN_SECONDS, DEFAULT_MARGIN_SECONDS);
@@ -373,6 +379,34 @@ function check(root: string, loop: string): number {
     decision = { verdict: "run", seconds: 0, key: "", detail: `usage stop unreadable: ${(error as Error).message}` };
   }
   console.log([decision.verdict, String(decision.seconds), decision.key || "-", oneLine(decision.detail)].join("\t"));
+  return 0;
+}
+
+/** `show` without --loop: every loop of the roster, in roster order. */
+function showRoster(root: string, json: boolean): number {
+  let config: ProjectConfig;
+  try {
+    config = loadProjectConfig(root);
+  } catch (error) {
+    console.error(`usage-stop: the committed config is unreadable, so there is no roster to show: ${(error as Error).message}`);
+    return 2;
+  }
+  if (config.roster.length === 0) {
+    console.error("usage-stop: the project's roster is empty; pass --loop <name>");
+    return 2;
+  }
+  const override = readOverride(overridePath(root));
+  const assessments = config.roster.map((entry) => assessWith(root, entry.name, config, override));
+  if (json) {
+    console.log(JSON.stringify(assessments, null, 2));
+    return 0;
+  }
+  for (const { loop, rule, source, waiveUntil, decision } of assessments) {
+    const ruleText = rule === null ? "no usage stop" : `${rule.window} ${rule.percent}%/${rule.hardPercent}%`;
+    // Fixed columns, `-` for no waiver, so `cut -f` finds the verdict on every line.
+    const waiver = waiveUntil === null ? "-" : `waived until ${waiveUntil}`;
+    console.log([loop, ruleText, source, waiver, decision.verdict, oneLine(decision.detail)].join("\t"));
+  }
   return 0;
 }
 
@@ -434,8 +468,16 @@ function waive(root: string, loop: string, args: string[]): number {
 export function main(args: string[]): number {
   const command = args[0];
   const loop = flag(args, "--loop");
+  if (command === "show" && loop === undefined) {
+    try {
+      return showRoster(projectRoot(), args.includes("--json"));
+    } catch (error) {
+      console.error(`usage-stop: ${(error as Error).message}`);
+      return 2;
+    }
+  }
   if (command === undefined || loop === undefined || loop === "") {
-    console.error("usage: usage-stop.ts check|show|set|clear|waive --loop <name> [...]");
+    console.error("usage: usage-stop.ts show [--loop <name>] [--json] | check|set|clear|waive --loop <name> [...]");
     return command === "check" ? (console.log("run\t0\t-\tno loop named"), 0) : 2;
   }
   const root = projectRoot();
