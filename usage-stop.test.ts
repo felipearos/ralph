@@ -9,7 +9,7 @@ import { parseProjectConfig, validateProjectConfig } from "./project-config";
 import { subprocessSuite } from "./test-timeouts";
 import { decide, effectiveRule, latestReading, parseOverride, readingIn, resolveRule, type Override } from "./usage-stop";
 
-subprocessSuite("runs bun usage-stop.ts check, set, clear and waive");
+subprocessSuite("runs bun usage-stop.ts check, show, set, clear and waive, and git worktree");
 
 const NOW = Date.parse("2026-11-12T12:00:00Z");
 const RESET = NOW / 1000 + 3 * 24 * 3600;
@@ -256,6 +256,145 @@ describe("the CLI", () => {
     expect(verdict("ralph")[0]).toBe("run");
     const file = JSON.parse(readFileSync(join(root, "override.json"), "utf8"));
     expect(Date.parse(file.entries.ralph.waiveUntil)).toBe((RESET + 120) * 1000);
+  });
+
+  const ROSTER_CONFIG = { ...BASE_CONFIG, usageStop: { percent: 80 }, loops: ["ralph", "rafa", { name: "tria", role: "triager" }] };
+  const LOOPS = ["ralph", "rafa", "tria"];
+
+  // Each loop in a worktree of its own, named by its .ralph/loop-name, as on a
+  // live host: the roster view must read every loop's own events.
+  const worktrees = () => {
+    const git = (cwd: string, ...args: string[]) => {
+      const out = spawnSync("git", args, { cwd, encoding: "utf8" });
+      if (out.status !== 0) throw new Error(`git ${args.join(" ")}: ${out.stderr}`);
+    };
+    git(root, "init", "-q", "-b", "main");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "--allow-empty", "-m", "init");
+    const dirs: Record<string, string> = { ralph: root };
+    for (const loop of ["rafa", "tria"]) {
+      dirs[loop] = join(root, "wt", loop);
+      git(root, "worktree", "add", "-q", "--detach", dirs[loop]!);
+      mkdirSync(join(dirs[loop]!, ".ralph", "logs"), { recursive: true });
+      writeFileSync(join(dirs[loop]!, ".ralph", "config.json"), readFileSync(join(root, ".ralph", "config.json")));
+    }
+    for (const loop of LOOPS) writeFileSync(join(dirs[loop]!, ".ralph", "loop-name"), `${loop}\n`);
+    return dirs;
+  };
+  const spendIn = (dir: string, utilization: number) =>
+    writeFileSync(join(dir, ".ralph", "logs", "iter-1.events.jsonl"), `${rateEvent({ seven_day: { utilization, resetsAt: RESET } })}\n`);
+  const cliIn = (dir: string, ...args: string[]) => {
+    const out = spawnSync("bun", [join(__dirname, "usage-stop.ts"), ...args], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, RALPH_PROJECT: dir, RALPH_USAGE_NOW_MS: String(NOW), RALPH_USAGE_STOP_FILE: join(root, "override.json") },
+    });
+    return { status: out.status, stdout: out.stdout.trim(), stderr: out.stderr };
+  };
+
+  it("shows every loop of the roster, one line each, in roster order, each from its own worktree", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    spendIn(dirs.ralph!, 0.85);
+    spendIn(dirs.rafa!, 0.3);
+    spendIn(dirs.tria!, 0.85);
+    expect(cli("set", "--loop", "rafa", "--percent", "90").status).toBe(0);
+    expect(cliIn(dirs.tria!, "waive", "--loop", "tria").status).toBe(0);
+    const out = cli("show");
+    expect(out.status).toBe(0);
+    const lines = out.stdout.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines.map((line) => line.split("\t")[0])).toEqual(LOOPS);
+    expect(lines[0]!.split("\t")).toEqual(["ralph", "seven_day 80%/95%", "config", "-", "drain", expect.stringContaining("85%")]);
+    // rafa's own 30%, not the 85% of the worktree the command ran in.
+    expect(lines[1]!.split("\t")).toEqual(["rafa", "seven_day 90%/95%", "override", "-", "run", "seven_day 30% < 90%"]);
+    expect(lines[2]!.split("\t").slice(0, 5)).toEqual([
+      "tria",
+      "seven_day 80%/95%",
+      "config",
+      `waived until ${new Date((RESET + 120) * 1000).toISOString()}`,
+      "run",
+    ]);
+    // The same answer from any of the loops' worktrees.
+    expect(cliIn(dirs.rafa!, "show").stdout).toBe(out.stdout);
+  });
+
+  it("shows the roster as JSON, each element what show --loop prints in that loop's worktree", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    spendIn(dirs.ralph!, 0.85);
+    spendIn(dirs.rafa!, 0.3);
+    const out = cli("show", "--json");
+    expect(out.status).toBe(0);
+    const all = JSON.parse(out.stdout);
+    expect(all).toHaveLength(3);
+    LOOPS.forEach((name, index) => expect(all[index]).toEqual(JSON.parse(cliIn(dirs[name]!, "show", "--loop", name).stdout)));
+  });
+
+  it("says each loop has no reading yet, and exits 0", () => {
+    project(ROSTER_CONFIG);
+    const out = cli("show");
+    expect(out.status).toBe(0);
+    const lines = out.stdout.split("\n");
+    expect(lines).toHaveLength(3);
+    for (const line of lines) expect(line).toContain("no seven_day reading yet");
+  });
+
+  it("reads no other worktree's numbers for a loop with no worktree, and says so", () => {
+    project(ROSTER_CONFIG);
+    writeFileSync(join(root, ".ralph", "loop-name"), "ralph\n");
+    spend(0.85);
+    const lines = cli("show").stdout.split("\n");
+    expect(lines[0]!.split("\t")[4]).toBe("drain");
+    for (const line of lines.slice(1)) {
+      expect(line.split("\t")[4]).toBe("run");
+      expect(line).toContain("no worktree of this clone runs this loop");
+    }
+  });
+
+  it("reads an unnamed worktree that has run as the first loop, and the live one of two that share a name", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    rmSync(join(dirs.ralph!, ".ralph", "loop-name"));
+    spendIn(dirs.ralph!, 0.97);
+    // rafa recreated in a new worktree, listed after its old one: the old
+    // one's events are older, so the new one is read whatever the order.
+    const recreated = join(root, "wt", "rafa-new");
+    spawnSync("git", ["worktree", "add", "-q", "--detach", recreated], { cwd: root });
+    mkdirSync(join(recreated, ".ralph", "logs"), { recursive: true });
+    writeFileSync(join(recreated, ".ralph", "loop-name"), "rafa\n");
+    spendIn(dirs.rafa!, 0.3);
+    const old = (NOW - 86_400_000) / 1000;
+    utimesSync(join(dirs.rafa!, ".ralph", "logs", "iter-1.events.jsonl"), old, old);
+    spendIn(recreated, 0.99);
+    const verdicts = cli("show").stdout.split("\n").map((line) => line.split("\t")[4]);
+    expect(verdicts.slice(0, 2)).toEqual(["park", "park"]);
+  });
+
+  it("shows a lapsed waiver as none", () => {
+    project(ROSTER_CONFIG);
+    const lapsed = { waiveUntil: new Date(NOW - 3600_000).toISOString(), at: new Date(NOW - 7200_000).toISOString() };
+    writeFileSync(join(root, "override.json"), JSON.stringify({ entries: { ralph: lapsed } }));
+    expect(cli("show").stdout.split("\n")[0]!.split("\t")[3]).toBe("-");
+  });
+
+  it("keeps show --loop a single JSON object, and a bare --loop a usage error", () => {
+    project(ROSTER_CONFIG);
+    const out = cli("show", "--loop", "ralph");
+    expect(out.status).toBe(0);
+    const shown = JSON.parse(out.stdout);
+    expect(Array.isArray(shown)).toBe(false);
+    expect(Object.keys(shown)).toEqual(["loop", "rule", "source", "waiveUntil", "reading", "decision"]);
+    expect(out.stdout).toBe(JSON.stringify(shown, null, 2));
+    expect(cli("show", "--loop").status).toBe(2);
+    expect(cli("show", "--loop=ralph").status).toBe(2);
+  });
+
+  it("refuses the roster form when the config is unreadable", () => {
+    project(ROSTER_CONFIG);
+    writeFileSync(join(root, ".ralph", "config.json"), "{");
+    const out = cli("show");
+    expect(out.status).toBe(2);
+    expect(out.stderr).toContain("no roster to show");
   });
 
   it("runs when the override is garbage or the config unreadable", () => {

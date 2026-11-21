@@ -42,7 +42,13 @@
  *       is none (a tab is whitespace to bash's `read`, so an empty field
  *       between two would vanish). Always exit 0.
  *   usage-stop.ts show --loop <name>
- *       the rule, its source, the reading and the verdict, as JSON.
+ *       the rule, its source, the reading and the verdict, as JSON, read from
+ *       the worktree it runs in.
+ *   usage-stop.ts show [--json]
+ *       every loop of the roster, in roster order, each read from its own
+ *       worktree (the one whose `.ralph/loop-name` names it): one tab-separated
+ *       line each (loop, rule, source, waiver, verdict, detail), or with
+ *       --json an array of what `show --loop` prints for each.
  *   usage-stop.ts set --loop <name|*> --percent <n> [--window <w>] [--hard <n>]
  *   usage-stop.ts set --loop <name|*> --off
  *       write the override (`--off`: no stop for it, whatever the config says).
@@ -59,7 +65,8 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSy
 import { dirname, join } from "node:path";
 
 import { DEFAULT_MARGIN_SECONDS, knob } from "./usage-limit";
-import { LOGS_RELATIVE_DIR, projectRoot } from "./paths";
+import { parseWorktreeRegistry } from "./loop-state";
+import { LOGS_RELATIVE_DIR, LOOP_NAME_RELATIVE_PATH, projectRoot } from "./paths";
 import {
   loadProjectConfig,
   USAGE_STOP_DEFAULT_HARD_PERCENT,
@@ -354,12 +361,18 @@ interface Assessment {
 }
 
 function assess(root: string, loop: string): Assessment {
-  const override = readOverride(overridePath(root));
-  const { rule, source } = effectiveRule(loop, readConfig(root), override);
+  return assessWith(root, loop, readConfig(root), readOverride(overridePath(root)));
+}
+
+/** `assess` with the config and override already read, so a roster pass reads each once. */
+function assessWith(root: string | null, loop: string, config: ProjectConfig | null, override: Override | null): Assessment {
+  const { rule, source } = effectiveRule(loop, config, override);
   const waiveUntil = override?.entries[loop]?.waiveUntil ?? null;
-  const reading = rule === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
+  // No worktree is no reading: the loop's events live in its own worktree only.
+  const reading = rule === null || root === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
   const margin = knob(process.env.RALPH_USAGE_RESET_MARGIN_SECONDS, DEFAULT_MARGIN_SECONDS);
   const decision = decide(rule, reading, nowMs(), margin, waiveUntil === null ? null : Date.parse(waiveUntil));
+  if (root === null && rule !== null) decision.detail += "; no worktree of this clone runs this loop";
   return { loop, rule, source, waiveUntil, reading, decision };
 }
 
@@ -373,6 +386,102 @@ function check(root: string, loop: string): number {
     decision = { verdict: "run", seconds: 0, key: "", detail: `usage stop unreadable: ${(error as Error).message}` };
   }
   console.log([decision.verdict, String(decision.seconds), decision.key || "-", oneLine(decision.detail)].join("\t"));
+  return 0;
+}
+
+/** When a worktree's loop last wrote an events file, or null if it never has. */
+function lastEventsMs(worktree: string): number | null {
+  const logsDir = join(worktree, LOGS_RELATIVE_DIR);
+  let newest: number | null = null;
+  try {
+    for (const name of readdirSync(logsDir)) {
+      if (!EVENTS_FILE.test(name)) continue;
+      const mtime = statSync(join(logsDir, name)).mtimeMs;
+      if (newest === null || mtime > newest) newest = mtime;
+    }
+  } catch {
+    // No logs directory: this worktree never ran a loop.
+  }
+  return newest;
+}
+
+/**
+ * Each loop's worktree, by the name in its `.ralph/loop-name`. A loop's reading
+ * is its own account's (see the header), so the roster view must read every
+ * loop from its own worktree rather than every loop from the caller's.
+ *
+ * A worktree with no name file runs as the roster's first loop (ralph.sh's
+ * default), so it stands in for that loop when no worktree names it, but only
+ * once it has run: a bare checkout is not a loop. Where several worktrees
+ * answer for one loop (a loop recreated beside its old worktree), the one
+ * that wrote events last is the live one.
+ */
+function loopWorktrees(root: string, firstLoop: string): Map<string, string> {
+  let paths = [root];
+  try {
+    const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    });
+    const listed = parseWorktreeRegistry(porcelain).map((entry) => entry.path);
+    if (listed.length > 0) paths = listed;
+  } catch {
+    // Not a git checkout, or git unreadable: the caller's worktree is all we know.
+  }
+  const named = new Map<string, Array<{ path: string; at: number }>>();
+  const unnamed: Array<{ path: string; at: number }> = [];
+  for (const path of paths) {
+    const at = lastEventsMs(path);
+    let name = "";
+    try {
+      name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").trim();
+    } catch {
+      // No name file: ralph.sh runs it as the first loop.
+    }
+    if (name === "") {
+      if (at !== null) unnamed.push({ path, at });
+      continue;
+    }
+    named.set(name, [...(named.get(name) ?? []), { path, at: at ?? -1 }]);
+  }
+  if (!named.has(firstLoop) && unnamed.length > 0) named.set(firstLoop, unnamed);
+  const byLoop = new Map<string, string>();
+  for (const [name, candidates] of named) {
+    byLoop.set(name, candidates.reduce((best, next) => (next.at > best.at ? next : best)).path);
+  }
+  return byLoop;
+}
+
+/** `show` without --loop: every loop of the roster, in roster order. */
+function showRoster(root: string, json: boolean): number {
+  let config: ProjectConfig;
+  try {
+    config = loadProjectConfig(root);
+  } catch (error) {
+    console.error(`usage-stop: the committed config is unreadable, so there is no roster to show: ${(error as Error).message}`);
+    return 2;
+  }
+  if (config.roster.length === 0) {
+    console.error("usage-stop: the project's roster is empty; pass --loop <name>");
+    return 2;
+  }
+  const override = readOverride(overridePath(root));
+  const worktrees = loopWorktrees(root, config.roster[0]!.name);
+  const assessments = config.roster.map((entry) => assessWith(worktrees.get(entry.name) ?? null, entry.name, config, override));
+  if (json) {
+    console.log(JSON.stringify(assessments, null, 2));
+    return 0;
+  }
+  for (const { loop, rule, source, waiveUntil, decision } of assessments) {
+    const ruleText = rule === null ? "no usage stop" : `${rule.window} ${rule.percent}%/${rule.hardPercent}%`;
+    // Fixed columns, `-` for no waiver, so `cut -f` finds the verdict on every
+    // line. A lapsed waiver stays in the override file but no longer counts.
+    const waived = waiveUntil !== null && Date.parse(waiveUntil) > nowMs();
+    const waiver = waived ? `waived until ${waiveUntil}` : "-";
+    console.log([loop, ruleText, source, waiver, decision.verdict, oneLine(decision.detail)].join("\t"));
+  }
   return 0;
 }
 
@@ -434,8 +543,19 @@ function waive(root: string, loop: string, args: string[]): number {
 export function main(args: string[]): number {
   const command = args[0];
   const loop = flag(args, "--loop");
+  // Only `show` with nothing but `--json` asks for the roster: a bare `--loop`
+  // (an empty variable in a script) or a `--loop=rafa` is still the usage
+  // error it always was, never a silently unfiltered answer.
+  if (command === "show" && args.slice(1).every((arg) => arg === "--json")) {
+    try {
+      return showRoster(projectRoot(), args.includes("--json"));
+    } catch (error) {
+      console.error(`usage-stop: ${(error as Error).message}`);
+      return 1;
+    }
+  }
   if (command === undefined || loop === undefined || loop === "") {
-    console.error("usage: usage-stop.ts check|show|set|clear|waive --loop <name> [...]");
+    console.error("usage: usage-stop.ts show [--loop <name>] [--json] | check|set|clear|waive --loop <name> [...]");
     return command === "check" ? (console.log("run\t0\t-\tno loop named"), 0) : 2;
   }
   const root = projectRoot();
