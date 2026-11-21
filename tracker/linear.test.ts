@@ -12,7 +12,7 @@ import { TrackerUnavailableError } from "./types";
  * It dispatches on the operation name, so a query the adapter renames or
  * adds fails here loudly instead of being half-answered.
  */
-function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: string; canceledName?: string } = {}) {
+function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: string; canceledName?: string; refuseLabels?: string[]; takenLabels?: string[]; throttleLabels?: string[]; downLabels?: string[] } = {}) {
   const team = options.team ?? "AND";
   const states = [
     { id: "st-todo", name: "Todo", type: "unstarted" },
@@ -200,6 +200,23 @@ function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: strin
         byRef(variables.input.issueId).comments.push({ body: variables.input.body, createdAt: "2026-10-20T12:00:00Z" });
         return { commentCreate: { success: true } };
       case "RalphCreateLabel": {
+        // As Linear refuses a label it will not make (a name taken by a
+        // workspace label, a key without the permission).
+        if (options.refuseLabels?.includes(variables.input.name)) {
+          throw Object.assign(new Error(`Label '${variables.input.name}' could not be created`), { code: "INPUT_ERROR" });
+        }
+        // Another process made it between the adapter's read and its create:
+        // Linear refuses the taken name, though the label now exists.
+        if (options.takenLabels?.includes(variables.input.name)) {
+          labels.set(variables.input.name, `lb-other-${labels.size}`);
+          throw Object.assign(new Error(`Label '${variables.input.name}' already exists`), { code: "INPUT_ERROR" });
+        }
+        if (options.downLabels?.includes(variables.input.name)) {
+          throw Object.assign(new Error("upstream unavailable"), { code: "HTTP_503" });
+        }
+        if (options.throttleLabels?.includes(variables.input.name)) {
+          throw Object.assign(new Error("Rate limit exceeded"), { code: "RATELIMITED" });
+        }
         const id = `lb-new-${labels.size}`;
         labels.set(variables.input.name, id);
         return { issueLabelCreate: { success: true, issueLabel: { id, name: variables.input.name } } };
@@ -217,8 +234,11 @@ function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: strin
     try {
       return new Response(JSON.stringify({ data: answer(operation, variables) }), { status: 200 });
     } catch (error) {
-      if ((error as { code?: string }).code !== "INPUT_ERROR") throw error;
-      return new Response(JSON.stringify({ errors: [{ message: (error as Error).message, extensions: { code: "INPUT_ERROR" } }], data: null }), { status: 200 });
+      const code = (error as { code?: string }).code;
+      // An outage: a proxy's page, no GraphQL answer at all.
+      if (code === "HTTP_503") return new Response("<html>503 Service Unavailable</html>", { status: 503 });
+      if (code !== "INPUT_ERROR" && code !== "RATELIMITED") throw error;
+      return new Response(JSON.stringify({ errors: [{ message: (error as Error).message, extensions: { code } }], data: null }), { status: 200 });
     }
   }) as unknown as typeof fetch;
 
@@ -272,6 +292,105 @@ describe("linear tracker", () => {
     const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
     expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-backoffice"]);
     expect((await scoped.openIssues()).map((issue) => issue.number)).toContain(created.number);
+  });
+
+  it("creates a scope label the team does not have yet before opening the issue", async () => {
+    const emulated = emulatedLinear(seed());
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
+    expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-scope"]);
+    expect(emulated.operations.indexOf("RalphCreateLabel")).toBeGreaterThan(-1);
+    expect(emulated.operations.indexOf("RalphCreateLabel")).toBeLessThan(emulated.operations.indexOf("RalphCreateIssue"));
+  });
+
+  it("opens nothing when the scope label cannot be created, and names it", async () => {
+    const emulated = emulatedLinear(seed(), { refuseLabels: ["acme-scope"] });
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    const before = emulated.issues.length;
+    await expect(scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] })).rejects.toThrow("cannot create the scope label 'acme-scope'");
+    expect(emulated.operations).toContain("RalphCreateLabel");
+    expect(emulated.issues).toHaveLength(before);
+    expect(emulated.operations).not.toContain("RalphCreateIssue");
+  });
+
+  it("files under a scope label another process made first, though Linear refused our create", async () => {
+    const emulated = emulatedLinear(seed(), { takenLabels: ["acme-scope"] });
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
+    expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-scope"]);
+  });
+
+  it("lets a throttled label create surface as a throttle, not as a label it cannot make", async () => {
+    const emulated = emulatedLinear(seed(), { throttleLabels: ["acme-scope"] });
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    const failure = await scoped.create({ title: "A report", body: "x" }).catch((error: unknown) => error);
+    expect(scoped.classifyFailure(failure)).toMatchObject({ kind: "quota" });
+    expect(emulated.operations).not.toContain("RalphCreateIssue");
+  });
+
+  it("lets an outage during the label create surface as one, not as a label it cannot make", async () => {
+    const emulated = emulatedLinear(seed(), { downLabels: ["acme-scope"] });
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    await expect(scoped.create({ title: "A report", body: "x" })).rejects.toThrow("HTTP 503");
+    expect(emulated.operations).not.toContain("RalphCreateIssue");
+  });
+
+  it("keeps a label created while a concurrent refused create re-read the team", async () => {
+    const emulated = emulatedLinear(seed(), { refuseLabels: ["acme-refused"] });
+    // Hold the slow create until the refused one has re-read the team.
+    let reread!: () => void;
+    const rereadDone = new Promise<void>((resolve) => (reread = resolve));
+    let teamReads = 0;
+    const gated = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = String(init?.body ?? "");
+      // The slow create reaches Linear only after the re-read, so the re-read
+      // team cannot have learnt the label from Linear itself.
+      if (body.includes("RalphCreateLabel") && body.includes("acme-slow")) await rereadDone;
+      const answer = await emulated.fetch(input, init);
+      if (body.includes("RalphTeam") && ++teamReads === 2) reread();
+      return answer;
+    }) as unknown as typeof fetch;
+    const linear = createLinearTracker({ team: "AND", workspace: "acme", scopeLabel: null, states: { claimed: "In Progress", done: "Done" }, apiKey: "lin_api_test", fetch: gated });
+    const [slow, refused] = await Promise.all([linear.ensureLabels(["acme-slow"]), linear.ensureLabels(["acme-refused"])]);
+    expect(slow).toEqual({ created: ["acme-slow"], missing: [] });
+    expect(refused.missing).toEqual(["acme-refused"]);
+    const created = await linear.create({ title: "A report", body: "x", labels: ["acme-slow"] });
+    expect((await linear.issue(created.number)).labels).toEqual(["acme-slow"]);
   });
 
   it("narrows every listing to the scope label", async () => {
