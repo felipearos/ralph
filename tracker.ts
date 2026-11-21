@@ -9,8 +9,11 @@
  * the project's config from the current checkout and, for Linear or Jira, the
  * host-side credential itself; the caller never handles a token.
  *
- *   bun tracker.ts list [--limit <n>] [--json]  open issues: ref, title, labels, assignees, one per line
- *                                           (--json: `gh issue list`'s number,title,labels shape)
+ *   bun tracker.ts list [--limit <n>] [--label <name>]... [--json]
+ *                                           open issues: ref, title, labels, assignees, one per line
+ *                                           (--label: only issues carrying every named label, exact
+ *                                           names, filtered before --limit; --json: `gh issue list`'s
+ *                                           number,title,labels shape)
  *   bun tracker.ts view <n> [--json]        the issue, its labels and every comment
  *   bun tracker.ts comment <n> --body <text> | --body-file <path|->
  *   bun tracker.ts create --title <text> (--body <text> | --body-file <path|->) [--label <name>]...
@@ -61,7 +64,7 @@ import { TrackerUnavailableError, type Tracker } from "./tracker/types";
 export const EXIT = { ok: 0, failed: 1, usage: 2, unavailable: 69, throttled: RATE_LIMITED_EXIT } as const;
 
 const USAGE = `usage:
-  tracker.ts list [--limit <n>] [--json]
+  tracker.ts list [--limit <n>] [--label <name>]... [--json]
   tracker.ts view <n> [--json]
   tracker.ts comment <n> --body <text> | --body-file <path|->
   tracker.ts create --title <text> (--body <text> | --body-file <path|->) [--label <name>]...
@@ -161,12 +164,21 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
     switch (command) {
       case "list": {
         const raw = takeFlag(args, "--limit");
+        const labels: string[] = [];
+        for (let label = takeFlag(args, "--label"); label !== undefined; label = takeFlag(args, "--label")) {
+          // `list --label --json` must not swallow --json as a label name and
+          // quietly print text the caller then fails to parse.
+          if (label.startsWith("--")) throw new UsageError("--label needs a value");
+          labels.push(label);
+        }
         const json = args.includes("--json");
         if (json) args.splice(args.indexOf("--json"), 1);
         onlyPositional(args, 0, "list takes no issue number");
         const limit = raw === undefined ? 100 : issueNumber(raw);
         const t = tracker();
-        const open = (await t.openIssues()).slice(0, limit);
+        // Exact, whole-name matches before the limit: grepping the text output
+        // also matched titles, and `--limit 1 --label x` means the first x.
+        const open = (await t.openIssues()).filter((issue) => labels.every((label) => issue.labels.includes(label))).slice(0, limit);
         if (json) {
           // The dashboard's claims read narrows this exactly as it narrows `gh issue list`.
           out(JSON.stringify(open.map((issue) => ({ number: issue.number, title: issue.title, labels: issue.labels.map((name) => ({ name })) }))));
