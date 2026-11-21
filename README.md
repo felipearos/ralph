@@ -1,4 +1,8 @@
-# Ralph — operating the backlog loop
+# Software Factory — operating the backlog loop
+
+Software Factory runs autonomous Claude Code loops against a project's backlog. Its
+harness is called Ralph: the supervisor is `ralph.sh`, the settings are `RALPH_*`, and
+each project keeps its config in `.ralph/`.
 
 Ralph works one backlog item per iteration. The harness is one shared checkout
 (`RALPH_HOME`, conventionally `~/ralph`) that runs against any project worktree
@@ -14,7 +18,7 @@ and the boundaries an operator must preserve.
 ## Install
 
 ```bash
-git clone git@github.com:felipearos/ralph.git ~/ralph
+git clone git@github.com:felipearos/software-factory.git ~/ralph
 cd ~/ralph && bun install
 ```
 
