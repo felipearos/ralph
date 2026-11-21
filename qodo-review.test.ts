@@ -81,6 +81,11 @@ describe("reading a summary", () => {
     ]);
   });
 
+  it("reads the type from the first tag, when Qodo adds a New tag after it", () => {
+    const body = `<img src="https://img.shields.io/badge/High-1?x" alt="Action required">\n` + finding(1, "Oversized budget", `${BUG} Bug</code> <code>\u2B50 New`);
+    expect(findingsOf(body)[0]).toMatchObject({ title: "Oversized budget", type: "Bug", severity: "High" });
+  });
+
   it("reads Qodo's resolution marks, not the words, as resolved", () => {
     const body = `<img src="https://img.shields.io/badge/Medium-1?x" alt="Remediation recommended">\n` + finding(1, "Outdated cache entries are served");
     expect(findingsOf(body)[0]).toMatchObject({ title: "Outdated cache entries are served", resolved: false });
@@ -272,6 +277,10 @@ describe("run", () => {
   it("a malformed budget knob falls back to the default, never to no wait", async () => {
     const fake = fakeIo([state([])], 20);
     expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, fake.io, { ...QUIET0, RALPH_QODO_REVIEW_MINUTES: "soon" })).toBe(3);
+    // A number too large to be finite is malformed too: the budget must still end (PR #33 review).
+    const late = fakeIo([state([])], 40);
+    late.seen.set(`example-org/acme#7@${HEAD}`, seenAt(0));
+    expect(await run({ pr: 7, repo: null, json: false, waitSeconds: 0 }, late.io, { ...QUIET0, RALPH_QODO_REVIEW_MINUTES: "9".repeat(400) })).toBe(4);
   });
 
   it(`records ${RETRIGGER} only once posted, so a failed post is asked again`, async () => {

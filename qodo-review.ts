@@ -161,12 +161,13 @@ export function findingsOf(body: string): Finding[] {
     const at = match.index!;
     const severity = badges.filter((b) => b.at < at).at(-1)?.severity ?? null;
     const summary = match[2]!;
-    const type = /<code>([^<]*)<\/code>\s*$/.exec(summary.trim())?.[1] ?? "";
+    // The first tag is the type; Qodo may add more after it, such as "New".
+    const type = /<code>([^<]*)<\/code>/.exec(summary)?.[1] ?? "";
     // Its own block runs to the next finding; the "View" link sits at its end.
     const rest = body.slice(at, matches[i + 1]?.index);
     return {
       number: Number(match[1]),
-      title: strip(summary.replace(/<code>[^<]*<\/code>\s*$/, "")),
+      title: strip(summary.replace(/<code>[^<]*<\/code>/g, "")),
       type: type.replace(/^[^A-Za-z]+/, "").trim(),
       severity,
       // Qodo's marks, not the words: a title may say "Outdated" and still be open.
@@ -403,7 +404,9 @@ function minutesKnob(env: Record<string, string | undefined>, name: string, fall
   // A malformed knob falls back to the default, never to "no wait" or "forever".
   // Only a plain number counts: `Number(" ")` is 0, which would turn a wait off.
   const text = (env[name] ?? "").trim();
-  return /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : fallback;
+  const value = Number(text);
+  // …and only a finite one: four hundred digits read as Infinity, a budget that never ends.
+  return /^\d+(?:\.\d+)?$/.test(text) && Number.isFinite(value) ? value : fallback;
 }
 
 function budgetMinutes(env: Record<string, string | undefined>): number {
