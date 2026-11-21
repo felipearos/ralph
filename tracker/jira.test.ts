@@ -275,6 +275,13 @@ describe("jira tracker", () => {
     });
   });
 
+  it("opens an issue under the scope label, so the scoped listings still see it", async () => {
+    const scoped = jira(emulatedJira(seed()).fetch, { scopeLabel: "acme-intake" });
+    const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
+    expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-intake"]);
+    expect((await scoped.openIssues()).map((issue) => issue.number)).toContain(created.number);
+  });
+
   it("warns, with the issue created, when the workflow cannot reach the named status", async () => {
     const tracker = jira(emulatedJira(seed()).fetch);
     const created = await tracker.create({ title: "A report", body: "", state: "Blocked" });

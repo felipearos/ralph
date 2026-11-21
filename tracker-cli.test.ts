@@ -200,6 +200,12 @@ describe("tracker.ts create (#14)", () => {
     expect(out).toEqual(["#12\thttps://github.com/fake/repo/issues/12"]);
   });
 
+  it("asks for a repeated label once", async () => {
+    const { tracker, run } = cli();
+    expect(await run("create", "--title", "T", "--body", "x", "--label", "a", "--label", "a")).toBe(EXIT.ok);
+    expect([...tracker.issues.values()][0]!.labels).toEqual(["a"]);
+  });
+
   it("opens nothing when a label cannot be created, and names it", async () => {
     const { tracker, err, run } = cli({ issues: [{ number: 1 }], uncreatableLabels: ["nope"] });
     expect(await run("create", "--title", "T", "--body", "x", "--label", "ok", "--label", "nope")).toBe(EXIT.failed);
@@ -228,6 +234,7 @@ describe("tracker.ts create (#14)", () => {
     expect(await run("create", "--title", "T", "--body", "x", "--body-file", "body.md")).toBe(EXIT.usage);
     expect(await run("create", "--title", "T")).toBe(EXIT.usage);
     expect(await run("create", "7", "--title", "T", "--body", "x")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "T", "--body", "x", "--label", "a,b")).toBe(EXIT.usage);
     expect(built).toBe(0);
     expect(tracker.writes).toEqual([]);
     expect(tracker.issues.size).toBe(1);

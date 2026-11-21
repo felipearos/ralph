@@ -229,7 +229,13 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         const body = takeFlag(args, "--body");
         const file = takeFlag(args, "--body-file");
         const labels: string[] = [];
-        for (let label = takeFlag(args, "--label"); label !== undefined; label = takeFlag(args, "--label")) labels.push(label);
+        for (let label = takeFlag(args, "--label"); label !== undefined; label = takeFlag(args, "--label")) {
+          // GitHub's adapter hands gh the labels comma-joined, so `a,b` would
+          // make a label named `a,b` and then ask for `a` and `b`.
+          if (label.includes(",")) throw new UsageError(`a label cannot contain a comma: ${JSON.stringify(label)}; repeat --label instead`);
+          // A repeated label would be created twice and reported missing the second time.
+          if (!labels.includes(label)) labels.push(label);
+        }
         onlyPositional(args, 0, "create takes no issue number");
         if (title === undefined || title.trim() === "") throw new UsageError("create needs a non-empty --title");
         if ((body === undefined) === (file === undefined)) throw new UsageError("create needs exactly one of --body or --body-file");

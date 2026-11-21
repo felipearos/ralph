@@ -512,8 +512,11 @@ export function createLinearTracker(options: LinearTrackerOptions): Tracker {
       // The issue is created either way: a state Linear does not have is a
       // warning, never a reason to lose the number of an issue that now exists.
       const warning = wanted !== undefined && state === undefined ? `Linear team ${key} has no workflow state named '${wanted}'` : null;
+      // Every listing narrows to the scope label, so an issue opened without it
+      // would exist and never be read again: not listed, never offered to a loop.
+      const labels = [...new Set([...(issue.labels ?? []), ...(options.scopeLabel === null ? [] : [options.scopeLabel])])];
       const labelIds: string[] = [];
-      for (const label of issue.labels ?? []) labelIds.push(await labelId(label));
+      for (const label of labels) labelIds.push(await labelId(label));
       const answer = await send<{ issueCreate: { issue: { number: number } } }>(CREATE_ISSUE, {
         input: {
           teamId: info.id,

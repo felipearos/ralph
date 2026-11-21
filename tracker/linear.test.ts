@@ -266,6 +266,13 @@ describe("linear tracker", () => {
     expect((await linked.issue(184)).pullRequests).toEqual([pr]);
   });
 
+  it("opens an issue under the scope label, so the scoped listings still see it", async () => {
+    const scoped = tracker(seed(), "acme-backoffice");
+    const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
+    expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-backoffice"]);
+    expect((await scoped.openIssues()).map((issue) => issue.number)).toContain(created.number);
+  });
+
   it("narrows every listing to the scope label", async () => {
     const scoped = tracker(seed(), "acme-backoffice");
     expect((await scoped.openIssues()).map((issue) => issue.number)).toEqual([184]);
