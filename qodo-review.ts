@@ -22,7 +22,7 @@
  *
  * So this reads the summary comment and says whether a FINISHED review covers
  * the PR head — the head commit's URL and a finished body (the counts line,
- * numbered findings, or "no issues found"), never a failed run — and lists
+ * numbered findings, "no issues found" or "no open findings"), never a failed run — and lists
  * its open findings. A failed review, or one of an older commit, is asked
  * again with `/agentic_review`, once per head. The wait is bounded (house
  * rule 1): past `RALPH_QODO_REVIEW_MINUTES` (30) from when this tool first saw
@@ -174,7 +174,9 @@ export function findingsOf(body: string): Finding[] {
 export function finishedReviewOf(body: string, head: string): boolean {
   if (/something went wrong/i.test(body)) return false;
   if (!reviewedCommits(body).includes(head)) return false;
-  return countsOf(body) !== null || findingsOf(body).length > 0 || /no issues found/i.test(body);
+  // A clean re-review drops the counts line and says, per severity group,
+  // "Nice, no open findings for this group" (PR #26, third review).
+  return countsOf(body) !== null || findingsOf(body).length > 0 || /no issues found|no open findings/i.test(body);
 }
 
 /** What the PR's Qodo review says about its head. Pure; the test table is the contract. */

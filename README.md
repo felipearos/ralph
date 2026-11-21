@@ -3497,7 +3497,7 @@ bun ~/ralph/qodo-review.ts <pr> [--wait <seconds>] [--json]
 It reads Qodo's "Code Review by Qodo" summary comment and answers whether a
 finished review covers the PR head: the summary names the reviewed commit,
 is not a failed run, and carries a finished body (the counts line, numbered
-findings, or "no issues found"). Exit 0 reviewed with no open finding,
+findings, "no issues found" or "no open findings"). Exit 0 reviewed with no open finding,
 1 reviewed with open findings (listed by number, severity, type and link,
 read from the summary: Qodo publishes them there, not as review threads),
 3 pending, 4 gave up, 5 unreadable, 75 throttled. A failed Qodo run ("Sorry,

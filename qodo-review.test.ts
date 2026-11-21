@@ -87,6 +87,9 @@ describe("reading a summary", () => {
   it("calls a review finished only with the head, a finished body, and no failure", () => {
     expect(finishedReviewOf(clean(HEAD), HEAD)).toBe(true);
     expect(finishedReviewOf(withFindings(HEAD), HEAD)).toBe(true);
+    // A clean re-review: no counts line, one line per severity group.
+    const reReview = `<h3>Code Review by Qodo</h3>\n<em>Nice, no open findings for this group</em>\n<em>Nice, no open findings for this group</em>\n${marker(HEAD)}`;
+    expect(finishedReviewOf(reReview, HEAD)).toBe(true);
     expect(finishedReviewOf(clean(OLD), HEAD)).toBe(false);
     // The head's URL alone is not a finished review (PR #26 review, finding 2).
     expect(finishedReviewOf(`<h3>Code Review by Qodo</h3>\nReviewing…\n${marker(HEAD)}`, HEAD)).toBe(false);
