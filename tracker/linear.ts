@@ -356,6 +356,25 @@ export function createLinearTracker(options: LinearTrackerOptions): Tracker {
     return id;
   };
 
+  const ensureLabels = async (labels: readonly string[]): Promise<{ created: string[]; missing: string[] }> => {
+    const info = await teamInfo();
+    const created: string[] = [];
+    const missing: string[] = [];
+    for (const label of labels) {
+      if (info.labels.has(label)) continue;
+      try {
+        const answer = await send<{ issueLabelCreate: { issueLabel: { id: string; name: string } } }>(CREATE_LABEL, {
+          input: { name: label, teamId: info.id },
+        });
+        info.labels.set(label, answer.issueLabelCreate.issueLabel.id);
+        created.push(label);
+      } catch {
+        missing.push(label);
+      }
+    }
+    return { created, missing };
+  };
+
   const addLabels = async (number: number, labels: readonly string[], issue?: LinearNode): Promise<void> => {
     if (labels.length === 0) return;
     const target = issue ?? (await node(number));
@@ -514,6 +533,13 @@ export function createLinearTracker(options: LinearTrackerOptions): Tracker {
       const warning = wanted !== undefined && state === undefined ? `Linear team ${key} has no workflow state named '${wanted}'` : null;
       // Every listing narrows to the scope label, so an issue opened without it
       // would exist and never be read again: not listed, never offered to a loop.
+      // The scope label is the adapter's own, not the caller's: a caller
+      // ensures the labels it names, but none of them knows to ensure this
+      // one, so a scoped team that has never seen it would refuse every
+      // filing. It is ensured here, before anything is opened.
+      if (options.scopeLabel !== null && (await ensureLabels([options.scopeLabel])).missing.length > 0) {
+        throw new LinearError(`Linear team ${key} cannot create the scope label '${options.scopeLabel}'; nothing was opened`, 200, "NO_LABEL");
+      }
       const labels = [...new Set([...(issue.labels ?? []), ...(options.scopeLabel === null ? [] : [options.scopeLabel])])];
       const labelIds: string[] = [];
       for (const label of labels) labelIds.push(await labelId(label));
@@ -605,24 +631,7 @@ export function createLinearTracker(options: LinearTrackerOptions): Tracker {
       return { movedTo: null, warning: null };
     },
 
-    async ensureLabels(labels) {
-      const info = await teamInfo();
-      const created: string[] = [];
-      const missing: string[] = [];
-      for (const label of labels) {
-        if (info.labels.has(label)) continue;
-        try {
-          const answer = await send<{ issueLabelCreate: { issueLabel: { id: string; name: string } } }>(CREATE_LABEL, {
-            input: { name: label, teamId: info.id },
-          });
-          info.labels.set(label, answer.issueLabelCreate.issueLabel.id);
-          created.push(label);
-        } catch {
-          missing.push(label);
-        }
-      }
-      return { created, missing };
-    },
+    ensureLabels,
 
     workflowStates: async () => (await teamInfo()).states.map((state) => state.name),
 

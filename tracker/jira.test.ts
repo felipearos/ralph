@@ -277,6 +277,8 @@ describe("jira tracker", () => {
   });
 
   it("opens an issue under the scope label, so the scoped listings still see it", async () => {
+    // This also shows Jira needs no ensure step for the scope label (#29): the
+    // emulated Jira, like Jira, keeps no label list and takes any label it is given.
     const scoped = jira(emulatedJira(seed()).fetch, { scopeLabel: "acme-intake" });
     const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
     expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-intake"]);

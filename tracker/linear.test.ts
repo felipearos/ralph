@@ -12,7 +12,7 @@ import { TrackerUnavailableError } from "./types";
  * It dispatches on the operation name, so a query the adapter renames or
  * adds fails here loudly instead of being half-answered.
  */
-function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: string; canceledName?: string } = {}) {
+function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: string; canceledName?: string; refuseLabels?: string[] } = {}) {
   const team = options.team ?? "AND";
   const states = [
     { id: "st-todo", name: "Todo", type: "unstarted" },
@@ -200,6 +200,11 @@ function emulatedLinear(seed: Seed, options: { team?: string; scopeLabel?: strin
         byRef(variables.input.issueId).comments.push({ body: variables.input.body, createdAt: "2026-10-20T12:00:00Z" });
         return { commentCreate: { success: true } };
       case "RalphCreateLabel": {
+        // As Linear refuses a label it will not make (a name taken by a
+        // workspace label, a key without the permission).
+        if (options.refuseLabels?.includes(variables.input.name)) {
+          throw Object.assign(new Error(`Label '${variables.input.name}' could not be created`), { code: "INPUT_ERROR" });
+        }
         const id = `lb-new-${labels.size}`;
         labels.set(variables.input.name, id);
         return { issueLabelCreate: { success: true, issueLabel: { id, name: variables.input.name } } };
@@ -272,6 +277,38 @@ describe("linear tracker", () => {
     const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
     expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-backoffice"]);
     expect((await scoped.openIssues()).map((issue) => issue.number)).toContain(created.number);
+  });
+
+  it("creates a scope label the team does not have yet before opening the issue", async () => {
+    const emulated = emulatedLinear(seed());
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    const created = await scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] });
+    expect((await scoped.issue(created.number)).labels).toEqual(["ready-for-agent", "acme-scope"]);
+    expect(emulated.operations.indexOf("RalphCreateLabel")).toBeGreaterThan(-1);
+    expect(emulated.operations.indexOf("RalphCreateLabel")).toBeLessThan(emulated.operations.indexOf("RalphCreateIssue"));
+  });
+
+  it("opens nothing when the scope label cannot be created, and names it", async () => {
+    const emulated = emulatedLinear(seed(), { refuseLabels: ["acme-scope"] });
+    const scoped = createLinearTracker({
+      team: "AND",
+      workspace: "acme",
+      scopeLabel: "acme-scope",
+      states: { claimed: "In Progress", done: "Done" },
+      apiKey: "lin_api_test",
+      fetch: emulated.fetch,
+    });
+    const before = emulated.issues.length;
+    await expect(scoped.create({ title: "A report", body: "x", labels: ["ready-for-agent"] })).rejects.toThrow(/acme-scope/);
+    expect(emulated.issues).toHaveLength(before);
+    expect(emulated.operations).not.toContain("RalphCreateIssue");
   });
 
   it("narrows every listing to the scope label", async () => {
