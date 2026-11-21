@@ -2648,7 +2648,11 @@ describe('the startup preflight', () => {
     expect(waits[0]).toContain('(Doppler Error: failed to unlock correct collection');
     expect(waits[0]).not.toContain('second line of detail');
     expect(waits[0]).toContain('the turn waits and tries again every 1s.');
-    expect(run.stdout).toContain('the secrets scope reads again after 2s — running the turn.');
+    // `waited` is wall-clock: two 1s retries take 2s on an idle host and more
+    // on a loaded one, so pin the floor, not the exact figure.
+    const resumed = /the secrets scope reads again after (\d+)s — running the turn\./.exec(run.stdout);
+    expect(resumed, run.stdout).not.toBeNull();
+    expect(Number(resumed![1])).toBeGreaterThanOrEqual(2);
     const records = run.argv.filter((l) => l.includes('loop-state.ts record --event secrets-scope-wait'));
     expect(records).toHaveLength(1);
     expect(records[0]).toContain('--stage iteration');

@@ -5,7 +5,7 @@
  * placeholders (`acme`, `example-org`), never a real client.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -163,6 +163,17 @@ describe("the pre-push hook", () => {
     run(["commit", "-qm", "docs: drop e"], work);
     const push = run(["push", "-q", "origin", "HEAD:main"], work);
     expect(push.status, push.stderr).toBe(0);
+  });
+
+  it("refuses to install without a list, and leaves no hook behind", () => {
+    const root = mkdtempSync(join(tmpdir(), "name-guard-"));
+    roots.push(root);
+    const missing = join(root, "no-list");
+    execFileSync("git", ["init", "-q", join(root, "work")], { env: env(missing) });
+    const install = spawnSync(BUN, [GUARD, "--install"], { cwd: join(root, "work"), env: env(missing), encoding: "utf8" });
+    expect(install.status).not.toBe(0);
+    expect(install.stderr).toContain("no name list");
+    expect(existsSync(join(root, "work", ".git", "hooks", "pre-push"))).toBe(false);
   });
 
   it("fails closed when the list is missing", () => {
