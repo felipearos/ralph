@@ -2352,7 +2352,8 @@ checkpoint (`RALPH_USAGE_STOP_RECHECK_SECONDS`, 300, while parked):
 
 ```bash
 bun ~/ralph/usage-stop.ts show  --loop rafa                 # rule, source, reading, verdict
-bun ~/ralph/usage-stop.ts show  [--json]                    # every roster loop, each from its own worktree
+bun ~/ralph/usage-stop.ts show  [--json]                    # every roster loop, each from its own worktree;
+                                                            # a worktree naming no roster loop is listed, not credited
 bun ~/ralph/usage-stop.ts set   --loop rafa --percent 90    # or --loop '*' for the project
 bun ~/ralph/usage-stop.ts set   --loop doc --off            # no stop, whatever the config says
 bun ~/ralph/usage-stop.ts clear --loop rafa                 # back to the committed config

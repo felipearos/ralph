@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -325,7 +325,8 @@ describe("the CLI", () => {
     spendIn(dirs.rafa!, 0.3);
     const out = cli("show", "--json");
     expect(out.status).toBe(0);
-    const all = JSON.parse(out.stdout);
+    const { loops: all, unnamed } = JSON.parse(out.stdout);
+    expect(unnamed).toEqual([]);
     expect(all).toHaveLength(3);
     LOOPS.forEach((name, index) => expect(all[index]).toEqual(JSON.parse(cliIn(dirs[name]!, "show", "--loop", name).stdout)));
   });
@@ -351,7 +352,7 @@ describe("the CLI", () => {
     }
   });
 
-  it("reads an unnamed worktree that has run as the first loop, and the live one of two that share a name", () => {
+  it("credits no loop with an unnamed worktree, lists it, and reads the live one of two that share a name", () => {
     project(ROSTER_CONFIG);
     const dirs = worktrees();
     rmSync(join(dirs.ralph!, ".ralph", "loop-name"));
@@ -366,8 +367,46 @@ describe("the CLI", () => {
     const old = (NOW - 86_400_000) / 1000;
     utimesSync(join(dirs.rafa!, ".ralph", "logs", "iter-1.events.jsonl"), old, old);
     spendIn(recreated, 0.99);
-    const verdicts = cli("show").stdout.split("\n").map((line) => line.split("\t")[4]);
-    expect(verdicts.slice(0, 2)).toEqual(["park", "park"]);
+    const lines = cli("show").stdout.split("\n");
+    expect(lines).toHaveLength(4);
+    // ralph is not guessed to be the worktree without a name file.
+    expect(lines[0]!.split("\t")[4]).toBe("run");
+    expect(lines[0]).toContain("no worktree of this clone runs this loop");
+    expect(lines[1]!.split("\t")[4]).toBe("park");
+    expect(lines[3]).toBe(`unnamed worktree ${realpathSync(dirs.ralph!)}: 1 event, not credited`);
+  });
+
+  it("lists worktrees named empty or off the roster as unnamed, and leaves out one that never ran", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    writeFileSync(join(dirs.rafa!, ".ralph", "loop-name"), "  \n");
+    spendIn(dirs.rafa!, 0.97);
+    writeFileSync(join(dirs.tria!, ".ralph", "loop-name"), "zed\n");
+    writeFileSync(
+      join(dirs.tria!, ".ralph", "logs", "iter-1.events.jsonl"),
+      `${rateEvent({ seven_day: { utilization: 0.97, resetsAt: RESET } })}\n\n${JSON.stringify({ type: "system" })}\n`,
+    );
+    // Run from a worktree that never ran and names nothing: it is not listed.
+    const bare = join(root, "wt", "bare");
+    spawnSync("git", ["worktree", "add", "-q", "--detach", bare], { cwd: root });
+    mkdirSync(join(bare, ".ralph", "logs"), { recursive: true });
+    writeFileSync(join(bare, ".ralph", "config.json"), readFileSync(join(root, ".ralph", "config.json")));
+    const lines = cliIn(bare, "show").stdout.split("\n");
+    expect(lines).toHaveLength(5);
+    for (const line of lines.slice(1, 3)) {
+      expect(line.split("\t")[4]).toBe("run");
+      expect(line).toContain("no worktree of this clone runs this loop");
+    }
+    expect(lines.slice(3)).toEqual([
+      `unnamed worktree ${realpathSync(dirs.rafa!)}: 1 event, not credited`,
+      `unnamed worktree ${realpathSync(dirs.tria!)}: 2 events, not credited`,
+    ]);
+    const shown = JSON.parse(cliIn(bare, "show", "--json").stdout);
+    expect(shown.loops.map((entry: { loop: string }) => entry.loop)).toEqual(LOOPS);
+    expect(shown.unnamed).toEqual([
+      { path: realpathSync(dirs.rafa!), events: 1 },
+      { path: realpathSync(dirs.tria!), events: 2 },
+    ]);
   });
 
   it("shows a lapsed waiver as none", () => {
