@@ -372,7 +372,7 @@ function assessWith(root: string | null, loop: string, config: ProjectConfig | n
   const reading = rule === null || root === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
   const margin = knob(process.env.RALPH_USAGE_RESET_MARGIN_SECONDS, DEFAULT_MARGIN_SECONDS);
   const decision = decide(rule, reading, nowMs(), margin, waiveUntil === null ? null : Date.parse(waiveUntil));
-  if (root === null && rule !== null) decision.detail += "; no worktree on this host names this loop";
+  if (root === null && rule !== null) decision.detail += "; no worktree of this clone runs this loop";
   return { loop, rule, source, waiveUntil, reading, decision };
 }
 
@@ -389,12 +389,34 @@ function check(root: string, loop: string): number {
   return 0;
 }
 
+/** When a worktree's loop last wrote an events file, or null if it never has. */
+function lastEventsMs(worktree: string): number | null {
+  const logsDir = join(worktree, LOGS_RELATIVE_DIR);
+  let newest: number | null = null;
+  try {
+    for (const name of readdirSync(logsDir)) {
+      if (!EVENTS_FILE.test(name)) continue;
+      const mtime = statSync(join(logsDir, name)).mtimeMs;
+      if (newest === null || mtime > newest) newest = mtime;
+    }
+  } catch {
+    // No logs directory: this worktree never ran a loop.
+  }
+  return newest;
+}
+
 /**
  * Each loop's worktree, by the name in its `.ralph/loop-name`. A loop's reading
  * is its own account's (see the header), so the roster view must read every
  * loop from its own worktree rather than every loop from the caller's.
+ *
+ * A worktree with no name file runs as the roster's first loop (ralph.sh's
+ * default), so it stands in for that loop when no worktree names it, but only
+ * once it has run: a bare checkout is not a loop. Where several worktrees
+ * answer for one loop (a loop recreated beside its old worktree), the one
+ * that wrote events last is the live one.
  */
-function loopWorktrees(root: string): Map<string, string> {
+function loopWorktrees(root: string, firstLoop: string): Map<string, string> {
   let paths = [root];
   try {
     const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
@@ -408,15 +430,26 @@ function loopWorktrees(root: string): Map<string, string> {
   } catch {
     // Not a git checkout, or git unreadable: the caller's worktree is all we know.
   }
-  const byLoop = new Map<string, string>();
+  const named = new Map<string, Array<{ path: string; at: number }>>();
+  const unnamed: Array<{ path: string; at: number }> = [];
   for (const path of paths) {
+    const at = lastEventsMs(path);
     let name = "";
     try {
       name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").trim();
     } catch {
+      // No name file: ralph.sh runs it as the first loop.
+    }
+    if (name === "") {
+      if (at !== null) unnamed.push({ path, at });
       continue;
     }
-    if (name !== "" && !byLoop.has(name)) byLoop.set(name, path);
+    named.set(name, [...(named.get(name) ?? []), { path, at: at ?? -1 }]);
+  }
+  if (!named.has(firstLoop) && unnamed.length > 0) named.set(firstLoop, unnamed);
+  const byLoop = new Map<string, string>();
+  for (const [name, candidates] of named) {
+    byLoop.set(name, candidates.reduce((best, next) => (next.at > best.at ? next : best)).path);
   }
   return byLoop;
 }
@@ -435,7 +468,7 @@ function showRoster(root: string, json: boolean): number {
     return 2;
   }
   const override = readOverride(overridePath(root));
-  const worktrees = loopWorktrees(root);
+  const worktrees = loopWorktrees(root, config.roster[0]!.name);
   const assessments = config.roster.map((entry) => assessWith(worktrees.get(entry.name) ?? null, entry.name, config, override));
   if (json) {
     console.log(JSON.stringify(assessments, null, 2));
@@ -510,9 +543,10 @@ function waive(root: string, loop: string, args: string[]): number {
 export function main(args: string[]): number {
   const command = args[0];
   const loop = flag(args, "--loop");
-  // Only a `--loop` left out entirely asks for the roster: a bare `--loop` (an
-  // empty variable in a script) is still the usage error it always was.
-  if (command === "show" && !args.includes("--loop")) {
+  // Only `show` with nothing but `--json` asks for the roster: a bare `--loop`
+  // (an empty variable in a script) or a `--loop=rafa` is still the usage
+  // error it always was, never a silently unfiltered answer.
+  if (command === "show" && args.slice(1).every((arg) => arg === "--json")) {
     try {
       return showRoster(projectRoot(), args.includes("--json"));
     } catch (error) {

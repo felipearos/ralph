@@ -347,8 +347,27 @@ describe("the CLI", () => {
     expect(lines[0]!.split("\t")[4]).toBe("drain");
     for (const line of lines.slice(1)) {
       expect(line.split("\t")[4]).toBe("run");
-      expect(line).toContain("no worktree on this host names this loop");
+      expect(line).toContain("no worktree of this clone runs this loop");
     }
+  });
+
+  it("reads an unnamed worktree that has run as the first loop, and the live one of two that share a name", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    rmSync(join(dirs.ralph!, ".ralph", "loop-name"));
+    spendIn(dirs.ralph!, 0.97);
+    // rafa recreated in a new worktree, listed after its old one: the old
+    // one's events are older, so the new one is read whatever the order.
+    const recreated = join(root, "wt", "rafa-new");
+    spawnSync("git", ["worktree", "add", "-q", "--detach", recreated], { cwd: root });
+    mkdirSync(join(recreated, ".ralph", "logs"), { recursive: true });
+    writeFileSync(join(recreated, ".ralph", "loop-name"), "rafa\n");
+    spendIn(dirs.rafa!, 0.3);
+    const old = (NOW - 86_400_000) / 1000;
+    utimesSync(join(dirs.rafa!, ".ralph", "logs", "iter-1.events.jsonl"), old, old);
+    spendIn(recreated, 0.99);
+    const verdicts = cli("show").stdout.split("\n").map((line) => line.split("\t")[4]);
+    expect(verdicts.slice(0, 2)).toEqual(["park", "park"]);
   });
 
   it("shows a lapsed waiver as none", () => {
@@ -367,6 +386,7 @@ describe("the CLI", () => {
     expect(Object.keys(shown)).toEqual(["loop", "rule", "source", "waiveUntil", "reading", "decision"]);
     expect(out.stdout).toBe(JSON.stringify(shown, null, 2));
     expect(cli("show", "--loop").status).toBe(2);
+    expect(cli("show", "--loop=ralph").status).toBe(2);
   });
 
   it("refuses the roster form when the config is unreadable", () => {
