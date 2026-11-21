@@ -23,7 +23,8 @@
  *   bun tracker.ts blocked <n> [--loop <name>]  drop its *-wip, add <loop>-blocked; then park it as
  *                                           .ralph/logs/block-park.json says, if the session wrote one (#776)
  *   bun tracker.ts ref <n>                  #184, AND-184, OA-410
- *   bun tracker.ts pr-ref <n>               the line a PR body carries for the ticket
+ *   bun tracker.ts pr-ref <n> [--criteria]  the line a PR body carries for the ticket
+ *                                           (--criteria: also its link and its acceptance criteria section)
  *   bun tracker.ts url <n>
  *   bun tracker.ts connect-test             stdin: {kind, token…, team|project?}; prints what the token can see
  *   bun tracker.ts connect-save --project <id>   stdin: the credential; writes it 0600 on this host
@@ -71,7 +72,7 @@ const USAGE = `usage:
   tracker.ts handoff <n> [--loop <name>] [--pr <url>]
   tracker.ts blocked <n> [--loop <name>]
   tracker.ts ref <n>
-  tracker.ts pr-ref <n>
+  tracker.ts pr-ref <n> [--criteria]
   tracker.ts url <n>
   tracker.ts connect-test < request.json
   tracker.ts connect-save --project <id> < credential.json`;
@@ -124,6 +125,23 @@ function onlyPositional(args: string[], count: number, what: string): void {
   const flag = args.find((arg) => arg.startsWith("--"));
   if (flag !== undefined) throw new UsageError(`unknown flag ${flag}`);
   if (args.length !== count) throw new UsageError(what);
+}
+
+/**
+ * The lines under the body's `## Acceptance criteria` heading, up to the next
+ * `## ` heading (a `### ` sub-heading stays inside), verbatim but without the
+ * blank lines around them; null when there is no such section or it is empty.
+ */
+export function acceptanceCriteria(body: string): string[] | null {
+  const lines = body.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^## acceptance criteria\s*$/i.test(line));
+  if (start === -1) return null;
+  let end = lines.findIndex((line, at) => at > start && line.startsWith("## "));
+  if (end === -1) end = lines.length;
+  const section = lines.slice(start + 1, end);
+  while (section.length > 0 && section[0]!.trim() === "") section.shift();
+  while (section.length > 0 && section.at(-1)!.trim() === "") section.pop();
+  return section.length === 0 ? null : section;
 }
 
 function defaultTracker(): Tracker {
@@ -179,12 +197,27 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         return EXIT.ok;
       }
       case "pr-ref": {
+        const criteria = args.includes("--criteria");
+        if (criteria) args.splice(args.indexOf("--criteria"), 1);
         onlyPositional(args, 1, "pr-ref takes one issue number");
         const t = tracker();
         const number = issueNumber(args[0]);
+        // Only the flag reads the issue, so the plain line costs no tracker call.
+        // It is read before anything prints: a failed read leaves no half a PR body.
+        const issue = criteria ? await t.issue(number) : null;
         // On GitHub the merge closes the issue; elsewhere the ticket is named
         // with its link, which links the PR in the tracker, and `done` closes it.
         out(t.kind === "github" ? `Closes #${number}` : `Ticket: ${t.ref(number)} ${t.url(number)}`);
+        if (issue === null) return EXIT.ok;
+        // A keyed tracker's link line already names the ticket with its URL.
+        if (t.kind === "github") out(`Ticket: ${t.url(number)}`);
+        out("");
+        out("### Acceptance criteria");
+        out("");
+        const lines = acceptanceCriteria(issue.body);
+        // A ticket without the section still gets its PR: say so instead of failing.
+        if (lines === null) out("_The ticket has no acceptance criteria section._");
+        else for (const line of lines) out(line);
         return EXIT.ok;
       }
       case "view": {

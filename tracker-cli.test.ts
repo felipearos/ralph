@@ -156,6 +156,31 @@ describe("tracker.ts", () => {
     expect(linear.out).toEqual(["Ticket: AND-184 https://linear.app/fake/issue/AND-184"]);
   });
 
+  it("adds the ticket link and its acceptance criteria with --criteria", async () => {
+    const body = "## What to build\r\n\r\nX\r\n\r\n## Acceptance criteria\r\n\r\n- [ ] one\r\n- [ ] two\r\n- [ ] three\r\n\r\n## Blocked by\r\n\r\n- #3\r\n";
+    const { tracker, out, run } = cli({ issues: [{ number: 184, body }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out).toEqual(["Closes #184", `Ticket: ${tracker.url(184)}`, "", "### Acceptance criteria", "", "- [ ] one", "- [ ] two", "- [ ] three"]);
+  });
+
+  it("finds the acceptance criteria heading in any case", async () => {
+    const { out, run } = cli({ issues: [{ number: 5, body: "## ACCEPTANCE CRITERIA  \n- [x] done\n### Notes\nkept\n" }] });
+    expect(await run("pr-ref", "5", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(2)).toEqual(["", "### Acceptance criteria", "", "- [x] done", "### Notes", "kept"]);
+  });
+
+  it("says so when the ticket has no acceptance criteria, and still exits 0", async () => {
+    const { tracker, out, run } = cli({ issues: [{ number: 6, body: "## What to build\n\nX\n" }] });
+    expect(await run("pr-ref", "6", "--criteria")).toBe(EXIT.ok);
+    expect(out).toEqual(["Closes #6", `Ticket: ${tracker.url(6)}`, "", "### Acceptance criteria", "", "_The ticket has no acceptance criteria section._"]);
+  });
+
+  it("gives a keyed tracker's criteria under its single Ticket line", async () => {
+    const { out, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 184, body: "## Acceptance criteria\n- [ ] one\n" }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out).toEqual(["Ticket: AND-184 https://linear.app/fake/issue/AND-184", "", "### Acceptance criteria", "", "- [ ] one"]);
+  });
+
   it("prints references and links", async () => {
     const { out, run } = cli({ kind: "jira", key: "OA" });
     await run("ref", "410");
