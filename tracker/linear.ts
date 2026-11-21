@@ -368,11 +368,21 @@ export function createLinearTracker(options: LinearTrackerOptions): Tracker {
         });
         info.labels.set(label, answer.issueLabelCreate.issueLabel.id);
         created.push(label);
-      } catch {
+      } catch (error) {
+        // A throttle or a refused key says nothing about the label: reporting
+        // it as missing would turn a retryable failure into a permanent one.
+        if (error instanceof TrackerUnavailableError || classifyLinearFailure(error) !== null) throw error;
         missing.push(label);
       }
     }
-    return { created, missing };
+    if (missing.length === 0) return { created, missing };
+    // Another process may have made the label between our read and our create,
+    // and Linear refuses a taken name: read the team once more before calling
+    // a label missing that now exists.
+    team = null;
+    const fresh = await teamInfo();
+    for (const label of created) if (!fresh.labels.has(label)) fresh.labels.set(label, info.labels.get(label)!);
+    return { created, missing: missing.filter((label) => !fresh.labels.has(label)) };
   };
 
   const addLabels = async (number: number, labels: readonly string[], issue?: LinearNode): Promise<void> => {
