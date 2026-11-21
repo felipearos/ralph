@@ -149,7 +149,7 @@ export function acceptanceCriteria(body: string): string[] | null {
  * `owner/repo#12` and, on a keyed tracker, `KEY-12`. A PR body is read for
  * what it carries — GitHub closes a `Closes #12` on merge, and the frontier
  * fences a ticket a body names — and a criterion that mentions a sibling
- * ticket must do neither. Neither reads inside code (`withoutCode`). Lines in
+ * ticket must do neither. Neither reads inside code (`markdown-code.ts`). Lines in
  * a fenced block and spans already in backticks are left as they are.
  */
 export function inertReferences(lines: readonly string[], key: string | null): string[] {
@@ -164,7 +164,9 @@ export function inertReferences(lines: readonly string[], key: string | null): s
   const out = lines.map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence !== null) {
-      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      // Only a bare marker closes a fence: a ```js line inside one is content.
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
+      if (closing !== undefined && closing[0] === fence[0] && closing.length >= fence.length) fence = null;
       return line;
     }
     if (marker !== undefined) {
@@ -257,7 +259,8 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         out(t.kind === "github" ? `Closes #${number}` : `Ticket: ${t.ref(number)} ${t.url(number)}`);
         if (issue === null) return EXIT.ok;
         // A keyed tracker's link line already names the ticket with its URL.
-        if (t.kind === "github") out(`Ticket: ${t.url(number)}`);
+        // The issue read's own URL, which is right on any GitHub host.
+        if (t.kind === "github") out(`Ticket: ${issue.url}`);
         out("");
         out("### Acceptance criteria");
         out("");
@@ -267,7 +270,9 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         else {
           // A keyed tracker spells its tickets `KEY-n`; GitHub's `#n` is fenced either way.
           const key = t.kind === "github" ? null : (/^(.+)-\d+$/.exec(t.ref(number))?.[1] ?? null);
-          for (const line of inertReferences(lines, key)) out(line);
+          // The boxes are the PR author's to tick: one ticked in the ticket starts unticked here.
+          const unticked = lines.map((line) => line.replace(/^(\s*[-*+]\s+)\[[xX]\]/, "$1[ ]"));
+          for (const line of inertReferences(unticked, key)) out(line);
         }
         return EXIT.ok;
       }

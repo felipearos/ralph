@@ -164,9 +164,24 @@ describe("tracker.ts", () => {
   });
 
   it("finds the acceptance criteria heading in any case", async () => {
-    const { out, run } = cli({ issues: [{ number: 5, body: "## ACCEPTANCE CRITERIA  \n- [x] done\n### Notes\nkept\n" }] });
+    const { out, run } = cli({ issues: [{ number: 5, body: "## ACCEPTANCE CRITERIA  \n- [ ] done\n### Notes\nkept\n" }] });
     expect(await run("pr-ref", "5", "--criteria")).toBe(EXIT.ok);
-    expect(out.slice(2)).toEqual(["", "### Acceptance criteria", "", "- [x] done", "### Notes", "kept"]);
+    expect(out.slice(2)).toEqual(["", "### Acceptance criteria", "", "- [ ] done", "### Notes", "kept"]);
+  });
+
+  it("copies a box the ticket already ticked as unticked", async () => {
+    const body = "## Acceptance criteria\n- [x] one\n  * [X] nested\n- [ ] two\n- not a box [x]\n";
+    const { out, run } = cli({ issues: [{ number: 8, body }] });
+    expect(await run("pr-ref", "8", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["- [ ] one", "  * [ ] nested", "- [ ] two", "- not a box [x]"]);
+  });
+
+  it("links the ticket with the URL the issue read returns, whatever the GitHub host", async () => {
+    const fake = createFakeTracker({ issues: [{ number: 9, body: "## Acceptance criteria\n- [ ] one\n" }] });
+    const enterprise = { ...fake, issue: async (number: number) => ({ ...(await fake.issue(number)), url: "https://ghe.example.com/acme/repo/issues/9" }) };
+    const out: string[] = [];
+    expect(await main(["pr-ref", "9", "--criteria"], { tracker: () => enterprise, loop: () => "ralph", out: (line) => out.push(line), err: () => {} })).toBe(EXIT.ok);
+    expect(out.slice(0, 2)).toEqual(["Closes #9", "Ticket: https://ghe.example.com/acme/repo/issues/9"]);
   });
 
   it("says so when the ticket has no acceptance criteria, and still exits 0", async () => {
@@ -203,6 +218,13 @@ describe("tracker.ts", () => {
       "open",
       "```",
     ]);
+  });
+
+  it("does not end a fence at a line that opens another with a language", async () => {
+    const body = "## Acceptance criteria\n```\n```js\nCloses #5\n```\n- [ ] after #6\n";
+    const { out, run } = cli({ issues: [{ number: 184, body }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["```", "```js", "Closes #5", "```", "- [ ] after `#6`"]);
   });
 
   it("finds a heading the sections anchor allows, with two spaces", async () => {

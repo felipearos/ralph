@@ -136,6 +136,16 @@ describe("linkKeyedPullRequests", () => {
       ),
     ).toEqual([{ number: 14, closingIssuesReferences: [{ number: 184 }] }]);
   });
+
+  it("reads a double-backtick span and a fence holding a ```js line as code", () => {
+    expect(
+      linkKeyedPullRequests(
+        [{ number: 15, headRefName: "feature/z", body: "Implements AND-184.\n\nSee ``AND-185`` too.\n\n```\n```js\nAND-186\n```\nAND-187" }],
+        "AND",
+        loops,
+      ),
+    ).toEqual([{ number: 15, closingIssuesReferences: [{ number: 184 }, { number: 187 }] }]);
+  });
 });
 
 describe("claiming on a keyed tracker", () => {

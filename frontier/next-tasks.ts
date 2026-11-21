@@ -105,6 +105,7 @@ import { CommandError, run } from "../tracker/command";
 import { classifyDependencyFailure, classifyGhFailure, createGithubTracker, readOpenIssuesWithBlockers } from "../tracker/github";
 import { createTracker } from "../tracker/index";
 import type { Tracker } from "../tracker/types";
+import { withoutCode } from "../markdown-code";
 
 // Moved to the tracker seam (felipearos/ralph#330); re-exported so existing
 // callers and tests keep their import path.
@@ -361,16 +362,6 @@ export interface OpenPullRequest {
    * in a PR.
    */
   references?: { number: number }[];
-}
-
-/**
- * A PR body with its fenced blocks and backtick spans removed: text quoted as
- * code is cited, not claimed, so no reference inside it ties the PR to a
- * ticket. `tracker.ts pr-ref --criteria` relies on it, wrapping the ticket
- * references in the acceptance criteria it copies into a PR body (#17).
- */
-export function withoutCode(body: string | null | undefined): string {
-  return (body ?? "").replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, "").replace(/`[^`\n]*`/g, "");
 }
 
 /**

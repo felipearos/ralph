@@ -19,6 +19,8 @@ import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { withoutCode } from "../markdown-code";
+
 /** At most one refresh this often: a PR's state does not need to be fresher than the canvas. */
 export const PULLS_REFRESH_MS = 15 * 60_000;
 
@@ -82,7 +84,9 @@ export function pullRefs(repo: string, rows: unknown): PullRef[] {
     if (typeof row?.number !== "number" || text(row.url) === "") return [];
     const state: PullState = row.state === "MERGED" ? "mergeado" : row.state === "OPEN" ? (row.isDraft === true ? "borrador" : "abierto") : "cerrado";
     const at = state === "mergeado" ? isoOrNull(row.mergedAt) : state === "cerrado" ? isoOrNull(row.closedAt) : isoOrNull(row.createdAt);
-    return [{ repo, number: row.number, url: text(row.url), state, at: at ?? isoOrNull(row.createdAt), keys: keysIn(text(row.title), text(row.body), text(row.headRefName)) }];
+    // A key the body quotes as code is cited, not claimed: a PR copying its
+    // ticket's criteria (pr-ref --criteria, #17) must not move a sibling on merge.
+    return [{ repo, number: row.number, url: text(row.url), state, at: at ?? isoOrNull(row.createdAt), keys: keysIn(text(row.title), withoutCode(text(row.body)), text(row.headRefName)) }];
   });
 }
 
