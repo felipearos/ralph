@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listStore } from "./park-store";
 
 import { EXIT, main } from "./tracker";
-import { createFakeTracker, type FakeTrackerOptions } from "./tracker/fake";
+import { FakeThrottle, createFakeTracker, type FakeTrackerOptions } from "./tracker/fake";
 import { CommandError } from "./tracker/command";
 import { createGithubTracker } from "./tracker/github";
 import { TrackerUnavailableError } from "./tracker/types";
@@ -228,6 +228,12 @@ describe("tracker.ts", () => {
     tracker.failNext("withLabel", new RateLimitedError("quota", 60, "fake"));
     expect(await run("claimed")).toBe(EXIT.throttled);
     expect(await run("view", "99")).toBe(EXIT.failed);
+  });
+
+  it("exits 75 on a throttle only the adapter recognises, as a Linear or Jira one is", async () => {
+    const { tracker, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 1 }] });
+    tracker.failNext("withLabel", new FakeThrottle({ kind: "quota", retryAfterSeconds: null }));
+    expect(await run("claimed")).toBe(EXIT.throttled);
   });
 });
 

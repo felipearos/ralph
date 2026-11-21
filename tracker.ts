@@ -149,8 +149,12 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
   const out = deps.out ?? ((line: string) => console.log(line));
   const err = deps.err ?? ((line: string) => console.error(line));
   const [command, ...args] = argv;
+  // The last tracker a command built, so the catch below can ask its adapter
+  // whether a failure was a throttle: a Linear or Jira throttle is not a
+  // RateLimitedError, and must still exit as retryable rather than as failed.
+  let built: Tracker | undefined;
   try {
-    const tracker = (): Tracker => (deps.tracker ?? defaultTracker)();
+    const tracker = (): Tracker => (built = (deps.tracker ?? defaultTracker)());
     const loopOf = (): string => takeFlag(args, "--loop") ?? (deps.loop ?? (() => currentLoop()))();
     // Bookkeeping about a write that already happened: a recorder that throws
     // must not turn a done ticket into a failed command the caller retries.
@@ -376,8 +380,8 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
       err(`tracker: ${error.message}`);
       return EXIT.unavailable;
     }
-    if (isRateLimited(error)) {
-      err(`tracker: rate limited: ${error.message}`);
+    if (isRateLimited(error) || (built !== undefined && built.classifyFailure(error) !== null)) {
+      err(`tracker: rate limited: ${error instanceof Error ? error.message : String(error)}`);
       return EXIT.throttled;
     }
     // The adapter already named the missing issue; this branch keeps that

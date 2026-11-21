@@ -366,12 +366,21 @@ export function createLinearTracker(options: LinearTrackerOptions): Tracker {
         const answer = await send<{ issueLabelCreate: { issueLabel: { id: string; name: string } } }>(CREATE_LABEL, {
           input: { name: label, teamId: info.id },
         });
-        info.labels.set(label, answer.issueLabelCreate.issueLabel.id);
+        const id = answer.issueLabelCreate.issueLabel.id;
+        info.labels.set(label, id);
+        // A concurrent call may have dropped the cached team for a re-read
+        // while this create was in flight; the re-read team must know the
+        // label too, or labelId would refuse the one this call just made.
+        const current = await teamInfo();
+        if (current !== info && !current.labels.has(label)) current.labels.set(label, id);
         created.push(label);
       } catch (error) {
-        // A throttle or a refused key says nothing about the label: reporting
-        // it as missing would turn a retryable failure into a permanent one.
+        // A throttle, a refused key, an outage (HTTP 5xx) or a dropped
+        // connection says nothing about the label: reporting it as missing
+        // would turn a retryable failure into a permanent one. Only an answer
+        // Linear gave about the request itself is a refusal of the label.
         if (error instanceof TrackerUnavailableError || classifyLinearFailure(error) !== null) throw error;
+        if (!(error instanceof LinearError) || error.status >= 500) throw error;
         missing.push(label);
       }
     }
