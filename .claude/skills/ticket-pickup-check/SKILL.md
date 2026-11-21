@@ -67,16 +67,33 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
 
    Check, and note each problem with its line:
    - `## What to build` and `## Acceptance criteria` exist; the criteria are
-     `- [ ]` checkboxes. More than 8 criteria puts the ticket in the
-     triager's Oversize bucket.
-   - `## Blocked by` and `## Parent`: on GitHub the frontier reads every
-     `#<n>` under them as an issue of THIS repository - including the number
-     in `owner/other-repo#<n>`. So look up the NUMBER the frontier reads,
-     never the `owner/repo#<n>` text (the tracker takes a bare number only):
+     checkboxes. Oversize (the triager's split bucket) is what the frontier
+     counts: every `- [ ]`, `- [x]` or `* [ ]` box under `## Acceptance
+     criteria` - or in the whole body when that heading is missing - above
+     `RALPH_TRIAGE_SPLIT_CRITERIA` (default 8), or the body naming at least
+     `RALPH_TRIAGE_SPLIT_SURFACES` (default 3) of web/mobile/api/db.
+   - `## Blocked by` and `## Parent`: first get the reference form with
+     `bun "$H/tracker.ts" ref "$N"`. On GitHub (`#N`) the frontier reads
+     every `#<n>` under those headings as an issue of THIS repository -
+     including the number in `owner/other-repo#<n>`. On Linear or Jira
+     (`KEY-N`) it reads only `KEY-<n>`: a bare `#<n>` there is ignored, so
+     report it as a dependency the frontier does not see. Look up the NUMBER
+     the frontier reads, never the `owner/repo#<n>` text (the tracker takes
+     a bare number only), and test the tracker's own exit status - a pipe
+     into jq would hide a failed lookup:
 
      ```bash
-     for ref in <each n>; do printf '#%s ' "$ref"; bun "$H/tracker.ts" view "$ref" --json 2>/dev/null | jq -c '{state, title}' || echo "does not exist here"; done
+     for ref in <each n>; do
+       if bun "$H/tracker.ts" view "$ref" --json > "$OUT/ref-$ref.json" 2> "$OUT/ref-$ref.err"; then
+         printf '#%s ' "$ref"; jq -c '{state, title}' "$OUT/ref-$ref.json"
+       else
+         printf '#%s lookup failed: ' "$ref"; head -c 200 "$OUT/ref-$ref.err"; echo
+       fi
+     done
      ```
+
+     "Could not resolve to an issue" in the error means it does not exist
+     here; any other failure is unknown, not missing - say so.
 
      Report every reference written as `owner/repo#<n>` and every number
      that does not exist here. Say what it does to the frontier: a missing
@@ -92,12 +109,16 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
    - `ready-for-agent` must be present. `spec` means it is a container: it is
      never picked itself, only its children.
    - Any `<loop>-wip` means a loop holds it now; `<loop>-blocked` means a loop
-     parked it (the triager may rescue it after 7 days); `ready-for-human`
-     means it waits on a person.
+     parked it (the triager may rescue it after 7 days).
+   - `ready-for-human` marks a person's job, but it is a display, not a
+     fence: a ticket carrying it AND `ready-for-agent` can still be offered.
+     Report the pair as a conflict and take the verdict from step 4.
    - An assignee reads as "a human has this": loops skip assigned tickets.
    - Difficulty routing: `bun "$H/jav.ts" --json | jq '.config | {enabled, labels}'`.
-     If `enabled` is true, the ticket needs one of `labels` (unless it carries
-     `priority:urgent` or `ci-health`), or no loop is offered it.
+     If `enabled` is true, a loop is offered the ticket only if it carries a
+     label on that loop's route, or carries none of `labels` at all but one
+     of the exempt labels `priority:urgent`, `ci-health` or `learning-fix`
+     (`ROUTING_EXEMPT_LABELS` in `jav.ts`).
    - Scope fence: `git fetch -q origin && git show "origin/$(jq -r '.baseBranch // "main"' .ralph/config.json):$(jq -r '.plan // ".ralph/plan.md"' .ralph/config.json)" | grep -n "#$N\b"`.
      A hit under `## Out of scope` means no loop will ever take it.
 
@@ -120,7 +141,7 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
 
    | Section | Meaning |
    | --- | --- |
-   | `ready` (in `.tickets`) | a free loop takes it next, one per staffing group |
+   | `ready` (in `.tickets`) | next for its staffing group - unless it is also in `untriaged` |
    | `ready` (as `.spec` only) | it is a spec header; its child is the work |
    | `occupied` | ready, but its staffing group already has a ticket in work |
    | `inFlight` | a loop has it, or a PR carries it (`detail`) |
@@ -131,7 +152,11 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
    | `human` | waits on a person (`reason`) |
    | `tree` only, state `open` | not offered: usually no `ready-for-agent` |
 
-   Also check `.stuckReasons` and `frontier.err` for lines naming `#N`.
+   The sections overlap: a ticket can sit in `ready` and `untriaged` at
+   once, and with routing on no coder takes an untriaged one. Say PICKED
+   NEXT only for a ticket in `ready` and not in `untriaged`, `inFlight` or
+   `stuck`. Also check `.stuckReasons` and `frontier.err` for lines naming
+   `#N`.
 
 5. **Cross-check.** The frontier's answer must agree with steps 2-3. If the
    frontier offers the ticket while step 2 found a problem (for example a
