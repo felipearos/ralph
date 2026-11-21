@@ -176,6 +176,20 @@ describe("tracker.ts", () => {
     expect(out.slice(5)).toEqual(["- [ ] one", "  * [ ] nested", "- [ ] two", "- not a box [x]"]);
   });
 
+  it("leaves a ticked box inside a fenced example as written", async () => {
+    const body = "## Acceptance criteria\n- [x] one\n```md\n- [x] example\n```\n- [X] two\n";
+    const { out, run } = cli({ issues: [{ number: 8, body }] });
+    expect(await run("pr-ref", "8", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["- [ ] one", "```md", "- [x] example", "```", "- [ ] two"]);
+  });
+
+  it("does not read a backtick line with a backtick in its info string as a fence", async () => {
+    const body = "## Acceptance criteria\n```see``` #4\n- [x] after #5\n";
+    const { out, run } = cli({ issues: [{ number: 8, body }] });
+    expect(await run("pr-ref", "8", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["```see``` `#4`", "- [ ] after `#5`"]);
+  });
+
   it("links the ticket with the URL the issue read returns, whatever the GitHub host", async () => {
     const fake = createFakeTracker({ issues: [{ number: 9, body: "## Acceptance criteria\n- [ ] one\n" }] });
     const enterprise = { ...fake, issue: async (number: number) => ({ ...(await fake.issue(number)), url: "https://ghe.example.com/acme/repo/issues/9" }) };
