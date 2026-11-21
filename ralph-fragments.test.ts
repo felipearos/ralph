@@ -53,8 +53,9 @@ describe("ralph's own review gate", () => {
     expect(text).toMatch(/Fix every \*valid\* \*\*High\*\* or \*\*Medium\*\*/);
     expect(text).toContain("### Low findings for the");
     expect(text).toContain("Stall stop.");
-    // A reply Qodo is not addressed in never reaches it.
-    expect(text).toContain("starts with `@qodo `");
+    // A reply Qodo is not addressed in never reaches it, and its findings are not threads.
+    expect(text).toContain("one PR comment that starts with `@qodo `");
+    expect(text).toContain("do NOT arrive as review threads");
   });
 
   it("never merges past an unmet gate: exit 4 hands the PR to a person", () => {

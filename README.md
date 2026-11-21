@@ -3495,16 +3495,20 @@ bun ~/ralph/qodo-review.ts <pr> [--wait <seconds>] [--json]
 ```
 
 It reads Qodo's "Code Review by Qodo" summary comment and answers whether a
-finished review covers the PR head (the summary embeds the reviewed commit):
-exit 0 reviewed (with the Bug, Rule violation and Requirement gap counts),
+finished review covers the PR head: the summary names the reviewed commit,
+is not a failed run, and carries a finished body (the counts line, numbered
+findings, or "no issues found"). Exit 0 reviewed with no open finding,
+1 reviewed with open findings (listed by number, severity, type and link,
+read from the summary: Qodo publishes them there, not as review threads),
 3 pending, 4 gave up, 5 unreadable, 75 throttled. A failed Qodo run ("Sorry,
-something went wrong"), or a review of an older commit five minutes after a
-push, is asked again with `/agentic_review`, once per head. The wait is
-bounded: each call polls for at most `--wait` seconds (240, capped at 540),
-and past `RALPH_QODO_REVIEW_MINUTES` (30) from the head commit it exits 4,
-which the prompt turns into a hand-off to a person, never a merge. Inline
-findings are review threads, answered through `review-threads.ts` like any
-other reviewer's; replies start with `@qodo ` so Qodo reads them. This
+something went wrong"), or a review of an older commit five minutes after the
+head was first seen, is asked again with `/agentic_review`, once per head.
+The wait is bounded: each call polls for at most `--wait` seconds (240,
+capped at 480), and past `RALPH_QODO_REVIEW_MINUTES` (30) from when the tool
+first saw the head it exits 4, which the prompt turns into a hand-off to a
+person, never a merge. When it first saw each head, and whether it asked
+again, is kept in `<git-common-dir>/ralph/qodo-review.json`. The loop answers
+the findings in one PR comment starting `@qodo `, so Qodo reads it. This
 repository's own gate (fix valid High and Medium findings, report Low ones,
 stop after two rounds) is in its `.ralph/prompt.md`.
 
