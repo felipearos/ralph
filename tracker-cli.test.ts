@@ -141,6 +141,45 @@ describe("tracker.ts", () => {
     expect(out).toEqual(["AND-2\tTwo\t[]  (faros)"]);
   });
 
+  it("lists only the open issues carrying every --label, by exact name", async () => {
+    const { out, run } = cli({
+      kind: "linear",
+      key: "AND",
+      issues: [
+        { number: 1, title: "One", labels: ["ready-for-agent", "spec"] },
+        { number: 2, title: "ready-for-agent in the title", labels: ["ready-for-agent-later"] },
+        { number: 3, title: "Three", labels: ["ready-for-agent"], assignees: ["faros"] },
+        { number: 4, title: "Four", labels: ["ready-for-agent"], state: "closed" },
+      ],
+    });
+    expect(await run("list", "--label", "ready-for-agent")).toBe(EXIT.ok);
+    expect(out).toEqual(["AND-3\tThree\t[ready-for-agent]  (faros)", "AND-1\tOne\t[ready-for-agent, spec]"]);
+    out.length = 0;
+    expect(await run("list", "--label", "ready-for-agent", "--label", "spec")).toBe(EXIT.ok);
+    expect(out).toEqual(["AND-1\tOne\t[ready-for-agent, spec]"]);
+    out.length = 0;
+    expect(await run("list", "--label", "Ready-For-Agent")).toBe(EXIT.ok);
+    expect(out).toEqual([]);
+    expect(await run("list", "--label", "nobody-has-it")).toBe(EXIT.ok);
+    expect(out).toEqual([]);
+  });
+
+  it("filters by --label before --limit, and narrows --json too", async () => {
+    const { out, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 1, title: "One", labels: ["x"] }, { number: 2, title: "Two", labels: ["y"] }] });
+    expect(await run("list", "--limit", "1", "--label", "x")).toBe(EXIT.ok);
+    expect(out).toEqual(["AND-1\tOne\t[x]"]);
+    out.length = 0;
+    expect(await run("list", "--json", "--label", "x")).toBe(EXIT.ok);
+    expect(JSON.parse(out[0]!)).toEqual([{ number: 1, title: "One", labels: [{ name: "x" }] }]);
+  });
+
+  it("refuses --label without a value, and never takes --json as one", async () => {
+    const { out, run } = cli({ issues: [{ number: 1, labels: ["x"] }] });
+    expect(await run("list", "--label")).toBe(EXIT.usage);
+    expect(await run("list", "--label", "--json")).toBe(EXIT.usage);
+    expect(out).toEqual([]);
+  });
+
   it("lists the open issues as gh's JSON shape for the dashboard", async () => {
     const { out, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 1, title: "One", labels: ["ralph-wip"] }] });
     expect(await run("list", "--json")).toBe(EXIT.ok);
