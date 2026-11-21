@@ -41,10 +41,14 @@
  *       and its reset, which dedupes a park's notification, or `-` when there
  *       is none (a tab is whitespace to bash's `read`, so an empty field
  *       between two would vanish). Always exit 0.
- *   usage-stop.ts show [--loop <name>] [--json]
- *       the rule, its source, the reading and the verdict, as JSON. Without
- *       --loop, every loop of the roster in roster order: one line each, or
- *       with --json an array of what `show --loop` prints for each.
+ *   usage-stop.ts show --loop <name>
+ *       the rule, its source, the reading and the verdict, as JSON, read from
+ *       the worktree it runs in.
+ *   usage-stop.ts show [--json]
+ *       every loop of the roster, in roster order, each read from its own
+ *       worktree (the one whose `.ralph/loop-name` names it): one tab-separated
+ *       line each (loop, rule, source, waiver, verdict, detail), or with
+ *       --json an array of what `show --loop` prints for each.
  *   usage-stop.ts set --loop <name|*> --percent <n> [--window <w>] [--hard <n>]
  *   usage-stop.ts set --loop <name|*> --off
  *       write the override (`--off`: no stop for it, whatever the config says).
@@ -61,7 +65,8 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSy
 import { dirname, join } from "node:path";
 
 import { DEFAULT_MARGIN_SECONDS, knob } from "./usage-limit";
-import { LOGS_RELATIVE_DIR, projectRoot } from "./paths";
+import { parseWorktreeRegistry } from "./loop-state";
+import { LOGS_RELATIVE_DIR, LOOP_NAME_RELATIVE_PATH, projectRoot } from "./paths";
 import {
   loadProjectConfig,
   USAGE_STOP_DEFAULT_HARD_PERCENT,
@@ -360,12 +365,14 @@ function assess(root: string, loop: string): Assessment {
 }
 
 /** `assess` with the config and override already read, so a roster pass reads each once. */
-function assessWith(root: string, loop: string, config: ProjectConfig | null, override: Override | null): Assessment {
+function assessWith(root: string | null, loop: string, config: ProjectConfig | null, override: Override | null): Assessment {
   const { rule, source } = effectiveRule(loop, config, override);
   const waiveUntil = override?.entries[loop]?.waiveUntil ?? null;
-  const reading = rule === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
+  // No worktree is no reading: the loop's events live in its own worktree only.
+  const reading = rule === null || root === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
   const margin = knob(process.env.RALPH_USAGE_RESET_MARGIN_SECONDS, DEFAULT_MARGIN_SECONDS);
   const decision = decide(rule, reading, nowMs(), margin, waiveUntil === null ? null : Date.parse(waiveUntil));
+  if (root === null && rule !== null) decision.detail += "; no worktree on this host names this loop";
   return { loop, rule, source, waiveUntil, reading, decision };
 }
 
@@ -382,6 +389,38 @@ function check(root: string, loop: string): number {
   return 0;
 }
 
+/**
+ * Each loop's worktree, by the name in its `.ralph/loop-name`. A loop's reading
+ * is its own account's (see the header), so the roster view must read every
+ * loop from its own worktree rather than every loop from the caller's.
+ */
+function loopWorktrees(root: string): Map<string, string> {
+  let paths = [root];
+  try {
+    const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    });
+    const listed = parseWorktreeRegistry(porcelain).map((entry) => entry.path);
+    if (listed.length > 0) paths = listed;
+  } catch {
+    // Not a git checkout, or git unreadable: the caller's worktree is all we know.
+  }
+  const byLoop = new Map<string, string>();
+  for (const path of paths) {
+    let name = "";
+    try {
+      name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").trim();
+    } catch {
+      continue;
+    }
+    if (name !== "" && !byLoop.has(name)) byLoop.set(name, path);
+  }
+  return byLoop;
+}
+
 /** `show` without --loop: every loop of the roster, in roster order. */
 function showRoster(root: string, json: boolean): number {
   let config: ProjectConfig;
@@ -396,15 +435,18 @@ function showRoster(root: string, json: boolean): number {
     return 2;
   }
   const override = readOverride(overridePath(root));
-  const assessments = config.roster.map((entry) => assessWith(root, entry.name, config, override));
+  const worktrees = loopWorktrees(root);
+  const assessments = config.roster.map((entry) => assessWith(worktrees.get(entry.name) ?? null, entry.name, config, override));
   if (json) {
     console.log(JSON.stringify(assessments, null, 2));
     return 0;
   }
   for (const { loop, rule, source, waiveUntil, decision } of assessments) {
     const ruleText = rule === null ? "no usage stop" : `${rule.window} ${rule.percent}%/${rule.hardPercent}%`;
-    // Fixed columns, `-` for no waiver, so `cut -f` finds the verdict on every line.
-    const waiver = waiveUntil === null ? "-" : `waived until ${waiveUntil}`;
+    // Fixed columns, `-` for no waiver, so `cut -f` finds the verdict on every
+    // line. A lapsed waiver stays in the override file but no longer counts.
+    const waived = waiveUntil !== null && Date.parse(waiveUntil) > nowMs();
+    const waiver = waived ? `waived until ${waiveUntil}` : "-";
     console.log([loop, ruleText, source, waiver, decision.verdict, oneLine(decision.detail)].join("\t"));
   }
   return 0;
@@ -468,12 +510,14 @@ function waive(root: string, loop: string, args: string[]): number {
 export function main(args: string[]): number {
   const command = args[0];
   const loop = flag(args, "--loop");
-  if (command === "show" && loop === undefined) {
+  // Only a `--loop` left out entirely asks for the roster: a bare `--loop` (an
+  // empty variable in a script) is still the usage error it always was.
+  if (command === "show" && !args.includes("--loop")) {
     try {
       return showRoster(projectRoot(), args.includes("--json"));
     } catch (error) {
       console.error(`usage-stop: ${(error as Error).message}`);
-      return 2;
+      return 1;
     }
   }
   if (command === undefined || loop === undefined || loop === "") {
