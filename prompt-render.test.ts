@@ -203,6 +203,8 @@ describe('rendering for a Linear project', () => {
     }
     // A hand-written `Closes #<n>` on Linear would close an unrelated GitHub issue.
     expect(out).toMatch(/Never write `Closes #<n>`\s+by hand on a Linear or Jira project/);
+    // The PR body carries the ticket's acceptance criteria, not only its link (#17).
+    expect(out).toContain('linking the issue with what `bun "$RALPH_HOME/tracker.ts" pr-ref <n> --criteria` prints.');
   });
 
   it('is the same prompt a GitHub project gets: the tracker CLI is what differs', () => {
