@@ -99,7 +99,8 @@ describe("the executor's spec file from a keyed tracker", () => {
 
   it("reports an issue the tracker cannot read as a failed fetch", async () => {
     const fetched = await fetchFromTracker(createFakeTracker({ kind: "linear", key: "AND" }), 9);
-    expect(fetched).toEqual({ ok: false, error: "no issue AND-9" });
+    expect(fetched.ok).toBe(false);
+    expect(fetched.ok ? "" : fetched.error).toContain("no issue AND-9");
   });
 });
 

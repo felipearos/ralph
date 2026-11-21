@@ -36,7 +36,8 @@
  * project checkout: the connector runs them before the project has a tracker.
  *
  * Output is plain and stable, for a model and for `ralph.sh` alike. Exit
- * status: 0 done, 1 failed, 2 usage, 69 tracker not connected (no credential,
+ * status: 0 done, 1 failed (an issue that does not exist prints
+ * `tracker: no issue #999 in <owner/name>`), 2 usage, 69 tracker not connected (no credential,
  * or no adapter for its kind), 75 throttled (`RATE_LIMITED_EXIT`). A caller
  * that only does bookkeeping treats every non-zero as "no answer" and goes on.
  *
@@ -59,7 +60,7 @@ import { currentProjectId } from "./project-id";
 import { testConnection, parseConnectRequest } from "./tracker/connect";
 import { credentialProblem, writeCredential, type TrackerCredential } from "./tracker/credentials";
 import { createTracker } from "./tracker/index";
-import { TrackerUnavailableError, type Tracker } from "./tracker/types";
+import { TrackerIssueNotFoundError, TrackerUnavailableError, type Tracker } from "./tracker/types";
 
 export const EXIT = { ok: 0, failed: 1, usage: 2, unavailable: 69, throttled: RATE_LIMITED_EXIT } as const;
 
@@ -377,6 +378,11 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
     if (isRateLimited(error)) {
       err(`tracker: rate limited: ${error.message}`);
       return EXIT.throttled;
+    }
+    // Named, not gh's raw GraphQL text: the caller asked for an issue that is not there.
+    if (error instanceof TrackerIssueNotFoundError) {
+      err(`tracker: ${error.message}`);
+      return EXIT.failed;
     }
     err(`tracker: ${error instanceof Error ? error.message : String(error)}`);
     return EXIT.failed;

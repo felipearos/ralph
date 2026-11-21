@@ -195,6 +195,7 @@ trackerContract("jira (emulated REST v3)", {
   createsLabels: false,
   cancelsAs: "completed",
   listsPullRequests: false,
+  raisesNotFound: false,
   make: (seed) => jira(emulatedJira(seed).fetch),
 });
 

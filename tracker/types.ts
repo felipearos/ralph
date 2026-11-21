@@ -273,5 +273,23 @@ export class TrackerUnavailableError extends Error {
   }
 }
 
+/**
+ * The issue a call named does not exist on the tracker — a typed outcome, so
+ * the CLI says "no issue #999 in acme/widgets" instead of the backend's raw
+ * error text. The GitHub adapter and the fake raise it today; the Linear and
+ * Jira adapters adopt it later (`ContractSetup.raisesNotFound`).
+ */
+export class TrackerIssueNotFoundError extends Error {
+  constructor(
+    /** The tracker's spelling of the issue: `#999`, `AND-999`. */
+    readonly ref: string,
+    /** Where it was looked for: `acme/widgets`, a team or project key. */
+    readonly where: string,
+  ) {
+    super(`no issue ${ref} in ${where}`);
+    this.name = "TrackerIssueNotFoundError";
+  }
+}
+
 /** The `*-wip` labels an issue carries, whichever loop wrote them. */
 export const wipLabelsOn = (labels: readonly string[]): string[] => labels.filter((label) => label.endsWith("-wip"));

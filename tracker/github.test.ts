@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { CommandError } from "./command";
 import { trackerContract, type Seed } from "./contract";
-import { createGithubTracker } from "./github";
+import { createGithubTracker, missingIssueNumber } from "./github";
 
 const REPO = "acme/widgets";
 
@@ -193,6 +193,7 @@ trackerContract("github (emulated gh)", {
   createsLabels: true,
   cancelsAs: "canceled",
   listsPullRequests: false,
+  raisesNotFound: true,
   make: (seed) => {
     const { gh } = emulatedGh(seed);
     return createGithubTracker({ repo: REPO, owner: seed.self, gh, read: gh });
@@ -286,5 +287,18 @@ describe("github tracker", () => {
     const error = new CommandError("gh: You have exceeded a secondary rate limit (HTTP 403)", "HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 4870\n\n{}");
     expect(tracker.classifyFailure(error)).toEqual({ kind: "secondary", retryAfterSeconds: null });
     expect(tracker.classifyFailure(new Error("gh: Not Found (HTTP 404)"))).toBeNull();
+  });
+});
+
+describe("missingIssueNumber", () => {
+  it("reads the number from both of gh's wordings of a missing issue", () => {
+    expect(missingIssueNumber("GraphQL: Could not resolve to an issue or pull request with the number of 999.")).toBe(999);
+    expect(missingIssueNumber("gh failed: Could not resolve to an issue with the number of 42")).toBe(42);
+  });
+
+  it("is null for every other failure", () => {
+    expect(missingIssueNumber("HTTP 401: Bad credentials")).toBeNull();
+    expect(missingIssueNumber("API rate limit exceeded")).toBeNull();
+    expect(missingIssueNumber("")).toBeNull();
   });
 });

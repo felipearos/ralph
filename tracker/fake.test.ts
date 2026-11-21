@@ -22,6 +22,7 @@ trackerContract("fake, GitHub-shaped", {
   createsLabels: true,
   cancelsAs: "canceled",
   listsPullRequests: true,
+  raisesNotFound: true,
   make: (seed) => fromSeed(seed, { kind: "github" }),
 });
 
@@ -33,6 +34,7 @@ trackerContract("fake, Linear-shaped", {
   createsLabels: true,
   cancelsAs: "canceled",
   listsPullRequests: true,
+  raisesNotFound: true,
   make: (seed) => fromSeed(seed, { kind: "linear", key: "AND" }),
 });
 
@@ -44,6 +46,7 @@ trackerContract("fake, Jira-shaped", {
   createsLabels: false,
   cancelsAs: "canceled",
   listsPullRequests: true,
+  raisesNotFound: true,
   make: (seed) => fromSeed(seed, { kind: "jira", key: "OA" }),
 });
 
