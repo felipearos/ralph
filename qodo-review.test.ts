@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import {
   countsOf,
@@ -171,6 +171,7 @@ describe("parsing gh", () => {
 describe("the seen store", () => {
   it("round-trips, and reads a missing or malformed file as empty", () => {
     const dir = mkdtempSync(join(tmpdir(), "qodo-review-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
     const path = join(dir, "ralph", "qodo-review.json");
     const store = seenStore(path);
     expect(store.get("k")).toBeNull();
