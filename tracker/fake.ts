@@ -129,14 +129,14 @@ export function createFakeTracker(options: FakeTrackerOptions = {}): FakeTracker
       throw error;
     }
   };
+  // Where a missing issue was looked for: the repo its GitHub-shaped url()
+  // names, or a keyed fake's team or project key.
+  const where = kind === "github" ? "fake/repo" : (options.key ?? kind);
   const get = (number: number): FakeIssue => {
     const issue = issues.get(number);
     if (issue === undefined) throw new TrackerIssueNotFoundError(ref(number), where);
     return issue;
   };
-  // Where a missing issue was looked for: the repo its GitHub-shaped url()
-  // names, or a keyed fake's team or project key.
-  const where = kind === "github" ? "fake/repo" : (options.key ?? kind);
   const ref = (number: number): string => (keyed ? `${options.key}-${number}` : `#${number}`);
   const url = (number: number): string =>
     kind === "github"

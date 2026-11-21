@@ -268,6 +268,22 @@ describe("tracker.ts on a missing issue (#18)", () => {
     expect(err).toEqual(["tracker: gh issue view 999 failed: HTTP 401: Bad credentials"]);
   });
 
+  it("never reads a quoted phrase in the argv as gh's answer", async () => {
+    // `run` puts the whole argv in the message: a comment quoting the phrase
+    // that fails for another reason must keep that reason.
+    const quoted = "GraphQL: Could not resolve to an issue or pull request with the number of 4021.";
+    const failure = new CommandError(`gh issue comment 17 --repo acme/widgets --body ${quoted} failed: HTTP 502: Bad Gateway`, "");
+    const { code, err } = await failingGithub(["comment", "17", "--body", quoted], failure);
+    expect(code).toBe(EXIT.failed);
+    expect(err).toEqual([`tracker: ${failure.message}`]);
+  });
+
+  it("names nothing when gh's missing number is not the issue asked for", async () => {
+    const { code, err } = await failingGithub(["view", "17"], missing(999));
+    expect(code).toBe(EXIT.failed);
+    expect(err[0]).not.toContain("no issue");
+  });
+
   it("keeps a throttle a throttle: exit 75", async () => {
     const { code } = await failingGithub(["view", "999"], new RateLimitedError("quota", 60, "gh"));
     expect(code).toBe(EXIT.throttled);

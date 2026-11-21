@@ -285,8 +285,9 @@ export class TrackerIssueNotFoundError extends Error {
     readonly ref: string,
     /** Where it was looked for: `acme/widgets`, a team or project key. */
     readonly where: string,
+    options?: ErrorOptions,
   ) {
-    super(`no issue ${ref} in ${where}`);
+    super(`no issue ${ref} in ${where}`, options);
     this.name = "TrackerIssueNotFoundError";
   }
 }

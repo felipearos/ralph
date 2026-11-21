@@ -397,7 +397,7 @@ export function trackerContract(name: string, setup: ContractSetup): void {
       expect((await tracker.live(2)).labels).toContain("tria-wip");
     });
 
-    it("throws reading an issue that does not exist", async () => {
+    it("names an issue that does not exist, on reads and writes", async () => {
       const tracker = await fresh();
       if (!setup.raisesNotFound) {
         await expect(tracker.issue(999)).rejects.toThrow();

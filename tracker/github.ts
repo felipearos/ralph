@@ -228,6 +228,11 @@ export function missingIssueNumber(message: string): number | null {
  * `call` with gh's missing-issue failure raised as `TrackerIssueNotFoundError`.
  * It wraps the call from outside, after any rate-limit retry, so a throttle
  * still surfaces as itself; every other failure is rethrown unchanged.
+ *
+ * Only a call aimed at one issue (`issue <verb> <n>`) is translated, and only
+ * when gh's own text names that same number: `run` puts the whole argv in the
+ * message, so a comment or title quoting the phrase must not turn an
+ * unrelated failure (a 502, a throttle on a write) into "no issue".
  */
 function namingMissingIssues(
   call: (args: string[]) => Promise<string>,
@@ -237,9 +242,13 @@ function namingMissingIssues(
     try {
       return await call(args);
     } catch (error) {
-      const number = missingIssueNumber(error instanceof Error ? error.message : String(error));
-      if (number === null) throw error;
-      throw new TrackerIssueNotFoundError(`#${number}`, repo);
+      const target = args[0] === "issue" && /^[1-9][0-9]*$/.test(args[2] ?? "") ? Number(args[2]) : null;
+      if (target === null) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      const command = `gh ${args.join(" ")} failed: `;
+      const said = message.startsWith(command) ? message.slice(command.length) : message;
+      if (missingIssueNumber(said) !== target) throw error;
+      throw new TrackerIssueNotFoundError(`#${target}`, repo, { cause: error });
     }
   };
 }
