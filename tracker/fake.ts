@@ -54,6 +54,13 @@ export interface FakeTrackerOptions {
   workflow?: string[];
   /** Labels that already exist. A Jira-shaped fake treats labels as free-form and ignores this. */
   labels?: string[];
+  /**
+   * Labels `ensureLabels` cannot create (GitHub without the permission, a
+   * Linear team that refuses it): reported in `missing` and never added, so a
+   * test can drive a caller's refusal path. A label that already exists is
+   * not affected.
+   */
+  uncreatableLabels?: string[];
   /** Who `assign()` with no login assigns. */
   self?: string;
   issues?: (Partial<FakeIssue> & { number: number })[];
@@ -88,6 +95,7 @@ export function createFakeTracker(options: FakeTrackerOptions = {}): FakeTracker
   const freeFormLabels = kind === "jira";
   const issues = new Map<number, FakeIssue>();
   const existingLabels = new Set(options.labels ?? []);
+  const uncreatable = new Set(options.uncreatableLabels ?? []);
   const writes: string[] = [];
   const failures = new Map<string, Error>();
 
@@ -380,9 +388,11 @@ export function createFakeTracker(options: FakeTrackerOptions = {}): FakeTracker
     async ensureLabels(labels) {
       trip("ensureLabels");
       if (freeFormLabels) return { created: [], missing: [] };
-      const created = labels.filter((label) => !existingLabels.has(label));
+      const absent = labels.filter((label) => !existingLabels.has(label));
+      const missing = absent.filter((label) => uncreatable.has(label));
+      const created = absent.filter((label) => !uncreatable.has(label));
       for (const label of created) existingLabels.add(label);
-      return { created, missing: [] };
+      return { created, missing };
     },
 
     ...(keyed ? { workflowStates: async () => [...workflow] } : {}),

@@ -392,6 +392,9 @@ export function createJiraTracker(options: JiraTrackerOptions): Tracker {
     },
 
     async create(issue): Promise<TrackerCreatedIssue> {
+      // Every listing narrows to the scope label, so an issue opened without it
+      // would exist and never be read again: not listed, never offered to a loop.
+      const labels = [...new Set([...(issue.labels ?? []), ...(options.scopeLabel === null ? [] : [options.scopeLabel])])];
       const created = await send<{ key: string }>("POST", "/rest/api/3/issue", {
         fields: {
           project: { key: project },
@@ -401,7 +404,7 @@ export function createJiraTracker(options: JiraTrackerOptions): Tracker {
           issuetype: { name: "Task" },
           summary: issue.title,
           description: markdownToAdf(issue.body),
-          ...(issue.labels === undefined || issue.labels.length === 0 ? {} : { labels: [...issue.labels] }),
+          ...(labels.length === 0 ? {} : { labels }),
         },
       });
       const number = numberOf(created.key);

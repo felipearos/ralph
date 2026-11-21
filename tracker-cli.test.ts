@@ -190,6 +190,65 @@ describe("tracker.ts", () => {
   });
 });
 
+describe("tracker.ts create (#14)", () => {
+  it("opens one issue with the title, body and labels, and prints its ref and url", async () => {
+    const { tracker, out, run } = cli({ issues: [{ number: 11 }] });
+    expect(await run("create", "--title", "T", "--body-file", "body.md", "--label", "a", "--label", "b")).toBe(EXIT.ok);
+    expect(tracker.issues.size).toBe(2);
+    const created = tracker.issues.get(12)!;
+    expect(created).toMatchObject({ title: "T", body: "from a file\n", labels: ["a", "b"] });
+    expect(out).toEqual(["#12\thttps://github.com/fake/repo/issues/12"]);
+  });
+
+  it("asks for a repeated label once", async () => {
+    const { tracker, run } = cli();
+    expect(await run("create", "--title", "T", "--body", "x", "--label", "a", "--label", "a")).toBe(EXIT.ok);
+    expect([...tracker.issues.values()][0]!.labels).toEqual(["a"]);
+  });
+
+  it("opens nothing when a label cannot be created, and names it", async () => {
+    const { tracker, err, run } = cli({ issues: [{ number: 1 }], uncreatableLabels: ["nope"] });
+    expect(await run("create", "--title", "T", "--body", "x", "--label", "ok", "--label", "nope")).toBe(EXIT.failed);
+    expect(err.join("\n")).toContain("nope");
+    expect(tracker.issues.size).toBe(1);
+    expect(tracker.writes.filter((w) => w.startsWith("create"))).toEqual([]);
+  });
+
+  it("refuses bad usage with status 2 before touching the tracker", async () => {
+    const tracker = createFakeTracker({ issues: [{ number: 1 }] });
+    let built = 0;
+    const run = (...argv: string[]) =>
+      main(argv, {
+        tracker: () => {
+          built += 1;
+          return tracker;
+        },
+        out: () => {},
+        err: () => {},
+        readFile: (path) => (path === "body.md" ? "from a file\n" : "  \n"),
+      });
+    expect(await run("create", "--body", "x")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "   ", "--body", "x")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "T", "--body", "  ")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "T", "--body-file", "empty.md")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "T", "--body", "x", "--body-file", "body.md")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "T")).toBe(EXIT.usage);
+    expect(await run("create", "7", "--title", "T", "--body", "x")).toBe(EXIT.usage);
+    expect(await run("create", "--title", "T", "--body", "x", "--label", "a,b")).toBe(EXIT.usage);
+    expect(built).toBe(0);
+    expect(tracker.writes).toEqual([]);
+    expect(tracker.issues.size).toBe(1);
+  });
+
+  it("prints the state-move warning and still succeeds", async () => {
+    const { tracker, out, err, run } = cli();
+    tracker.create = async () => ({ number: 9, url: "https://github.com/fake/repo/issues/9", movedTo: null, warning: "no workflow state named 'X'" });
+    expect(await run("create", "--title", "T", "--body", "x")).toBe(EXIT.ok);
+    expect(out).toEqual(["#9\thttps://github.com/fake/repo/issues/9"]);
+    expect(err).toEqual(["tracker: #9: no workflow state named 'X'"]);
+  });
+});
+
 describe("tracker.ts speed ledger", () => {
   function speedCli(speed: (kind: SpeedKind, fields: RecordFields) => void) {
     const tracker = createFakeTracker({ issues: [{ number: 1, labels: ["ralph-wip"] }, { number: 2, labels: ["ralph-wip"] }, { number: 3, labels: ["ralph-wip", "other"] }] });

@@ -208,6 +208,12 @@ loads the file itself. With no credential, preflight refuses to start (pointing
 at the dashboard), and a running loop's gate waits, naming why, until the
 project is connected again; it never halts over it.
 
+**Filing a ticket.** `bun tracker.ts create --title <text> (--body <text> |
+--body-file <path|->) [--label <name>]...` opens one issue through the same
+door, on whichever tracker the project uses; use it instead of
+`gh issue create`. It makes any missing label first and opens nothing when a
+label cannot be made, then prints `<ref>\t<url>` on one line.
+
 **Ticket numbers stay integers.** The project is pinned to one team or project,
 so `AND-184` is ticket 184: branches are `<loop>/184-…`, the lease is 184, the
 spec file is `spec-184.md`. `tracker.ts ref 184` prints the tracker's spelling.
