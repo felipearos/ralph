@@ -172,11 +172,12 @@ describe("the pre-push hook", () => {
     commit("g.md", "fine\n", "docs: g");
     const first = run(["push", "-q", "origin", "topic"], work);
     expect(first.status, first.stderr).toBe(0);
-    // A name another clone already published on main: not this push's doing.
+    // A listed author and name already published on main (bypassing the
+    // hook here stands in for another clone): not this push's doing.
     expect(run(["switch", "-q", "main"], work).status).toBe(0);
     writeFileSync(join(work, "h.md"), "acme\n");
     run(["add", "."], work);
-    expect(run(["commit", "-qm", "docs: h", "--no-verify"], work).status).toBe(0);
+    expect(run(["commit", "-qm", "docs: h", "--no-verify", "--author", "Acme Person <person@acme.example>"], work).status).toBe(0);
     expect(run(["push", "-q", "--no-verify", "origin", "main"], work).status).toBe(0);
     expect(run(["fetch", "-q", "origin"], work).status).toBe(0);
     expect(run(["switch", "-q", "topic"], work).status).toBe(0);

@@ -12,6 +12,9 @@
  * What a push is scanned for: every commit it would add to the remote, by
  * its author and committer, its message, the paths it adds, and every line
  * it adds. Removed lines are not scanned: deleting a name is the fix.
+ * "Already on the remote" means reachable from this clone's remote-tracking
+ * refs for it, so a clone that kept a branch the remote has since rewritten
+ * should `git fetch --prune` before it pushes.
  *
  * The guard fails closed. A host that installed the hook but has no list (or
  * an unreadable one) refuses every push and says why: a guard that silently
