@@ -192,6 +192,27 @@ describe("the pre-push hook", () => {
     expect(added.stderr).not.toContain("h.md");
   });
 
+  it("refuses a listed-name commit a stale remote-tracking ref still reaches", () => {
+    const { root, work, run, commit } = setup();
+    expect(run(["push", "-q", "origin", "HEAD:main"], work).status).toBe(0);
+    expect(run(["switch", "-q", "-c", "topic"], work).status).toBe(0);
+    commit("j.md", "fine\n", "docs: j");
+    expect(run(["push", "-q", "origin", "topic"], work).status).toBe(0);
+    // A listed name pushed on `old` (bypassing the hook), then deleted on the
+    // remote by another clone: this clone's origin/old still reaches it.
+    expect(run(["switch", "-q", "-c", "old", "main"], work).status).toBe(0);
+    commit("k.md", "the acme board\n", "docs: k");
+    expect(run(["push", "-q", "--no-verify", "origin", "old"], work).status).toBe(0);
+    expect(run(["--git-dir", join(root, "origin.git"), "branch", "-D", "old"]).status).toBe(0);
+    expect(run(["rev-parse", "--verify", "-q", "refs/remotes/origin/old"], work).status).toBe(0);
+    // Merging it into a branch the remote holds would republish it.
+    expect(run(["switch", "-q", "topic"], work).status).toBe(0);
+    expect(run(["merge", "-q", "--no-edit", "old"], work).status).toBe(0);
+    const push = run(["push", "-q", "origin", "topic"], work);
+    expect(push.status).not.toBe(0);
+    expect(push.stderr).toContain("k.md:1");
+  });
+
   it("refuses to install without a list, and leaves no hook behind", () => {
     const root = mkdtempSync(join(tmpdir(), "name-guard-"));
     roots.push(root);
