@@ -53,6 +53,10 @@ describe("keysIn", () => {
     expect(keysIn("XOAI-1 and OAI-12")).toEqual(["XOAI-1", "OAI-12"]);
     expect(pullsNaming(pullRefs("x/y", [ghRow(1, { title: "XOAI-1, OAI-12" })]), ["OAI-1"])).toEqual([]);
     expect(pullsNaming(pullRefs("x/y", [ghRow(1, { title: "nada", body: "Cierra OAI-1." })]), ["OAI-1"])).toHaveLength(1);
+    // A sibling quoted as code (pr-ref --criteria copies criteria that way) is not this PR's.
+    const quoted = pullRefs("x/y", [ghRow(2, { title: "nada", body: "Ticket: OAI-1 https://x\n\n- [ ] sigue a `OAI-2`\n\n```\nOAI-3\n```", headRefName: "oai-1-fix" })]);
+    expect(quoted[0]!.keys).toEqual(["OAI-1"]);
+    expect(pullsNaming(quoted, ["OAI-2"])).toEqual([]);
   });
 });
 

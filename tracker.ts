@@ -26,7 +26,8 @@
  *   bun tracker.ts blocked <n> [--loop <name>]  drop its *-wip, add <loop>-blocked; then park it as
  *                                           .ralph/logs/block-park.json says, if the session wrote one (#776)
  *   bun tracker.ts ref <n>                  #184, AND-184, OA-410
- *   bun tracker.ts pr-ref <n>               the line a PR body carries for the ticket
+ *   bun tracker.ts pr-ref <n> [--criteria]  the line a PR body carries for the ticket
+ *                                           (--criteria: also its link and its acceptance criteria section)
  *   bun tracker.ts url <n>
  *   bun tracker.ts connect-test             stdin: {kind, token…, team|project?}; prints what the token can see
  *   bun tracker.ts connect-save --project <id>   stdin: the credential; writes it 0600 on this host
@@ -54,6 +55,7 @@ import { recordBlockPark, type BlockParkDeps } from "./block-park";
 import { RATE_LIMITED_EXIT, isRateLimited } from "./frontier/github-rate-limit";
 import { READY_LABEL, currentLoop, doneLabelFor, stuckLabelFor, wipLabelFor } from "./frontier/next-tasks";
 import { projectRoot } from "./paths";
+import { sectionIfPresent } from "./sections";
 import { configuredParkStorePath } from "./park-store";
 import { recordSpeedEvent, type RecordFields, type SpeedKind } from "./speed";
 import { loadProjectConfig } from "./project-config";
@@ -76,7 +78,7 @@ const USAGE = `usage:
   tracker.ts handoff <n> [--loop <name>] [--pr <url>]
   tracker.ts blocked <n> [--loop <name>]
   tracker.ts ref <n>
-  tracker.ts pr-ref <n>
+  tracker.ts pr-ref <n> [--criteria]
   tracker.ts url <n>
   tracker.ts connect-test < request.json
   tracker.ts connect-save --project <id> < credential.json`;
@@ -129,6 +131,77 @@ function onlyPositional(args: string[], count: number, what: string): void {
   const flag = args.find((arg) => arg.startsWith("--"));
   if (flag !== undefined) throw new UsageError(`unknown flag ${flag}`);
   if (args.length !== count) throw new UsageError(what);
+}
+
+/**
+ * The lines under the body's `## Acceptance criteria` heading, up to the next
+ * `## ` heading (a `### ` sub-heading stays inside), verbatim but without the
+ * blank lines around them; null when there is no such section or it is empty.
+ * The anchor is `sections.ts`'s, so this finds the section exactly where the
+ * frontier sizing a ticket and the triager rewriting one find it.
+ */
+export function acceptanceCriteria(body: string): string[] | null {
+  const text = sectionIfPresent(body, "Acceptance criteria");
+  if (text === null) return null;
+  const section = text.split(/\r?\n/);
+  while (section.length > 0 && section[0]!.trim() === "") section.shift();
+  while (section.length > 0 && section.at(-1)!.trim() === "") section.pop();
+  return section.length === 0 ? null : section;
+}
+
+/**
+ * Copied lines with every ticket reference wrapped as code: `#12`,
+ * `owner/repo#12` and, on a keyed tracker, `KEY-12`. A PR body is read for
+ * what it carries — GitHub closes a `Closes #12` on merge, and the frontier
+ * fences a ticket a body names — and a criterion that mentions a sibling
+ * ticket must do neither. Neither reads inside code (`markdown-code.ts`). Lines in
+ * a fenced block and spans already in backticks are left as they are. A ticked
+ * box outside a fence is copied unticked.
+ */
+export function inertReferences(lines: readonly string[], key: string | null): string[] {
+  const keyed = key === null ? "" : `|\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+\\b`;
+  const reference = new RegExp(`(?:\\b[\\w.-]+\\/[\\w.-]+)?#\\d+\\b${keyed}`, "g");
+  // A URL or markdown link is one token: wrapping a reference inside it would
+  // break the link, so one that names a ticket (an issue URL closes on merge
+  // like `#12` does) is quoted whole, and any other is left alone.
+  const link = /(\[[^\]\n]*\]\([^)\s]*\)|https?:\/\/[^\s)>\]]+)/;
+  const namesTicket = (token: string): boolean => new RegExp(reference.source).test(token) || /\/(?:issues|pull)\/\d+/.test(token);
+  let fence: string | null = null;
+  const out = lines.map((line) => {
+    // A backtick opener with a backtick in its info string is a code span, not a fence.
+    const opener = /^ {0,3}(?:(`{3,})[^`]*$|(~{3,}))/.exec(line);
+    const marker = opener?.[1] ?? opener?.[2];
+    if (fence !== null) {
+      // Only a bare marker closes a fence: a ```js line inside one is content.
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
+      if (closing !== undefined && closing[0] === fence[0] && closing.length >= fence.length) fence = null;
+      return line;
+    }
+    if (marker !== undefined) {
+      fence = marker;
+      return line;
+    }
+    // The boxes are the PR author's to tick: one ticked in the ticket starts
+    // unticked here. A box inside a fenced block is an example and stays as is.
+    return line
+      .replace(/^(\s*[-*+]\s+)\[[xX]\]/, "$1[ ]")
+      .split(/(`[^`\n]*`)/)
+      .map((part, at) => {
+        if (at % 2 === 1) return part;
+        return part
+          .split(link)
+          .map((piece, index) => {
+            if (index % 2 === 0) return piece.replace(reference, (ref) => `\`${ref}\``);
+            return namesTicket(piece) ? `\`${piece}\`` : piece;
+          })
+          .join("");
+      })
+      .join("");
+  });
+  // A section cut short inside a fenced block would turn the rest of the PR
+  // body into code; close it where the copy ends.
+  if (fence !== null) out.push(fence);
+  return out;
 }
 
 function defaultTracker(): Tracker {
@@ -197,12 +270,32 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         return EXIT.ok;
       }
       case "pr-ref": {
+        const criteria = args.includes("--criteria");
+        if (criteria) args.splice(args.indexOf("--criteria"), 1);
         onlyPositional(args, 1, "pr-ref takes one issue number");
         const t = tracker();
         const number = issueNumber(args[0]);
+        // Only the flag reads the issue, so the plain line costs no tracker call.
+        // It is read before anything prints: a failed read leaves no half a PR body.
+        const issue = criteria ? await t.issue(number) : null;
         // On GitHub the merge closes the issue; elsewhere the ticket is named
         // with its link, which links the PR in the tracker, and `done` closes it.
         out(t.kind === "github" ? `Closes #${number}` : `Ticket: ${t.ref(number)} ${t.url(number)}`);
+        if (issue === null) return EXIT.ok;
+        // A keyed tracker's link line already names the ticket with its URL.
+        // The issue read's own URL, which is right on any GitHub host.
+        if (t.kind === "github") out(`Ticket: ${issue.url}`);
+        out("");
+        out("### Acceptance criteria");
+        out("");
+        const lines = acceptanceCriteria(issue.body);
+        // A ticket without the section still gets its PR: say so instead of failing.
+        if (lines === null) out("_The ticket has no acceptance criteria section._");
+        else {
+          // A keyed tracker spells its tickets `KEY-n`; GitHub's `#n` is fenced either way.
+          const key = t.kind === "github" ? null : (/^(.+)-\d+$/.exec(t.ref(number))?.[1] ?? null);
+          for (const line of inertReferences(lines, key)) out(line);
+        }
         return EXIT.ok;
       }
       case "view": {

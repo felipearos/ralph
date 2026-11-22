@@ -197,6 +197,97 @@ describe("tracker.ts", () => {
     expect(linear.out).toEqual(["Ticket: AND-184 https://linear.app/fake/issue/AND-184"]);
   });
 
+  it("adds the ticket link and its acceptance criteria with --criteria", async () => {
+    const body = "## What to build\r\n\r\nX\r\n\r\n## Acceptance criteria\r\n\r\n- [ ] one\r\n- [ ] two\r\n- [ ] three\r\n\r\n## Blocked by\r\n\r\n- #3\r\n";
+    const { tracker, out, run } = cli({ issues: [{ number: 184, body }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out).toEqual(["Closes #184", `Ticket: ${tracker.url(184)}`, "", "### Acceptance criteria", "", "- [ ] one", "- [ ] two", "- [ ] three"]);
+  });
+
+  it("finds the acceptance criteria heading in any case", async () => {
+    const { out, run } = cli({ issues: [{ number: 5, body: "## ACCEPTANCE CRITERIA  \n- [ ] done\n### Notes\nkept\n" }] });
+    expect(await run("pr-ref", "5", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(2)).toEqual(["", "### Acceptance criteria", "", "- [ ] done", "### Notes", "kept"]);
+  });
+
+  it("copies a box the ticket already ticked as unticked", async () => {
+    const body = "## Acceptance criteria\n- [x] one\n  * [X] nested\n- [ ] two\n- not a box [x]\n";
+    const { out, run } = cli({ issues: [{ number: 8, body }] });
+    expect(await run("pr-ref", "8", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["- [ ] one", "  * [ ] nested", "- [ ] two", "- not a box [x]"]);
+  });
+
+  it("leaves a ticked box inside a fenced example as written", async () => {
+    const body = "## Acceptance criteria\n- [x] one\n```md\n- [x] example\n```\n- [X] two\n";
+    const { out, run } = cli({ issues: [{ number: 8, body }] });
+    expect(await run("pr-ref", "8", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["- [ ] one", "```md", "- [x] example", "```", "- [ ] two"]);
+  });
+
+  it("does not read a backtick line with a backtick in its info string as a fence", async () => {
+    const body = "## Acceptance criteria\n```see``` #4\n- [x] after #5\n";
+    const { out, run } = cli({ issues: [{ number: 8, body }] });
+    expect(await run("pr-ref", "8", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["```see``` `#4`", "- [ ] after `#5`"]);
+  });
+
+  it("links the ticket with the URL the issue read returns, whatever the GitHub host", async () => {
+    const fake = createFakeTracker({ issues: [{ number: 9, body: "## Acceptance criteria\n- [ ] one\n" }] });
+    const enterprise = { ...fake, issue: async (number: number) => ({ ...(await fake.issue(number)), url: "https://ghe.example.com/acme/repo/issues/9" }) };
+    const out: string[] = [];
+    expect(await main(["pr-ref", "9", "--criteria"], { tracker: () => enterprise, loop: () => "ralph", out: (line) => out.push(line), err: () => {} })).toBe(EXIT.ok);
+    expect(out.slice(0, 2)).toEqual(["Closes #9", "Ticket: https://ghe.example.com/acme/repo/issues/9"]);
+  });
+
+  it("says so when the ticket has no acceptance criteria, and still exits 0", async () => {
+    const { tracker, out, run } = cli({ issues: [{ number: 6, body: "## What to build\n\nX\n" }] });
+    expect(await run("pr-ref", "6", "--criteria")).toBe(EXIT.ok);
+    expect(out).toEqual(["Closes #6", `Ticket: ${tracker.url(6)}`, "", "### Acceptance criteria", "", "_The ticket has no acceptance criteria section._"]);
+  });
+
+  it("gives a keyed tracker's criteria under its single Ticket line", async () => {
+    const { out, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 184, body: "## Acceptance criteria\n- [ ] one\n" }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out).toEqual(["Ticket: AND-184 https://linear.app/fake/issue/AND-184", "", "### Acceptance criteria", "", "- [ ] one"]);
+  });
+
+  it("quotes the ticket references in copied criteria as code, so the PR neither closes nor fences them", async () => {
+    const body = "## Acceptance criteria\n- [ ] Fixes #12's retry too\n- [ ] builds on AND-185 and acme/web#3\n- [ ] already `#4`\n```\nCloses #5\n```\n";
+    const keyed = cli({ kind: "linear", key: "AND", issues: [{ number: 184, body }] });
+    expect(await keyed.run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(keyed.out.slice(4)).toEqual(["- [ ] Fixes `#12`'s retry too", "- [ ] builds on `AND-185` and `acme/web#3`", "- [ ] already `#4`", "```", "Closes #5", "```"]);
+    const github = cli({ issues: [{ number: 184, body }] });
+    expect(await github.run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(github.out.slice(5, 7)).toEqual(["- [ ] Fixes `#12`'s retry too", "- [ ] builds on AND-185 and `acme/web#3`"]);
+  });
+
+  it("quotes a link that names a ticket whole, leaves other links alone, and closes a fence left open", async () => {
+    const body = "## Acceptance criteria\n- [ ] Fixes https://github.com/acme/web/issues/12 too\n- [ ] see [AND-185](https://linear.app/acme/issue/AND-185/retry)\n- [ ] docs at https://example.com/guide\n```\nopen\n";
+    const { out, run } = cli({ kind: "linear", key: "AND", issues: [{ number: 184, body }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(4)).toEqual([
+      "- [ ] Fixes `https://github.com/acme/web/issues/12` too",
+      "- [ ] see `[AND-185](https://linear.app/acme/issue/AND-185/retry)`",
+      "- [ ] docs at https://example.com/guide",
+      "```",
+      "open",
+      "```",
+    ]);
+  });
+
+  it("does not end a fence at a line that opens another with a language", async () => {
+    const body = "## Acceptance criteria\n```\n```js\nCloses #5\n```\n- [ ] after #6\n";
+    const { out, run } = cli({ issues: [{ number: 184, body }] });
+    expect(await run("pr-ref", "184", "--criteria")).toBe(EXIT.ok);
+    expect(out.slice(5)).toEqual(["```", "```js", "Closes #5", "```", "- [ ] after `#6`"]);
+  });
+
+  it("finds a heading the sections anchor allows, with two spaces", async () => {
+    const { out, run } = cli({ issues: [{ number: 7, body: "##  Acceptance criteria\n- [ ] one\n" }] });
+    expect(await run("pr-ref", "7", "--criteria")).toBe(EXIT.ok);
+    expect(out.at(-1)).toBe("- [ ] one");
+  });
+
   it("prints references and links", async () => {
     const { out, run } = cli({ kind: "jira", key: "OA" });
     await run("ref", "410");

@@ -713,8 +713,16 @@ Once the gates are green, `verify` is done: write
    write `.ralph/logs/phase-<n>-review.md` and end with
    `<ralph>PHASE finish <n></ralph>`. Everything from here on is `finish`.
 3. Push and `gh pr create` (non-draft unless needs-migration) with
-   `--base "$RALPH_BASE_BRANCH"`, linking the issue with the line `bun "$RALPH_HOME/tracker.ts" pr-ref <n>` prints, verbatim: `Closes #<n>` on
-   GitHub, the ticket's key and link on Linear or Jira. Never write `Closes #<n>`
+   `--base "$RALPH_BASE_BRANCH"`, linking the issue with what `bun "$RALPH_HOME/tracker.ts" pr-ref <n> --criteria` prints. Its first line goes in
+   verbatim: `Closes #<n>` on GitHub, the ticket's key and link on Linear or
+   Jira. Next come the ticket's link (on GitHub; elsewhere the first line is
+   it) and its `### Acceptance criteria`, copied from the ticket with every
+   ticket reference quoted as code so the PR neither closes nor claims it:
+   keep that section as printed, and under each criterion say in a line how
+   you checked it (the test that pins it, the gate you ran), so a reviewer
+   sees what "done" means without opening the ticket. If `--criteria` fails
+   (it reads the ticket), use the line plain `pr-ref <n>` prints, which reads
+   nothing, and open the PR anyway. Never write `Closes #<n>`
    by hand on a Linear or Jira project: `#<n>` there is an unrelated GitHub
    issue, and the merge would close it. Never leave `--base` out: gh then
    targets the repository's default branch, which is not always the base
