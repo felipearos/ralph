@@ -96,9 +96,10 @@ exists; the "Rules for changes" below are the day-to-day conventions.
    the supervisor's back, and a process boundary keeps that true.
 4. **Tests survive a loaded host.** *Where:* every `*.test.ts`. A test that
    spawns a process calls `subprocessSuite(...)`; wait on a predicate, never a
-   fixed sleep; never raise `testTimeout`. *Why:* each loop's `test` gate runs
-   on the same machine as the other live loops, so a test that only passes on
-   an idle host fails every loop's PR at night.
+   fixed sleep; never raise `testTimeout`; assert a wall-clock figure as a
+   floor, never an exact value. *Why:* each loop's `test` gate runs on the
+   same machine as the other live loops, so a test that only passes on an
+   idle host fails every loop's PR at night.
 5. **No client lives in the harness.** *Where:* code, prompts, tests, fixtures
    and docs. A deployment's names (repos, labels, boards, Slack ids, people)
    belong in that project's `.ralph/config.json` or on the host; tests use
@@ -115,6 +116,10 @@ exists; the "Rules for changes" below are the day-to-day conventions.
   `test-timeouts.ts` at the top. Never raise `testTimeout` in `vitest.config.ts`.
 - No fixed sleeps where a predicate wait works; the worker count follows the
   host's free cores (`test-workers.ts`).
+- A wall-clock figure in a test is a floor: `toBeGreaterThanOrEqual(2)`, not
+  `toContain("after 2s")`. The startup-preflight test in `ralph.test.ts` pinned
+  "after 2s" and failed on the first GitHub-hosted run (#10); to pin an exact
+  figure, inject the sleep the way `backoff.test.ts` does.
 - Shared lifecycle changes need `end-to-end.test.ts`; prompt changes need
   `prompt-render.test.ts`, which renders against `fixtures/loggd/.ralph/`.
 - Never write into this checkout's `.ralph/logs` from a test: a globalSetup
