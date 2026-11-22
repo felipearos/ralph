@@ -122,19 +122,21 @@ export function scanCommits(git: Git, commits: string[], patterns: RegExp[]): Hi
 }
 
 /**
- * The commits one pre-push ref line would add to `remote`: none for a
+ * The commits one pre-push ref line would add to `destination`: none for a
  * deletion; for an update whose old tip is known here, `old..new` minus
- * whatever a tip the remote holds now reaches; otherwise (a new branch, or a
- * remote tip never fetched) everything no tip the remote holds now reaches.
- * The remote's tips come from `git ls-remote`, not this clone's
- * remote-tracking refs, which may still name a branch the remote has since
- * deleted; a failed read throws, so the push is refused.
+ * whatever a tip the destination holds now reaches; otherwise (a new branch,
+ * or a remote tip never fetched) everything no tip the destination holds now
+ * reaches. The destination is the URL git hands the hook, not the remote's
+ * name: a remote whose pushurl differs from its url would otherwise be judged
+ * by what the fetch repository holds. Its tips come from `git ls-remote`, not
+ * this clone's remote-tracking refs, which may still name a branch the remote
+ * has since deleted; a failed read throws, so the push is refused.
  */
-export function commitsToPush(git: Git, remote: string, refLine: string): string[] {
+export function commitsToPush(git: Git, destination: string, refLine: string): string[] {
   const [, localSha, , remoteSha] = refLine.trim().split(/\s+/);
   if (!localSha || ZERO.test(localSha)) return [];
-  const listed = git(["ls-remote", remote]);
-  if (!listed.ok) throw new Error(`git ls-remote ${remote}: ${listed.stderr.trim()}`);
+  const listed = git(["ls-remote", destination]);
+  if (!listed.ok) throw new Error(`git ls-remote ${destination}: ${listed.stderr.trim()}`);
   // Tips this clone never fetched are skipped by --ignore-missing. Skipping
   // one can only mean scanning more commits than needed, never fewer.
   const tips = [...new Set(listed.stdout.split("\n").map((l) => l.split(/\s+/)[0] ?? "").filter((sha) => /^[0-9a-f]+$/i.test(sha)))];
@@ -203,7 +205,7 @@ function main(argv: string[]): number {
       return 0;
     }
     if (mode !== "--pre-push" && mode !== "--scan") {
-      console.error("usage: bun name-guard.ts --install | --pre-push <remote> | --scan <rev-range>");
+      console.error("usage: bun name-guard.ts --install | --pre-push <remote> [<url>] | --scan <rev-range>");
       return 2;
     }
     const patterns = loadList(process.env.RALPH_NAME_GUARD || DEFAULT_LIST);
@@ -215,7 +217,10 @@ function main(argv: string[]): number {
       commits = r.stdout.split("\n").filter(Boolean);
     } else {
       const stdin = readFileSync(0, "utf8");
-      commits = [...new Set(stdin.split("\n").filter((l) => l.trim()).flatMap((l) => commitsToPush(git, arg ?? "origin", l)))];
+      // git passes the remote's name and the URL it pushes to; the URL is the
+      // repository that receives the commits, so it is the one to ask.
+      const destination = argv[2] || arg || "origin";
+      commits = [...new Set(stdin.split("\n").filter((l) => l.trim()).flatMap((l) => commitsToPush(git, destination, l)))];
     }
     const hits = scanCommits(git, commits, patterns);
     if (hits.length > 0) {

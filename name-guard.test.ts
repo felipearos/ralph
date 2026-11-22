@@ -213,6 +213,31 @@ describe("the pre-push hook", () => {
     expect(push.stderr).toContain("k.md:1");
   });
 
+  it("judges a push by the repository it goes to, not the one origin fetches from", () => {
+    const { root, work, run, commit } = setup();
+    // origin fetches from a mirror that already holds a listed-name commit,
+    // but pushes to a repository that has never seen it.
+    commit("m.md", "the acme board\n", "docs: m");
+    expect(run(["push", "-q", "--no-verify", "origin", "HEAD:main"], work).status).toBe(0);
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", join(root, "dest.git")]);
+    expect(run(["remote", "set-url", "--push", "origin", join(root, "dest.git")], work).status).toBe(0);
+    const push = run(["push", "-q", "origin", "HEAD:main"], work);
+    expect(push.status).not.toBe(0);
+    expect(push.stderr).toContain("m.md:1");
+  });
+
+  it("lets a clean branch through when the remote holds a tag on a blob", () => {
+    const { work, run, commit } = setup();
+    expect(run(["push", "-q", "origin", "HEAD:main"], work).status).toBe(0);
+    const blob = run(["rev-parse", "HEAD:README.md"], work).stdout.trim();
+    expect(run(["tag", "-a", "-m", "a blob", "blob-tag", blob], work).status).toBe(0);
+    expect(run(["tag", "light-blob", blob], work).status).toBe(0);
+    expect(run(["push", "-q", "origin", "blob-tag", "light-blob"], work).status).toBe(0);
+    commit("n.md", "fine\n", "docs: n");
+    const push = run(["push", "-q", "origin", "HEAD:topic"], work);
+    expect(push.status, push.stderr).toBe(0);
+  });
+
   it("refuses to install without a list, and leaves no hook behind", () => {
     const root = mkdtempSync(join(tmpdir(), "name-guard-"));
     roots.push(root);
