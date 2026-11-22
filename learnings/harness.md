@@ -5,6 +5,14 @@ how learnings are split.
 
 ## Open: fix these
 
+### name-guard refuses a rebased branch's force-push over commits already on main (2026-11-22)
+<!-- learning: name-guard-rebase-scans-base-commits -->
+- **Seen:** PR #39 (rafa, #31), 2026-11-22: after rebasing onto origin/main, `git push --force-with-lease` was refused by the pre-push hook, which named be1ca880, a commit already on origin/main. `commitsToPush` in `name-guard.ts` uses `<remote-old>..<new>` for an update, and that range includes every base commit the rebase brought in, even ones already public.
+- **Workaround:** push the rebased head to a new branch (`git push origin HEAD:refs/heads/<branch>-rebased`). For a new ref the guard scans only commits not on any remote ref, so it passes. Then move the PR branch to that same commit with `gh api -X PATCH repos/<o>/<r>/git/refs/heads/<branch> -f sha=<sha> -F force=true` and delete the temporary branch. Never use the guard's override.
+- **Fix:** https://github.com/felipearos/software-factory/issues/43
+- **Change:** in `name-guard.ts` `commitsToPush`, for an update also exclude commits reachable from the remote's refs: `rev-list <new> ^<old> --not --remotes=<remote>`. Add a test where a rebased branch's range includes a base commit that matches the list.
+- **Verify:** `bun x vitest run name-guard.test.ts` with a test that force-pushes a branch rebased over a listed-author commit already on the remote's main, and the hook accepts it.
+
 ### An intended screenshot change parks the ticket: the read token can't fetch artifacts (2026-10-08)
 <!-- learning: bk-read-token-no-artifacts -->
 - **Seen:** loggd #2013 / PR #2182, 2026-10-06. Build 3191 failed only `show detail at 1280px` (`e2e/poster-sizing.spec.ts:324`) on a deliberate desktop layout change. The fix is to commit the run's `-actual.png` as the new baseline, but `RALPH_BUILDKITE_READ_TOKEN` carries only `read_builds` and `read_build_logs`. The artifacts API answers "Your access token doesn't have the read_artifacts scope", so rulo blocked the ticket for a human.
