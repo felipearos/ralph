@@ -165,6 +165,32 @@ describe("the pre-push hook", () => {
     expect(push.status, push.stderr).toBe(0);
   });
 
+  it("lets a rebased branch force-push over a listed name already on the remote's main", () => {
+    const { work, run, commit } = setup();
+    expect(run(["push", "-q", "origin", "HEAD:main"], work).status).toBe(0);
+    expect(run(["switch", "-q", "-c", "topic"], work).status).toBe(0);
+    commit("g.md", "fine\n", "docs: g");
+    const first = run(["push", "-q", "origin", "topic"], work);
+    expect(first.status, first.stderr).toBe(0);
+    // A name another clone already published on main: not this push's doing.
+    expect(run(["switch", "-q", "main"], work).status).toBe(0);
+    writeFileSync(join(work, "h.md"), "acme\n");
+    run(["add", "."], work);
+    expect(run(["commit", "-qm", "docs: h", "--no-verify"], work).status).toBe(0);
+    expect(run(["push", "-q", "--no-verify", "origin", "main"], work).status).toBe(0);
+    expect(run(["fetch", "-q", "origin"], work).status).toBe(0);
+    expect(run(["switch", "-q", "topic"], work).status).toBe(0);
+    expect(run(["rebase", "-q", "origin/main"], work).status).toBe(0);
+    const rebased = run(["push", "-q", "--force-with-lease", "origin", "topic"], work);
+    expect(rebased.status, rebased.stderr).toBe(0);
+    // A name the rebased branch adds itself is still refused.
+    commit("i.md", "the acme board\n", "docs: i");
+    const added = run(["push", "-q", "--force-with-lease", "origin", "topic"], work);
+    expect(added.status).not.toBe(0);
+    expect(added.stderr).toContain("i.md:1");
+    expect(added.stderr).not.toContain("h.md");
+  });
+
   it("refuses to install without a list, and leaves no hook behind", () => {
     const root = mkdtempSync(join(tmpdir(), "name-guard-"));
     roots.push(root);

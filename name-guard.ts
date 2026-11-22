@@ -119,16 +119,20 @@ export function scanCommits(git: Git, commits: string[], patterns: RegExp[]): Hi
 
 /**
  * The commits one pre-push ref line would add to `remote`: none for a
- * deletion; for an update whose old tip is known here, `old..new`; otherwise
- * (a new branch, or a remote tip never fetched) everything not already on a
- * ref of that remote.
+ * deletion; for an update whose old tip is known here, `old..new` minus
+ * whatever a ref of that remote already holds; otherwise (a new branch, or a
+ * remote tip never fetched) everything not already on a ref of that remote.
  */
 export function commitsToPush(git: Git, remote: string, refLine: string): string[] {
   const [, localSha, , remoteSha] = refLine.trim().split(/\s+/);
   if (!localSha || ZERO.test(localSha)) return [];
   let range = ["rev-list", localSha, "--not", `--remotes=${remote}`];
   if (remoteSha && !ZERO.test(remoteSha) && git(["cat-file", "-e", `${remoteSha}^{commit}`]).ok) {
-    range = ["rev-list", `${remoteSha}..${localSha}`];
+    // A branch rebased onto the remote's main carries main's commits in
+    // old..new; they are already public, so rescanning them would refuse the
+    // force-push for a name this push does not publish. `^old` sits before
+    // `--not`, which flips every ref after it.
+    range = ["rev-list", localSha, `^${remoteSha}`, "--not", `--remotes=${remote}`];
   }
   const r = git(range);
   if (!r.ok) throw new Error(`git ${range.join(" ")}: ${r.stderr.trim()}`);
