@@ -50,8 +50,14 @@
  *       line each (loop, rule, source, waiver, verdict, detail), then one
  *       `unnamed worktree <path>: <n> events, not credited` line for each
  *       worktree that has run but names no roster loop. With --json, an
- *       object: `loops`, an array of what `show --loop` prints for each, and
- *       `unnamed`, an array of `{ path, events }`.
+ *       object: `loops`, an array of what `show --loop` prints for each plus
+ *       `stale`, and `unnamed`, an array of `{ path, events }`.
+ *       The detail carries the reading's age (`read 5m ago`); a reading older
+ *       than an hour is stale, and a `run` it would decide in a live window
+ *       reads `unknown (stale reading)` with the detail
+ *       `<window> <percent>% <age>` (an idle loop's old number is not
+ *       today's). A park or drain on an old reading stands: usage only rises
+ *       inside a window.
  *   usage-stop.ts set --loop <name|*> --percent <n> [--window <w>] [--hard <n>]
  *   usage-stop.ts set --loop <name|*> --off
  *       write the override (`--off`: no stop for it, whatever the config says).
@@ -252,6 +258,36 @@ export function latestReading(logsDir: string, window: UsageStopWindow): Reading
 
 const percentOf = (utilization: number): number => Math.round(utilization * 1000) / 10;
 
+/**
+ * How old a reading may be before the roster view calls it stale. `check` has
+ * no freshness rule of its own (a loop refreshes its reading by spending), so
+ * an hour is the fallback: an idle loop's days-old number must not read as
+ * today's verdict.
+ */
+export const STALE_READING_MS = 3600_000;
+
+/**
+ * A reading's age in ms at `nowMs`, or null when no age is known (no reading,
+ * no `at`, an `at` that does not parse). A future `at` (clock skew) is age 0.
+ */
+export function readingAgeMs(reading: Reading | null, nowMs: number): number | null {
+  if (reading === null || reading.at === null) return null;
+  const at = Date.parse(reading.at);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, nowMs - at);
+}
+
+/** An age in its largest whole unit: `30s ago`, `5m ago`, `2h ago`, `3d ago`. */
+export function ageText(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 /** A reset as the operator reads it on the host: `Tue 17 11:02`. */
 export function whenText(ms: number): string {
   const date = new Date(ms);
@@ -367,14 +403,24 @@ function assess(root: string, loop: string): Assessment {
   return assessWith(root, loop, readConfig(root), readOverride(overridePath(root)));
 }
 
-/** `assess` with the config and override already read, so a roster pass reads each once. */
-function assessWith(root: string | null, loop: string, config: ProjectConfig | null, override: Override | null): Assessment {
+/**
+ * `assess` with the config and override already read, so a roster pass reads
+ * each once. `now` is the caller's clock reading, so a roster judges a line's
+ * verdict and its reading's age at the same instant.
+ */
+function assessWith(
+  root: string | null,
+  loop: string,
+  config: ProjectConfig | null,
+  override: Override | null,
+  now: number = nowMs(),
+): Assessment {
   const { rule, source } = effectiveRule(loop, config, override);
   const waiveUntil = override?.entries[loop]?.waiveUntil ?? null;
   // No worktree is no reading: the loop's events live in its own worktree only.
   const reading = rule === null || root === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
   const margin = knob(process.env.RALPH_USAGE_RESET_MARGIN_SECONDS, DEFAULT_MARGIN_SECONDS);
-  const decision = decide(rule, reading, nowMs(), margin, waiveUntil === null ? null : Date.parse(waiveUntil));
+  const decision = decide(rule, reading, now, margin, waiveUntil === null ? null : Date.parse(waiveUntil));
   if (root === null && rule !== null) decision.detail += "; no worktree of this clone runs this loop";
   return { loop, rule, source, waiveUntil, reading, decision };
 }
@@ -522,21 +568,47 @@ function showRoster(root: string, json: boolean): number {
   }
   const override = readOverride(overridePath(root));
   const { byLoop, unnamed } = loopWorktrees(root, config.roster.map((entry) => entry.name));
-  const assessments = config.roster.map((entry) => assessWith(byLoop.get(entry.name) ?? null, entry.name, config, override));
   // An events file with no lines (an iteration killed before it wrote one) is
   // no events: such a worktree has not run, so it is not listed.
   const unnamedEvents = unnamed.map((path) => ({ path, events: eventCount(path) })).filter(({ events }) => events > 0);
+  const now = nowMs();
+  const rows = config.roster.map((entry) => {
+    const assessment = assessWith(byLoop.get(entry.name) ?? null, entry.name, config, override, now);
+    // A lapsed waiver stays in the override file but no longer counts.
+    const waived = assessment.waiveUntil !== null && Date.parse(assessment.waiveUntil) > now;
+    const age = readingAgeMs(assessment.reading, now);
+    // `stale` is the plain fact that the number is old; an unknown age is
+    // every doubt, which is never stale.
+    const stale = assessment.rule !== null && age !== null && age > STALE_READING_MS;
+    // Only a `run` drawn from an old number in a live window is unknown: usage
+    // only rises inside a window, so an old reading is a floor and a park or
+    // drain on it stays true (and is what `check` has the loop do). A waiver
+    // or a window that has reset runs whatever the number was.
+    const reading = assessment.reading;
+    const unknown =
+      stale && !waived && assessment.decision.verdict === "run" && reading !== null && reading.resetsAtMs > now;
+    return { assessment, waived, age, stale, unknown };
+  });
   if (json) {
-    console.log(JSON.stringify({ loops: assessments, unnamed: unnamedEvents }, null, 2));
+    const loops = rows.map(({ assessment, stale }) => ({ ...assessment, stale }));
+    console.log(JSON.stringify({ loops, unnamed: unnamedEvents }, null, 2));
     return 0;
   }
-  for (const { loop, rule, source, waiveUntil, decision } of assessments) {
+  for (const { assessment, waived, age, unknown } of rows) {
+    const { loop, rule, source, waiveUntil, reading, decision } = assessment;
     const ruleText = rule === null ? "no usage stop" : `${rule.window} ${rule.percent}%/${rule.hardPercent}%`;
     // Fixed columns, `-` for no waiver, so `cut -f` finds the verdict on every
-    // line. A lapsed waiver stays in the override file but no longer counts.
-    const waived = waiveUntil !== null && Date.parse(waiveUntil) > nowMs();
+    // line.
     const waiver = waived ? `waived until ${waiveUntil}` : "-";
-    console.log([loop, ruleText, source, waiver, decision.verdict, oneLine(decision.detail)].join("\t"));
+    let verdict: string = decision.verdict;
+    let detail = decision.detail;
+    if (unknown && rule !== null && reading !== null && age !== null) {
+      verdict = "unknown (stale reading)";
+      detail = `${rule.window} ${percentOf(reading.utilization)}% ${ageText(age)}`;
+    } else if (rule !== null && reading !== null && age !== null) {
+      detail += `; read ${ageText(age)}`;
+    }
+    console.log([loop, ruleText, source, waiver, verdict, oneLine(detail)].join("\t"));
   }
   for (const { path, events } of unnamedEvents) {
     console.log(`unnamed worktree ${path}: ${events} ${events === 1 ? "event" : "events"}, not credited`);
