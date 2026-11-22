@@ -64,7 +64,7 @@
  * override's path (tests only).
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { DEFAULT_MARGIN_SECONDS, knob } from "./usage-limit";
@@ -461,6 +461,33 @@ function loopWorktrees(root: string, rosterNames: string[]): { byLoop: Map<strin
   return { byLoop, unnamed };
 }
 
+/**
+ * The lines of a file holding anything but whitespace, read in fixed chunks so
+ * a large events history costs a bounded buffer, not the whole file in memory.
+ */
+function nonEmptyLines(path: string): number {
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    let count = 0;
+    let lineHasContent = false;
+    for (let read = readSync(fd, buffer); read > 0; read = readSync(fd, buffer)) {
+      for (let i = 0; i < read; i++) {
+        const byte = buffer[i];
+        if (byte === 0x0a) {
+          if (lineHasContent) count++;
+          lineHasContent = false;
+        } else if (byte !== 0x20 && byte !== 0x09 && byte !== 0x0d && byte !== 0x0b && byte !== 0x0c) {
+          lineHasContent = true;
+        }
+      }
+    }
+    return lineHasContent ? count + 1 : count;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** How many events a worktree's loop wrote: the non-empty lines of its events files. */
 function eventCount(worktree: string): number {
   const logsDir = join(worktree, LOGS_RELATIVE_DIR);
@@ -469,7 +496,7 @@ function eventCount(worktree: string): number {
     for (const name of readdirSync(logsDir)) {
       if (!EVENTS_FILE.test(name)) continue;
       try {
-        count += readFileSync(join(logsDir, name), "utf8").split("\n").filter((line) => line.trim() !== "").length;
+        count += nonEmptyLines(join(logsDir, name));
       } catch {
         // An events file that vanished or is unreadable counts as none.
       }

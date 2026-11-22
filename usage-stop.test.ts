@@ -411,6 +411,19 @@ describe("the CLI", () => {
     ]);
   });
 
+  it("counts an unnamed worktree's events across a file larger than one read chunk", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    // 3000 lines of ~100 bytes straddle several 64 KiB chunks; blank lines in
+    // between are no events, and a last line with no newline still is one.
+    const line = JSON.stringify({ type: "system", pad: "x".repeat(80) });
+    const body = Array.from({ length: 3000 }, () => line).join("\n \n");
+    rmSync(join(dirs.tria!, ".ralph", "loop-name"));
+    writeFileSync(join(dirs.tria!, ".ralph", "logs", "iter-1.events.jsonl"), body);
+    const shown = JSON.parse(cli("show", "--json").stdout);
+    expect(shown.unnamed).toEqual([{ path: realpathSync(dirs.tria!), events: 3000 }]);
+  });
+
   it("reads a name file as ralph.sh does, dropping every whitespace character", () => {
     project(ROSTER_CONFIG);
     const dirs = worktrees();
