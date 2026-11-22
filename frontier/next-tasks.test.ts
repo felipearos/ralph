@@ -23,7 +23,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { type BlockReason } from '../block-reason';
 import { claimLease, writeLeaseStore, type LeaseStore } from '../claim-lease';
@@ -42,6 +42,8 @@ import {
   findLoopNameFile,
   classifyDependencyFailure,
   issueRefsUnderHeading,
+  useOwnRepository,
+  useReferenceKey,
   leaseHeldReason,
   leaseIdentity,
   loopClaimObstruction,
@@ -191,6 +193,64 @@ describe('issueRefsUnderHeading', () => {
     const body = '## Out of scope — never pick\n\n- #228, #65\n';
     expect(issueRefsUnderHeading(body, 'Out of scope')).toEqual([]);
     expect(issueRefsUnderHeading(body, 'Out of scope', { prefix: true })).toEqual([228, 65]);
+  });
+});
+
+describe('cross-repository references (#22)', () => {
+  // Moved tickets cite another repository's numbers; bound to ours, each one
+  // would one day gate on (or count as progress from) an unrelated issue.
+  const body =
+    '## Parent\n\nacme/widgets-archive#165\n\n' +
+    '## Blocked by\n\n- #12\n- acme/widgets#13\n- ACME/Widgets#14\n- acme/widgets-archive#171\n- example-org/other#15\n';
+
+  const withRepository = <T>(repo: string | null, run: (errors: () => string[]) => T): T => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    useOwnRepository(repo);
+    try {
+      return run(() => error.mock.calls.map((call) => String(call[0])));
+    } finally {
+      useOwnRepository(null);
+      error.mockRestore();
+    }
+  };
+
+  it('keeps bare refs and the own repository, in any case, and drops another repository', () => {
+    withRepository('acme/widgets', () => {
+      expect(parseProseBlockers(body)).toEqual([12, 13, 14]);
+      expect(parseParent(body)).toBeNull();
+    });
+  });
+
+  it('says each dropped reference once on stderr', () => {
+    // Refs no other test names: the once-per-process memory is module state.
+    const own = '## Blocked by\n\n- example-org/once#16\n- example-org/once#16\n- acme/widgets#17\n';
+    const errors = withRepository('acme/widgets', (calls) => {
+      expect(parseProseBlockers(own)).toEqual([17]);
+      parseProseBlockers(own);
+      return calls();
+    });
+    expect(errors).toEqual([
+      'next-tasks: ignoring example-org/once#16: it is not an issue of acme/widgets, so it is no edge here',
+    ]);
+  });
+
+  it('counts a slug as before while the own repository is unknown', () => {
+    withRepository(null, (calls) => {
+      expect(parseProseBlockers(body)).toEqual([12, 13, 14, 171, 15]);
+      expect(parseParent(body)).toBe(165);
+      expect(calls()).toEqual([]);
+    });
+  });
+
+  it('leaves keyed references alone', () => {
+    useReferenceKey('AND');
+    try {
+      withRepository('acme/widgets', () => {
+        expect(parseProseBlockers('## Blocked by\n\n- AND-7\n- acme/widgets#13\n')).toEqual([7]);
+      });
+    } finally {
+      useReferenceKey(null);
+    }
   });
 });
 

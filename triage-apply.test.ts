@@ -398,6 +398,23 @@ describe("the CLI applies a rescue, in order", () => {
 
   const withOps = (ops: unknown[]): unknown => ({ ...rescuePlan, ops });
 
+  // #22: this command reads its census without `frontierTracker()`, so it
+  // must learn the project's repository itself, or its simulation binds
+  // another repository's `owner/repo#n` that the frontier ignores. The
+  // frontier's warning fires only once the own repository is known.
+  it("reads an owner/repo#n under Blocked by as the frontier does", () => {
+    const body = `${BODY}\n## Blocked by\n\n- example-org/archive#99\n- your-org/your-repo#98\n`;
+    const crossRepo = census([blockRecord], PARKED) as {
+      data: { repository: { issues: { nodes: { body: string }[] } } };
+    };
+    crossRepo.data.repository.issues.nodes[0]!.body = body;
+    const result = runCli(rescuePlan, ["--dry-run"], { ...world(), census: crossRepo });
+    expect(result.stderr).toContain(
+      "next-tasks: ignoring example-org/archive#99: it is not an issue of your-org/your-repo, so it is no edge here",
+    );
+    expect(result.stderr).not.toContain("your-org/your-repo#98");
+  });
+
   it("writes the re-spec, then the comment, then the label removal — AC 1", () => {
     const result = runCli(rescuePlan, [], world());
     expect(result.stderr).toBe("");

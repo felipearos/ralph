@@ -485,6 +485,7 @@ export function frontierTracker(): Tracker {
       ? createGithubTracker({ repo: config.repo, owner: owner(), pinned: false, gh, read: readGh })
       : createTracker(config, { projectId: currentProjectId(root) });
   useReferenceKey(trackerKey(config.tracker));
+  useOwnRepository(config.tracker.kind === "github" ? config.repo : null);
   return cachedTracker;
 }
 
@@ -569,7 +570,10 @@ export function issueRefsUnderHeading(
   const section = body.split(new RegExp(`^##\\s+${escaped}${tail}$`, "im"))[1];
   if (!section) return [];
   const untilNextHeading = section.split(/^##\s+/m)[0] ?? "";
-  const refs = [...untilNextHeading.matchAll(referencePattern())].map((match) => Number(match[1]));
+  const refs =
+    referenceKey === null
+      ? githubRefs(untilNextHeading)
+      : [...untilNextHeading.matchAll(keyedPattern(referenceKey))].map((match) => Number(match[1]));
   warnForeignKeys(untilNextHeading);
   return [...new Set(refs)];
 }
@@ -592,8 +596,44 @@ export function useReferenceKey(key: string | null): void {
 }
 
 const escapeKey = (key: string): string => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-function referencePattern(): RegExp {
-  return referenceKey === null ? /#(\d+)/g : new RegExp(`\\b${escapeKey(referenceKey)}-(\\d+)\\b`, "g");
+function keyedPattern(key: string): RegExp {
+  return new RegExp(`\\b${escapeKey(key)}-(\\d+)\\b`, "g");
+}
+
+/**
+ * The GitHub repository this project's issues live in (`owner/name`), or null
+ * when the process has not read the project's config. Set beside the reference
+ * key, for the same reason: the parsers hold a body and nothing else.
+ */
+let ownRepository: string | null = null;
+export function useOwnRepository(repo: string | null): void {
+  ownRepository = repo === null ? null : repo.toLowerCase();
+}
+
+/**
+ * GitHub references in one section: a bare `#n`, or `owner/name#n` naming
+ * this project's own repository. A slug naming another repository is that
+ * repository's issue, and binding its number to ours invents an edge — moved
+ * tickets cite the private archive's numbers, which run far past this
+ * repository's, so each would one day gate on (or count as progress from) an
+ * unrelated local issue. Such a reference is dropped and said once on stderr,
+ * like another tracker's key. With no own repository known the slug is not
+ * judged, which is what this parser always did (house rule 1).
+ */
+const GITHUB_REF = /(?:\b([\w.-]+\/[\w.-]+))?#(\d+)/g;
+function githubRefs(section: string): number[] {
+  const refs: number[] = [];
+  for (const [ref, slug, number] of section.matchAll(GITHUB_REF)) {
+    if (slug !== undefined && ownRepository !== null && slug.toLowerCase() !== ownRepository) {
+      if (!warnedForeign.has(ref)) {
+        warnedForeign.add(ref);
+        console.error(`next-tasks: ignoring ${ref}: it is not an issue of ${ownRepository}, so it is no edge here`);
+      }
+      continue;
+    }
+    refs.push(Number(number));
+  }
+  return refs;
 }
 
 /**

@@ -30,6 +30,7 @@ import { RATE_LIMITED_EXIT, classifyRateLimit } from "./frontier/github-rate-lim
 import {
   buildTickets,
   readFrontierInputs,
+  useOwnRepository,
   type RawIssue,
   type Ticket,
 } from "./frontier/next-tasks";
@@ -252,6 +253,11 @@ async function main(argv: string[]): Promise<number> {
 
   const config = loadProjectConfig();
   if (config.tracker.kind !== "github") return applyKeyed(plan, config, config.tracker.scopeLabel, flags);
+  // The census below is read without `frontierTracker()`, which is where the
+  // frontier learns its own repository. Without it the simulation would bind
+  // another repository's `owner/repo#n` to a local issue that the frontier
+  // itself ignores, and judge the plan against a graph no loop sees (#22).
+  useOwnRepository(config.repo);
   // Names for the plan's own checks, which compare and list them; the roster
   // with its roles for Jav, whose route targets are the routable loops.
   const roster = config.roster.map((entry) => entry.name);
