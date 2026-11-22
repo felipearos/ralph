@@ -47,8 +47,11 @@
  *   usage-stop.ts show [--json]
  *       every loop of the roster, in roster order, each read from its own
  *       worktree (the one whose `.ralph/loop-name` names it): one tab-separated
- *       line each (loop, rule, source, waiver, verdict, detail), or with
- *       --json an array of what `show --loop` prints for each.
+ *       line each (loop, rule, source, waiver, verdict, detail), then one
+ *       `unnamed worktree <path>: <n> events, not credited` line for each
+ *       worktree that has run but names no roster loop. With --json, an
+ *       object: `loops`, an array of what `show --loop` prints for each, and
+ *       `unnamed`, an array of `{ path, events }`.
  *   usage-stop.ts set --loop <name|*> --percent <n> [--window <w>] [--hard <n>]
  *   usage-stop.ts set --loop <name|*> --off
  *       write the override (`--off`: no stop for it, whatever the config says).
@@ -61,7 +64,7 @@
  * override's path (tests only).
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { DEFAULT_MARGIN_SECONDS, knob } from "./usage-limit";
@@ -410,13 +413,16 @@ function lastEventsMs(worktree: string): number | null {
  * is its own account's (see the header), so the roster view must read every
  * loop from its own worktree rather than every loop from the caller's.
  *
- * A worktree with no name file runs as the roster's first loop (ralph.sh's
- * default), so it stands in for that loop when no worktree names it, but only
- * once it has run: a bare checkout is not a loop. Where several worktrees
- * answer for one loop (a loop recreated beside its old worktree), the one
- * that wrote events last is the live one.
+ * A worktree is credited to a loop only when its name file is readable and
+ * names a roster loop. One that has run without such a name (no file, an
+ * empty or unreadable one, a name not in the roster) is listed as unnamed
+ * instead: guessing it is the first loop would credit another loop's spend to
+ * that loop and hide the real loop's worktree. A worktree that never ran is
+ * not a loop and is left out. Where several worktrees answer for one loop (a
+ * loop recreated beside its old worktree), the one that wrote events last is
+ * the live one.
  */
-function loopWorktrees(root: string, firstLoop: string): Map<string, string> {
+function loopWorktrees(root: string, rosterNames: string[]): { byLoop: Map<string, string>; unnamed: string[] } {
   let paths = [root];
   try {
     const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
@@ -431,27 +437,74 @@ function loopWorktrees(root: string, firstLoop: string): Map<string, string> {
     // Not a git checkout, or git unreadable: the caller's worktree is all we know.
   }
   const named = new Map<string, Array<{ path: string; at: number }>>();
-  const unnamed: Array<{ path: string; at: number }> = [];
+  const unnamed: string[] = [];
   for (const path of paths) {
     const at = lastEventsMs(path);
     let name = "";
     try {
-      name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").trim();
+      // Every whitespace character goes, as ralph.sh's `tr -d '[:space:]'` drops
+      // it, so a name ralph.sh runs under is the name credited here.
+      name = readFileSync(join(path, LOOP_NAME_RELATIVE_PATH), "utf8").replace(/\s+/g, "");
     } catch {
-      // No name file: ralph.sh runs it as the first loop.
+      // No name file, or an unreadable one: it names no loop.
     }
-    if (name === "") {
-      if (at !== null) unnamed.push({ path, at });
+    if (!rosterNames.includes(name)) {
+      if (at !== null) unnamed.push(path);
       continue;
     }
     named.set(name, [...(named.get(name) ?? []), { path, at: at ?? -1 }]);
   }
-  if (!named.has(firstLoop) && unnamed.length > 0) named.set(firstLoop, unnamed);
   const byLoop = new Map<string, string>();
   for (const [name, candidates] of named) {
     byLoop.set(name, candidates.reduce((best, next) => (next.at > best.at ? next : best)).path);
   }
-  return byLoop;
+  return { byLoop, unnamed };
+}
+
+/**
+ * The lines of a file holding anything but whitespace, read in fixed chunks so
+ * a large events history costs a bounded buffer, not the whole file in memory.
+ */
+function nonEmptyLines(path: string): number {
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    let count = 0;
+    let lineHasContent = false;
+    for (let read = readSync(fd, buffer); read > 0; read = readSync(fd, buffer)) {
+      for (let i = 0; i < read; i++) {
+        const byte = buffer[i];
+        if (byte === 0x0a) {
+          if (lineHasContent) count++;
+          lineHasContent = false;
+        } else if (byte !== 0x20 && byte !== 0x09 && byte !== 0x0d && byte !== 0x0b && byte !== 0x0c) {
+          lineHasContent = true;
+        }
+      }
+    }
+    return lineHasContent ? count + 1 : count;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** How many events a worktree's loop wrote: the non-empty lines of its events files. */
+function eventCount(worktree: string): number {
+  const logsDir = join(worktree, LOGS_RELATIVE_DIR);
+  let count = 0;
+  try {
+    for (const name of readdirSync(logsDir)) {
+      if (!EVENTS_FILE.test(name)) continue;
+      try {
+        count += nonEmptyLines(join(logsDir, name));
+      } catch {
+        // An events file that vanished or is unreadable counts as none.
+      }
+    }
+  } catch {
+    // No logs directory: no events.
+  }
+  return count;
 }
 
 /** `show` without --loop: every loop of the roster, in roster order. */
@@ -468,10 +521,13 @@ function showRoster(root: string, json: boolean): number {
     return 2;
   }
   const override = readOverride(overridePath(root));
-  const worktrees = loopWorktrees(root, config.roster[0]!.name);
-  const assessments = config.roster.map((entry) => assessWith(worktrees.get(entry.name) ?? null, entry.name, config, override));
+  const { byLoop, unnamed } = loopWorktrees(root, config.roster.map((entry) => entry.name));
+  const assessments = config.roster.map((entry) => assessWith(byLoop.get(entry.name) ?? null, entry.name, config, override));
+  // An events file with no lines (an iteration killed before it wrote one) is
+  // no events: such a worktree has not run, so it is not listed.
+  const unnamedEvents = unnamed.map((path) => ({ path, events: eventCount(path) })).filter(({ events }) => events > 0);
   if (json) {
-    console.log(JSON.stringify(assessments, null, 2));
+    console.log(JSON.stringify({ loops: assessments, unnamed: unnamedEvents }, null, 2));
     return 0;
   }
   for (const { loop, rule, source, waiveUntil, decision } of assessments) {
@@ -481,6 +537,9 @@ function showRoster(root: string, json: boolean): number {
     const waived = waiveUntil !== null && Date.parse(waiveUntil) > nowMs();
     const waiver = waived ? `waived until ${waiveUntil}` : "-";
     console.log([loop, ruleText, source, waiver, decision.verdict, oneLine(decision.detail)].join("\t"));
+  }
+  for (const { path, events } of unnamedEvents) {
+    console.log(`unnamed worktree ${path}: ${events} ${events === 1 ? "event" : "events"}, not credited`);
   }
   return 0;
 }
