@@ -165,6 +165,79 @@ describe("the pre-push hook", () => {
     expect(push.status, push.stderr).toBe(0);
   });
 
+  it("lets a rebased branch force-push over a listed name already on the remote's main", () => {
+    const { work, run, commit } = setup();
+    expect(run(["push", "-q", "origin", "HEAD:main"], work).status).toBe(0);
+    expect(run(["switch", "-q", "-c", "topic"], work).status).toBe(0);
+    commit("g.md", "fine\n", "docs: g");
+    const first = run(["push", "-q", "origin", "topic"], work);
+    expect(first.status, first.stderr).toBe(0);
+    // A listed author and name already published on main (bypassing the
+    // hook here stands in for another clone): not this push's doing.
+    expect(run(["switch", "-q", "main"], work).status).toBe(0);
+    writeFileSync(join(work, "h.md"), "acme\n");
+    run(["add", "."], work);
+    expect(run(["commit", "-qm", "docs: h", "--no-verify", "--author", "Acme Person <person@acme.example>"], work).status).toBe(0);
+    expect(run(["push", "-q", "--no-verify", "origin", "main"], work).status).toBe(0);
+    expect(run(["fetch", "-q", "origin"], work).status).toBe(0);
+    expect(run(["switch", "-q", "topic"], work).status).toBe(0);
+    expect(run(["rebase", "-q", "origin/main"], work).status).toBe(0);
+    const rebased = run(["push", "-q", "--force-with-lease", "origin", "topic"], work);
+    expect(rebased.status, rebased.stderr).toBe(0);
+    // A name the rebased branch adds itself is still refused.
+    commit("i.md", "the acme board\n", "docs: i");
+    const added = run(["push", "-q", "--force-with-lease", "origin", "topic"], work);
+    expect(added.status).not.toBe(0);
+    expect(added.stderr).toContain("i.md:1");
+    expect(added.stderr).not.toContain("h.md");
+  });
+
+  it("refuses a listed-name commit a stale remote-tracking ref still reaches", () => {
+    const { root, work, run, commit } = setup();
+    expect(run(["push", "-q", "origin", "HEAD:main"], work).status).toBe(0);
+    expect(run(["switch", "-q", "-c", "topic"], work).status).toBe(0);
+    commit("j.md", "fine\n", "docs: j");
+    expect(run(["push", "-q", "origin", "topic"], work).status).toBe(0);
+    // A listed name pushed on `old` (bypassing the hook), then deleted on the
+    // remote by another clone: this clone's origin/old still reaches it.
+    expect(run(["switch", "-q", "-c", "old", "main"], work).status).toBe(0);
+    commit("k.md", "the acme board\n", "docs: k");
+    expect(run(["push", "-q", "--no-verify", "origin", "old"], work).status).toBe(0);
+    expect(run(["--git-dir", join(root, "origin.git"), "branch", "-D", "old"]).status).toBe(0);
+    expect(run(["rev-parse", "--verify", "-q", "refs/remotes/origin/old"], work).status).toBe(0);
+    // Merging it into a branch the remote holds would republish it.
+    expect(run(["switch", "-q", "topic"], work).status).toBe(0);
+    expect(run(["merge", "-q", "--no-edit", "old"], work).status).toBe(0);
+    const push = run(["push", "-q", "origin", "topic"], work);
+    expect(push.status).not.toBe(0);
+    expect(push.stderr).toContain("k.md:1");
+  });
+
+  it("judges a push by the repository it goes to, not the one origin fetches from", () => {
+    const { root, work, run, commit } = setup();
+    // origin fetches from a mirror that already holds a listed-name commit,
+    // but pushes to a repository that has never seen it.
+    commit("m.md", "the acme board\n", "docs: m");
+    expect(run(["push", "-q", "--no-verify", "origin", "HEAD:main"], work).status).toBe(0);
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", join(root, "dest.git")]);
+    expect(run(["remote", "set-url", "--push", "origin", join(root, "dest.git")], work).status).toBe(0);
+    const push = run(["push", "-q", "origin", "HEAD:main"], work);
+    expect(push.status).not.toBe(0);
+    expect(push.stderr).toContain("m.md:1");
+  });
+
+  it("lets a clean branch through when the remote holds a tag on a blob", () => {
+    const { work, run, commit } = setup();
+    expect(run(["push", "-q", "origin", "HEAD:main"], work).status).toBe(0);
+    const blob = run(["rev-parse", "HEAD:README.md"], work).stdout.trim();
+    expect(run(["tag", "-a", "-m", "a blob", "blob-tag", blob], work).status).toBe(0);
+    expect(run(["tag", "light-blob", blob], work).status).toBe(0);
+    expect(run(["push", "-q", "origin", "blob-tag", "light-blob"], work).status).toBe(0);
+    commit("n.md", "fine\n", "docs: n");
+    const push = run(["push", "-q", "origin", "HEAD:topic"], work);
+    expect(push.status, push.stderr).toBe(0);
+  });
+
   it("refuses to install without a list, and leaves no hook behind", () => {
     const root = mkdtempSync(join(tmpdir(), "name-guard-"));
     roots.push(root);
