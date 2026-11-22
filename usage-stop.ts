@@ -403,14 +403,24 @@ function assess(root: string, loop: string): Assessment {
   return assessWith(root, loop, readConfig(root), readOverride(overridePath(root)));
 }
 
-/** `assess` with the config and override already read, so a roster pass reads each once. */
-function assessWith(root: string | null, loop: string, config: ProjectConfig | null, override: Override | null): Assessment {
+/**
+ * `assess` with the config and override already read, so a roster pass reads
+ * each once. `now` is the caller's clock reading, so a roster judges a line's
+ * verdict and its reading's age at the same instant.
+ */
+function assessWith(
+  root: string | null,
+  loop: string,
+  config: ProjectConfig | null,
+  override: Override | null,
+  now: number = nowMs(),
+): Assessment {
   const { rule, source } = effectiveRule(loop, config, override);
   const waiveUntil = override?.entries[loop]?.waiveUntil ?? null;
   // No worktree is no reading: the loop's events live in its own worktree only.
   const reading = rule === null || root === null ? null : latestReading(join(root, LOGS_RELATIVE_DIR), rule.window);
   const margin = knob(process.env.RALPH_USAGE_RESET_MARGIN_SECONDS, DEFAULT_MARGIN_SECONDS);
-  const decision = decide(rule, reading, nowMs(), margin, waiveUntil === null ? null : Date.parse(waiveUntil));
+  const decision = decide(rule, reading, now, margin, waiveUntil === null ? null : Date.parse(waiveUntil));
   if (root === null && rule !== null) decision.detail += "; no worktree of this clone runs this loop";
   return { loop, rule, source, waiveUntil, reading, decision };
 }
@@ -563,7 +573,7 @@ function showRoster(root: string, json: boolean): number {
   const unnamedEvents = unnamed.map((path) => ({ path, events: eventCount(path) })).filter(({ events }) => events > 0);
   const now = nowMs();
   const rows = config.roster.map((entry) => {
-    const assessment = assessWith(byLoop.get(entry.name) ?? null, entry.name, config, override);
+    const assessment = assessWith(byLoop.get(entry.name) ?? null, entry.name, config, override, now);
     // A lapsed waiver stays in the override file but no longer counts.
     const waived = assessment.waiveUntil !== null && Date.parse(assessment.waiveUntil) > now;
     const age = readingAgeMs(assessment.reading, now);
