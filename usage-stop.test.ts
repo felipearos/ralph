@@ -7,18 +7,34 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { parseProjectConfig, validateProjectConfig } from "./project-config";
 import { subprocessSuite } from "./test-timeouts";
-import { decide, effectiveRule, latestReading, parseOverride, readingIn, resolveRule, type Override } from "./usage-stop";
+import {
+  ageText,
+  decide,
+  effectiveRule,
+  latestReading,
+  parseOverride,
+  readingAgeMs,
+  readingIn,
+  resolveRule,
+  type Override,
+} from "./usage-stop";
 
 subprocessSuite("runs bun usage-stop.ts check, show, set, clear and waive, and git worktree");
 
 const NOW = Date.parse("2026-11-12T12:00:00Z");
 const RESET = NOW / 1000 + 3 * 24 * 3600;
 
-const rateEvent = (windows: Record<string, { utilization: number; resetsAt?: number }>, extra: Record<string, unknown> = {}) =>
+// Five minutes before NOW: fresh, and clear of the one-hour stale boundary.
+const FRESH_AT = "2026-11-12T11:55:00Z";
+const rateEvent = (
+  windows: Record<string, { utilization: number; resetsAt?: number }>,
+  extra: Record<string, unknown> = {},
+  receivedAt = FRESH_AT,
+) =>
   JSON.stringify({
     type: "rate_limit_event",
     rate_limit_info: { status: "allowed", unifiedWindows: windows, ...extra },
-    ralph_received_at: "2026-11-12T11:00:00Z",
+    ralph_received_at: receivedAt,
   });
 
 const BASE_CONFIG = {
@@ -185,6 +201,28 @@ describe("decide", () => {
   });
 });
 
+describe("readingAgeMs and ageText", () => {
+  const at = (iso: string | null) => ({ utilization: 0.5, resetsAtMs: RESET * 1000, at: iso });
+
+  it("knows no age without a reading, an at, or an at that parses", () => {
+    expect(readingAgeMs(null, NOW)).toBeNull();
+    expect(readingAgeMs(at(null), NOW)).toBeNull();
+    expect(readingAgeMs(at("yesterday-ish"), NOW)).toBeNull();
+  });
+
+  it("is the time since at, and 0 for an at in the future", () => {
+    expect(readingAgeMs(at(FRESH_AT), NOW)).toBe(5 * 60_000);
+    expect(readingAgeMs(at("2026-11-12T12:10:00Z"), NOW)).toBe(0);
+  });
+
+  it("says an age in its largest whole unit", () => {
+    expect(ageText(30_000)).toBe("30s ago");
+    expect(ageText(5 * 60_000)).toBe("5m ago");
+    expect(ageText(2 * 3600_000 + 59 * 60_000)).toBe("2h ago");
+    expect(ageText(3 * 86_400_000)).toBe("3d ago");
+  });
+});
+
 describe("the CLI", () => {
   let root = "";
   afterEach(() => root && rmSync(root, { recursive: true, force: true }));
@@ -280,8 +318,11 @@ describe("the CLI", () => {
     for (const loop of LOOPS) writeFileSync(join(dirs[loop]!, ".ralph", "loop-name"), `${loop}\n`);
     return dirs;
   };
-  const spendIn = (dir: string, utilization: number) =>
-    writeFileSync(join(dir, ".ralph", "logs", "iter-1.events.jsonl"), `${rateEvent({ seven_day: { utilization, resetsAt: RESET } })}\n`);
+  const spendIn = (dir: string, utilization: number, receivedAt = FRESH_AT) =>
+    writeFileSync(
+      join(dir, ".ralph", "logs", "iter-1.events.jsonl"),
+      `${rateEvent({ seven_day: { utilization, resetsAt: RESET } }, {}, receivedAt)}\n`,
+    );
   const cliIn = (dir: string, ...args: string[]) => {
     const out = spawnSync("bun", [join(__dirname, "usage-stop.ts"), ...args], {
       cwd: dir,
@@ -306,7 +347,7 @@ describe("the CLI", () => {
     expect(lines.map((line) => line.split("\t")[0])).toEqual(LOOPS);
     expect(lines[0]!.split("\t")).toEqual(["ralph", "seven_day 80%/95%", "config", "-", "drain", expect.stringContaining("85%")]);
     // rafa's own 30%, not the 85% of the worktree the command ran in.
-    expect(lines[1]!.split("\t")).toEqual(["rafa", "seven_day 90%/95%", "override", "-", "run", "seven_day 30% < 90%"]);
+    expect(lines[1]!.split("\t")).toEqual(["rafa", "seven_day 90%/95%", "override", "-", "run", "seven_day 30% < 90%; read 5m ago"]);
     expect(lines[2]!.split("\t").slice(0, 5)).toEqual([
       "tria",
       "seven_day 80%/95%",
@@ -328,7 +369,60 @@ describe("the CLI", () => {
     const { loops: all, unnamed } = JSON.parse(out.stdout);
     expect(unnamed).toEqual([]);
     expect(all).toHaveLength(3);
-    LOOPS.forEach((name, index) => expect(all[index]).toEqual(JSON.parse(cliIn(dirs[name]!, "show", "--loop", name).stdout)));
+    LOOPS.forEach((name, index) => {
+      const { stale, ...shown } = all[index];
+      expect(stale).toBe(false);
+      expect(shown).toEqual(JSON.parse(cliIn(dirs[name]!, "show", "--loop", name).stdout));
+    });
+  });
+
+  const THREE_DAYS_AGO = new Date(NOW - 3 * 86_400_000).toISOString();
+
+  it("marks an old reading stale rather than presenting it as today's", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    spendIn(dirs.ralph!, 0.3);
+    spendIn(dirs.rafa!, 0.54, THREE_DAYS_AGO);
+    const lines = cli("show").stdout.split("\n");
+    expect(lines[0]!.split("\t").slice(4)).toEqual(["run", "seven_day 30% < 80%; read 5m ago"]);
+    expect(lines[1]!.split("\t")).toEqual(["rafa", "seven_day 80%/95%", "config", "-", "unknown (stale reading)", "seven_day 54% 3d ago"]);
+    // tria never read: the line it always printed, nothing stale about it.
+    expect(lines[2]).toContain("no seven_day reading yet");
+    expect(lines[2]).not.toContain("stale");
+  });
+
+  it("keeps a park on an old reading, and a run past a reset or a waiver, with its age", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    // ralph parked on 96% two hours ago: usage only rises in a window, so it stands.
+    spendIn(dirs.ralph!, 0.96, new Date(NOW - 2 * 3600_000).toISOString());
+    // rafa's 95% is from a week that is over.
+    writeFileSync(
+      join(dirs.rafa!, ".ralph", "logs", "iter-1.events.jsonl"),
+      `${rateEvent({ seven_day: { utilization: 0.95, resetsAt: NOW / 1000 - 3600 } }, {}, THREE_DAYS_AGO)}\n`,
+    );
+    // tria is waived, so it runs whatever its old number says.
+    spendIn(dirs.tria!, 0.5, THREE_DAYS_AGO);
+    expect(cliIn(dirs.tria!, "waive", "--loop", "tria").status).toBe(0);
+    const lines = cli("show").stdout.split("\n").map((line) => line.split("\t"));
+    expect(lines[0]!.slice(4)).toEqual(["park", expect.stringMatching(/96% ≥ 95% — parked until .*; read 2h ago$/)]);
+    expect(lines[1]!.slice(4)).toEqual(["run", expect.stringMatching(/window that has reset; read 3d ago$/)]);
+    expect(lines[2]![4]).toBe("run");
+    expect(lines[2]![5]).toMatch(/; read 3d ago$/);
+    // The JSON still says each of those numbers is old.
+    const { loops: all } = JSON.parse(cli("show", "--json").stdout);
+    expect(all.map((element: { stale: boolean }) => element.stale)).toEqual([true, true, true]);
+  });
+
+  it("flags stale in the roster JSON only, never in show --loop", () => {
+    project(ROSTER_CONFIG);
+    const dirs = worktrees();
+    spendIn(dirs.ralph!, 0.3);
+    spendIn(dirs.rafa!, 0.54, THREE_DAYS_AGO);
+    const { loops: all } = JSON.parse(cli("show", "--json").stdout);
+    expect(all.map((element: { stale: boolean }) => element.stale)).toEqual([false, true, false]);
+    const shown = JSON.parse(cliIn(dirs.rafa!, "show", "--loop", "rafa").stdout);
+    expect(shown).not.toHaveProperty("stale");
   });
 
   it("says each loop has no reading yet, and exits 0", () => {

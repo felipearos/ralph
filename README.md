@@ -2363,7 +2363,10 @@ bun ~/ralph/usage-stop.ts waive --loop rafa                 # run past it until 
 ```
 
 The override wins over the config, the loop's entry over the project's (`*`).
-Run it from the loop's worktree. See `usage-stop.ts`.
+Run it from the loop's worktree. The roster `show` gives each reading's age;
+a `run` drawn from one older than an hour reads `unknown (stale reading)`,
+since an idle loop's last number is not today's. A park or drain on an old
+reading stands: usage only rises until the window resets. See `usage-stop.ts`.
 
 The one block time will not clear by itself is a project host fence that
 refuses a heavy local command while CI is busy, when a hard acceptance
