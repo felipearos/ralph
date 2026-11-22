@@ -1,0 +1,28 @@
+# Qodo PR review: what this harness cares about (#41).
+#
+# Only the review INSTRUCTIONS are set here. Display settings (where findings
+# go, which severities are inline) stay at Qodo's defaults on purpose, so a
+# change in what the reviewer finds is not confused with a change in how it is
+# shown. Each guideline stays under Qodo's 2,000-character field limit.
+#
+# The source of truth for the rules is AGENTS.md; keep this a summary of it.
+
+[review_agent]
+issues_user_guidelines = """
+This repository is the harness for agent loops that work a backlog unattended overnight (Ralph). Weigh a finding by what it does to a loop nobody is watching.
+1. No stuck loop. In ralph.sh, gates and waits (*-gate.ts, await-*.ts, claim-lease.ts, host-lease.ts) a missing or malformed signal must fall back to existing behaviour; a wait degrades on error and never throws. Flag new throws, exits or unbounded waits on those paths.
+2. Nothing may vanish from the frontier (frontier/next-tasks.ts header). Every readiness decision it makes, including a ticket, blocker or parent edge it drops, fences or ignores, must be visible in its --dry-run --json report. stderr alone does not count: the operator dashboard builds its backlog view from that JSON report (dashboard/adapter.ts), not from stderr.
+3. Frontier contracts: --take-one prints exactly one line of JSON on stdout; a read-only path (--dry-run, or inside RALPH_RUN_ID) never assigns or labels.
+4. Shared parsers (issueRefsUnderHeading, parsePlanFences, parseBodyReferences, sections.ts) have several callers: triage-apply.ts, triage/simulate.ts, frontier-gate.ts and the .ralph/plan.md fences. Check that a change keeps them in step; a simulation that parses differently from the frontier judges a plan against a graph no loop sees.
+5. A changed entry point (a CLI main, triage-apply.ts, a gate) needs a test that exercises it. A unit test of the helper it calls is not coverage of the entry point.
+"""
+
+compliance_user_guidelines = """
+House rules from AGENTS.md; flag a change that breaks one, citing the rule number.
+1. No stuck loop: a missing or malformed signal falls back to existing behaviour; a supervisor wait degrades on error, never throws.
+2. One door to the tracker: issue reads and writes go through the Tracker interface (tracker/, tracker.ts), never `gh issue`, in code and in prompts (*.md).
+3. The dashboard only looks: dashboard/ shells out to the CLIs and never imports ralph TypeScript.
+4. Tests survive a loaded host: a *.test.ts that spawns a process calls subprocessSuite(...) from test-timeouts.ts; wait on a predicate, never a fixed sleep; never raise testTimeout; never write into this checkout's .ralph/logs.
+5. No client lives in the harness: no deployment's repo, label, board, Slack id or person names in code, prompts, tests, fixtures or docs; tests use acme-* / example-org placeholders.
+Also: commit subjects are `<area>: <what changed> (#issue)`; prompt changes need prompt-render.test.ts; shared lifecycle changes need end-to-end.test.ts.
+"""
