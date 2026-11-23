@@ -16,6 +16,7 @@ split.
 - **Seen:** 2026-11-23, builds 5001–5006 (PRs #3686, #3687, #3688, #3689, #3690): only `production-migrations` fails, with `Production migration check failed (classification=ledger-check; ... host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query ... code=XX000`. Every other job green. The hosted prod DB has been down since 2026-11-19.
 - **Workaround:** if `bk-log.ts` shows only `production-migrations` failing with code=XX000 (not "ledger does not match"), and other open PRs fail the same line, it is not the diff and not a strike. Do not re-run into it; update the handoff, write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, keep the claim, end RETRY_LATER.
 - **Fix:** https://github.com/felipearos/loggd/issues/3697 — an operator restores the hosted prod Supabase project (or the check skips/soft-fails when prod is unreachable).
+- **Seen again:** 2026-11-23
 
 ### Production migration ledger check fails with a pooler XX000 while prod is down (2026-11-23)
 <!-- learning: prod-pooler-xx000-ledger-check -->
