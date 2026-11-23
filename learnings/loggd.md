@@ -5,6 +5,12 @@ split.
 
 ## Open: fix these
 
+### Production migration ledger check fails with a pooler XX000 while prod is down (2026-11-23)
+<!-- learning: prod-pooler-xx000-ledger-check -->
+- **Seen:** PR #3688 builds 5000 and 5005 on 2026-11-23: `production-migrations` fails `classification=ledger-check; host=aws-1-us-east-1.pooler.supabase.com port=6543 … code=XX000`, every other job green. The diff touches only mobile/. The operator noted prod down since 2026-11-19.
+- **Workaround:** if `bk-log.ts` shows only `production-migrations` failing with the pooler `code=XX000` (not the ledger-mismatch message), the prod database is unreachable, not the diff, and not a strike. Do not re-run into it. Write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, keep the claim, end RETRY_LATER.
+- **Fix:** https://github.com/felipearos/loggd/issues/3696 — Prod Supabase has to be restored (operator side). The audit could also tell "host unreachable" apart from "ledger mismatch" in its classification.
+
 ### production-migrations fails with XX000 from the prod pooler on every branch (2026-11-23)
 <!-- learning: prod-pooler-xx000-migration-check -->
 - **Seen:** 2026-11-23, PR #3687 builds 4999 and 5003 and testo's build 4998. Only the `production-migrations` job fails, with "Production migration check failed (classification=ledger-check; ... host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query ... code=XX000". That is a Postgres internal error from the prod pooler, not a ledger mismatch, on diffs that touch no migrations. Builds up to 4989 passed the step.
