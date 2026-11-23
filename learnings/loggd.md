@@ -5,6 +5,12 @@ split.
 
 ## Open: fix these
 
+### production-migrations red on every PR while the prod database is unreachable (2026-11-23)
+<!-- learning: prod-db-unreachable-ledger-check -->
+- **Seen:** 2026-11-23, PR #3689 build 5001 and PR #3688 build 5000 both fail only `production-migrations` with "Production migration check failed (classification=ledger-check; project=liuuaowngrfjgsfndeeu host=aws-1-us-east-1.pooler.supabase.com ...): Failed query ... code=XX000". Prod has been down since 2026-11-19; main's builds skip the job, so main does not show it.
+- **Workaround:** if this is the only red job and the diff touches no drizzle/ or migrations, it is not the diff and not a strike. Do not re-run into it: comment once on the PR, write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, keep the claim, end RETRY_LATER. Re-run CI once another branch's job goes green.
+- **Fix:** https://github.com/felipearos/loggd/issues/3691 — an operator restores the production database (or the job's connection), after which the ledger check can query it again.
+
 ### GitHub rejects the host's SSH key, so `git fetch`/`push` on every loop worktree fails (2026-11-04)
 <!-- learning: github-ssh-key-rejected -->
 - **Seen:** 2026-11-04 ~10:30Z, rafa orientation. `git fetch origin` (remote `git@github.com:felipearos/loggd.git`, shared by every loop worktree) failed with `Permission denied (publickey)`. The agent at /run/user/1000/gcr/ssh held the key (ed25519 SHA256:UDTFukIg…) and so did ~/.ssh/id_ed25519, and GitHub refused both. The same remote had pushed PR #2882 at 06:02Z, so it started after that. **It is working again as of 2026-11-04 ~12:10Z:** testo's orientation `git fetch origin` and its `git push -u origin testo/2705-…` (PR #2886) both succeeded over plain SSH from a loop worktree with no `insteadOf` override, so the outage lasted roughly two hours and the key is accepted again.
