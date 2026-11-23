@@ -4,13 +4,26 @@ on:
   pull_request:
   push:
     branches: [main]
+    # The loops push their journal and learnings straight to main, dozens of
+    # times a day. Markdown no test reads cannot change the result, and with
+    # main's runs no longer cancelled each push would hold a runner for the
+    # whole suite.
+    paths-ignore:
+      - "journal/**"
+      - "learnings/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # A new push to a pull request supersedes its old run. A push to main does
+  # not: each merge needs its own result, or a red main cannot be traced to
+  # the merge that caused it. So only a pull request shares a group; every
+  # other run gets one of its own. Not cancel-in-progress alone: a group
+  # holds one pending run, and a newer one replaces it, so a third quick
+  # merge would still drop the second's queued run.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -20,10 +33,16 @@ jobs:
     # (the self-hosted runner there serves only the private archive).
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Actions are pinned to a commit, not a tag: a green run is what lets a
+    # loop merge unattended, so what runs here must not change when a tag
+    # moves upstream. The comment names the release; bump both together.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Nothing in this job pushes; keep the token out of .git/config.
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.x
 
