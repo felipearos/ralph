@@ -63,6 +63,7 @@ split.
 - **Workaround:** if this is the only red job and the diff touches no drizzle/ or migrations, it is not the diff and not a strike. Do not re-run into it: comment once on the PR, write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, keep the claim, end RETRY_LATER. Re-run CI once another branch's job goes green.
 - **Fix:** https://github.com/felipearos/loggd/issues/3691 — an operator restores the production database (or the job's connection), after which the ledger check can query it again.
 - **Seen again:** 2026-11-23
+- **Seen again:** 2026-11-23
 
 ### GitHub rejects the host's SSH key, so `git fetch`/`push` on every loop worktree fails (2026-11-04)
 <!-- learning: github-ssh-key-rejected -->
