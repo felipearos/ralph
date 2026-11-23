@@ -17,11 +17,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
   # A new push to a pull request supersedes its old run. A push to main does
   # not: each merge needs its own result, or a red main cannot be traced to
-  # the merge that caused it.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # the merge that caused it. So only a pull request shares a group; every
+  # other run gets one of its own. Not cancel-in-progress alone: a group
+  # holds one pending run, and a newer one replaces it, so a third quick
+  # merge would still drop the second's queued run.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   test:
