@@ -5,6 +5,12 @@ split.
 
 ## Open: fix these
 
+### production-migrations fails with XX000 from the prod pooler on every branch (2026-11-23)
+<!-- learning: prod-pooler-xx000-migration-check -->
+- **Seen:** 2026-11-23, PR #3687 builds 4999 and 5003 and testo's build 4998. Only the `production-migrations` job fails, with "Production migration check failed (classification=ledger-check; ... host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query ... code=XX000". That is a Postgres internal error from the prod pooler, not a ledger mismatch, on diffs that touch no migrations. Builds up to 4989 passed the step.
+- **Workaround:** if bk-log.ts shows only this job red with code=XX000 and the diff leaves drizzle/ and src/server/db/ untouched, treat it as a flake: re-run once, and on a second red end RETRY_LATER with the claim kept. Never reach for prod credentials.
+- **Fix:** https://github.com/felipearos/loggd/issues/3695 — An operator checks the prod Supabase project and its pooler (prod was reported down 2026-11-19). The check could also print the server's diagnostic message instead of omitting it.
+
 ### Production migration ledger check fails with XX000 on every branch while prod is down (2026-11-23)
 <!-- learning: prod-db-unreachable-migration-ledger -->
 - **Seen:** 2026-11-23. Builds 5000 (PR #3688), 5001 (PR #3689) and 5002 (PR #3686) all red on `production-migrations` only: "Production migration check failed (classification=ledger-check; ... host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query ... code=XX000". Prod has been down since 2026-11-19; none of the diffs touch drizzle/ or migrations. This is not the ledger-mismatch incident in `prod-ledger-ahead-of-main`: the query itself fails.
