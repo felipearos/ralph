@@ -4,6 +4,13 @@ on:
   pull_request:
   push:
     branches: [main]
+    # The loops push their journal and learnings straight to main, dozens of
+    # times a day. Markdown no test reads cannot change the result, and with
+    # main's runs no longer cancelled each push would hold a runner for the
+    # whole suite.
+    paths-ignore:
+      - "journal/**"
+      - "learnings/**"
   workflow_dispatch:
 
 permissions:
