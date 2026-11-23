@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 /** A read-only, operator-facing projection of one Ralph worktree. */
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { journalBlockKind } from "./block-reason";
 import { leasePathFromGit, type ClaimLease } from "./claim-lease";

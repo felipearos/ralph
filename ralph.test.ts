@@ -706,7 +706,7 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // The SCRATCH copy, so the config it reads is the scratch's. `"$@"` from
     // `shift` onwards carries `--done`, which is what keeps the supervisor's
     // process substitution a single command.
-    `      if [ -n "\${REAL_REDACT:-}" ]; then shift; exec ${JSON.stringify(REAL_BUN)} "\${RALPH_HOME}/runner-failure.ts" "\$@"; fi`,
+    `      if [ -n "\${REAL_REDACT:-}" ]; then shift; exec ${JSON.stringify(REAL_BUN)} "\${RALPH_HOME}/runner-failure.ts" "$@"; fi`,
     // `--done` has to be honoured even by the pass-through, because the
     // supervisor's wait for that marker is what BOUNDS it. A stub that
     // swallowed the flag made every iteration in this file pay the full 10s

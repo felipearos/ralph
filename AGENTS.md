@@ -16,7 +16,7 @@ and commit messages refer to the private repository this public one replaced on
 | --- | --- | --- |
 | Install | `bun install --frozen-lockfile` | Bun >= 1.4 |
 | Typecheck | `bun run typecheck` | root `tsconfig.json` plus `dashboard/ui` |
-| Lint | `bun run lint` | oxlint; warnings are printed but do not fail it |
+| Lint | `bun run lint` | oxlint; a warning fails it (`--deny-warnings`) |
 | Tests | `bun run test` | vitest, ~200 files, ~2.5 min on an idle host |
 | One suite | `bun x vitest run <file>.test.ts` | |
 | Dashboard | `bun dashboard/server.ts` | local, 127.0.0.1:8791 |
