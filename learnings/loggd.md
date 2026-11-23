@@ -5,6 +5,12 @@ split.
 
 ## Open: fix these
 
+### Production DB unreachable: every PR build red on production-migrations (2026-11-23)
+<!-- learning: prod-db-down-reds-production-migrations -->
+- **Seen:** Buildkite builds 5000-5006 (PRs #3686-#3690, all loops) red only on `production-migrations`: "Production migration check failed (classification=ledger-check; ... pooler.supabase.com port=6543): Failed query ... code=XX000". Prod DB down since 2026-11-19; no PR build has passed the job through build 5008.
+- **Workaround:** Not the diff and not a flake; do not re-run or block. Keep the claim, write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, end RETRY_LATER. Once any build passes the job, push an empty commit and hand back AWAIT_PR ci.
+- **Fix:** https://github.com/felipearos/loggd/issues/3699
+
 ### production-migrations goes red on every PR while the prod database is down (2026-11-23)
 <!-- learning: prod-pooler-xx000-reds-production-migrations -->
 - **Seen:** Buildkite builds 4998-5006 (PRs #3687, #3688, #3689, #3686, #3690) on 2026-11-23, each red only on `production-migrations`: "Production migration check failed (classification=ledger-check; ... host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query ... code=XX000". The prod database has been down since 2026-11-19. Main build 5007 skipped the job.
