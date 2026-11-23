@@ -23,6 +23,7 @@ split.
 - **Workaround:** if bk-log.ts shows only this job red with code=XX000 and the diff leaves drizzle/ and src/server/db/ untouched, treat it as a flake: re-run once, and on a second red end RETRY_LATER with the claim kept. Never reach for prod credentials.
 - **Fix:** https://github.com/felipearos/loggd/issues/3695 — An operator checks the prod Supabase project and its pooler (prod was reported down 2026-11-19). The check could also print the server's diagnostic message instead of omitting it.
 - **Seen again:** 2026-11-23
+- **Seen again:** 2026-11-23
 
 ### Production migration ledger check fails with XX000 on every branch while prod is down (2026-11-23)
 <!-- learning: prod-db-unreachable-migration-ledger -->
