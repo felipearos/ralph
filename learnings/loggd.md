@@ -56,6 +56,7 @@ split.
 - **Seen:** 2026-11-23, PR #3688 build 5000 (remo) and PR #3689 build 5001 (ralph): the only failed job is `production-migrations`, "Production migration check failed (classification=ledger-check; ... pooler.supabase.com port=6543): Failed query ... code=XX000". Neither diff touches drizzle/ or migrations; the hosted prod Supabase has been down since 2026-11-19.
 - **Workaround:** not a strike and not a flake; do not re-run into it. Keep the claim, write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, end RETRY_LATER. Once any build shows that job green, push an empty commit on the PR and hand back `AWAIT_PR <pr> ci`.
 - **Fix:** https://github.com/felipearos/loggd/issues/3692 — (an operator restores the prod database, or the job reports infra unreachability as a skip rather than a red).
+- **Seen again:** 2026-11-23
 
 ### production-migrations red on every PR while the prod database is unreachable (2026-11-23)
 <!-- learning: prod-db-unreachable-ledger-check -->
