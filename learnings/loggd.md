@@ -5,6 +5,12 @@ split.
 
 ## Open: fix these
 
+### production-migrations red on every branch: hosted prod DB fails the ledger query with XX000 (2026-11-23)
+<!-- learning: prod-db-query-xx000-ledger-check -->
+- **Seen:** 2026-11-23, Buildkite builds 4998 (PR #3686), 4999 (rafa/3171), 5000 (remo/3201), 5001 (ralph/3304), 5002 (PR #3686): `production-migrations` fails with "Production migration check failed (classification=ledger-check; project=liuuaowngrfjgsfndeeu host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query … code=XX000". This is not a ledger mismatch: the hosted prod database is erroring on the query (prod reported down since 2026-11-19).
+- **Workaround:** if `bk-log.ts` shows only `production-migrations` failing with `code=XX000` and the diff leaves `drizzle/` and `src/server/db/` untouched, it is not a strike and a re-run only reproduces it. Keep the claim, write retry-blocker.json with key `ci:buildkite/loggd:production-migrations`, end RETRY_LATER. Never reach for prod credentials.
+- **Fix:** https://github.com/felipearos/loggd/issues/3693 — an operator restores the hosted prod database (or points the ledger check at a reachable target) so the required job can pass again.
+
 ### production-migrations goes red on every PR while the prod DB is down (2026-11-23)
 <!-- learning: production-migrations-prod-db-unreachable -->
 - **Seen:** 2026-11-23, PR #3688 build 5000 (remo) and PR #3689 build 5001 (ralph): the only failed job is `production-migrations`, "Production migration check failed (classification=ledger-check; ... pooler.supabase.com port=6543): Failed query ... code=XX000". Neither diff touches drizzle/ or migrations; the hosted prod Supabase has been down since 2026-11-19.
