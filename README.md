@@ -78,7 +78,7 @@ that commits `.ralph/` never commits a pending operator command.)
 | `repo`, `owner` | GitHub repository and the login claims are assigned to |
 | `baseBranch` | every freshness check and base read is against `origin/<baseBranch>` |
 | `displayName` | used in journal commit subjects |
-| `secrets.runner` | `doppler` (explicit `project`/`config` scope) or `none` |
+| `secrets.runner` | `doppler` (explicit `project`/`config` scope), `dotenv` (a `file` on the host; see "Environment") or `none` |
 | `secrets.withhold` | names stripped from every child after injection — a deny list |
 | `refuseFiles` | files whose presence refuses startup (they would shadow the env) |
 | `envCheck` | argv run inside the project, under the injected env, before every child; `[]` for none |
@@ -3045,6 +3045,32 @@ every role's prompt states the rule — the only fence a codex orchestrator has,
 since no settings file can be handed to one. Refusing `refuseFiles` (Loggd:
 `.env.local`) prevents an accidental local override; do not work around it by
 fabricating env files.
+
+#### A dotenv file instead of a secrets manager
+
+A project with no secrets manager can hand the loops a dotenv file:
+
+```json
+"secrets": { "runner": "dotenv", "file": "/etc/ralph/acme-app.env", "withhold": ["ACME_ADMIN_TOKEN"] }
+```
+
+`file` is absolute, or relative to the project root; the dashboard's setup
+form offers it beside `none`. Every child runs under
+`secrets/dotenv-run.sh <file> --`, which exports the file's `KEY=value` lines
+with the shell builtin (no value ever sits in a process's argv) and execs the
+command, so a file variable overrides an inherited one exactly as under
+`doppler run`; `withhold` is then stripped and `envCheck` runs, the same as for
+Doppler. Named secrets a role reads (`secrets/read.ts`) come from the same file.
+The parser takes blank and `#` lines, an optional `export `, single-quoted
+literals and double-quoted values with `\n`/`\t`/`\"`/`\\` escapes, which may
+span lines.
+
+The preflight's `secrets-file` check refuses to start when the file is
+missing, unreadable, malformed (it names the line number, never the text) or
+tracked by git in the project, and says which. A file that goes away while the
+loop runs stops it before the next turn rather than waiting, since nothing but
+a person brings it back. Keep the file outside the worktree: an orchestrator
+can read any file under it, and the redactor only scrubs values it is shown.
 
 Migration generation is allowed; SQL execution and migration application remain
 human-owned. The executor receives `env -i` plus its explicit allowlist and no
