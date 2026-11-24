@@ -537,8 +537,13 @@ export function parseLoopState(raw: string): LoopState | null {
           kind: stopRaw.kind,
           why: typeof stopRaw.why === "string" ? stopRaw.why : "",
           at: typeof stopRaw.at === "string" ? stopRaw.at : heartbeat,
-          ...(typeof stopRaw.signal === "string" && stopRaw.signal !== "" ? { signal: stopRaw.signal } : {}),
-          ...(typeof stopRaw.self === "boolean" ? { self: stopRaw.self } : {}),
+          // The reconciler restarts a self-recorded SIGTERM by when it was
+          // stopped. With no stop time of its own, the heartbeat stands in for
+          // the page only, so the restart metadata is dropped and it stays down.
+          ...(typeof stopRaw.at === "string" && typeof stopRaw.signal === "string" && stopRaw.signal !== ""
+            ? { signal: stopRaw.signal }
+            : {}),
+          ...(typeof stopRaw.at === "string" && typeof stopRaw.self === "boolean" ? { self: stopRaw.self } : {}),
         }
       : null;
 

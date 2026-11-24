@@ -2036,6 +2036,11 @@ function runInterrupted(root: string, argv: string[]): number {
             stop: previous.stop?.confirmation === "confirmed" ? null : previous.stop,
           };
   const replay = current.applied.some((entry) => entry.key === key);
+  // A stop an operator queued and the supervisor had not carried out yet. The
+  // trap's confirmed ending replaces it below, so the trap's record must not
+  // read as the shutdown's alone: the reconciler restarts those after a reboot,
+  // and the operator asked for this loop to stay down.
+  const queued = self !== null && current.stop !== null && current.stop.confirmation !== "confirmed" ? current.stop : null;
   const state = replay
     ? current
     : interruptedState(current, {
@@ -2054,6 +2059,7 @@ function runInterrupted(root: string, argv: string[]): number {
   const replaces = loop.stopReason?.kind === "interrupted" && self === null && !replay;
   if (loop.stopReason === null || replaces) {
     const detail = self === null ? `stopped now by an operator (${key})` : `stopped by a signal (${key})`;
+    const queuedWhy = queued === null ? "" : `; an operator's ${queued.kind} stop${queued.key === null ? "" : ` (${queued.key})`} was queued — ${queued.why}`;
     writeState(
       join(root, STATE_RELATIVE_PATH),
       applyRecord(
@@ -2063,9 +2069,9 @@ function runInterrupted(root: string, argv: string[]): number {
           detail,
           stop: {
             kind: "interrupted",
-            why,
-            self: self !== null,
-            ...(signal !== null ? { signal } : {}),
+            why: `${why}${queuedWhy}`,
+            self: self !== null && queued === null,
+            ...(signal !== null && queued === null ? { signal } : {}),
           },
         },
         { run: loop.run, loop: loop.owner.loop, pid: loop.owner.pid, host: loop.owner.host, worktree: loop.worktree },

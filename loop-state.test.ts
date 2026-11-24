@@ -242,6 +242,17 @@ describe("reading a record", () => {
     expect(stop({ signal: "" })).not.toHaveProperty("signal");
   });
 
+  it("drops a stop's signal and self when its own stop time is missing (#6)", () => {
+    // The heartbeat stands in for a missing time, and the reconciler would read
+    // it as when the shutdown stopped the loop.
+    const parsed = parseLoopState(
+      JSON.stringify({ ...state(), stopReason: { kind: "interrupted", why: "w", signal: "SIGTERM", self: true } }),
+    )?.stopReason;
+    expect(parsed?.kind).toBe("interrupted");
+    expect(parsed).not.toHaveProperty("signal");
+    expect(parsed).not.toHaveProperty("self");
+  });
+
   it("keeps a known phase and drops one it does not know", () => {
     expect(parseLoopState(JSON.stringify({ ...state(), phase: "verify" }))?.phase).toBe("verify");
     const unknown = parseLoopState(JSON.stringify({ ...state(), phase: "daydream" }));

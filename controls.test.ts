@@ -1813,6 +1813,27 @@ describe("recording a stop an operator carried out with a signal", () => {
     expect(loop.stopReason).toMatchObject({ kind: "interrupted", signal: "SIGTERM", self: true });
   });
 
+  it("records the trap's SIGTERM over an operator's queued stop as not self, with no signal (#6)", () => {
+    // The trap's confirmed ending replaces the queued stop on the control
+    // record; were the loop state to read as the shutdown's, the reconciler
+    // would restart after a reboot a loop the operator asked to stop.
+    const f = fixture("interrupted-self-over-queued-stop");
+    f.loopState({});
+    writeFileSync(
+      join(f.root, CONTROL_STATE_RELATIVE_PATH),
+      JSON.stringify({
+        ...blankControlState("ralph-run-1", "ralph"),
+        stop: { kind: "completed", why: "done for today", at: "T", key: "stop-1", confirmation: "pending" },
+      }),
+    );
+    const ran = f.run(["interrupted", "--self", String(2 ** 22), "--signal", "SIGTERM", "--key", "signal-1", "--why", "stopped by SIGTERM"]);
+    expect(ran.status).toBe(0);
+    const loop = JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8"));
+    expect(loop.stopReason).toMatchObject({ kind: "interrupted", self: false });
+    expect(loop.stopReason).not.toHaveProperty("signal");
+    expect(loop.stopReason.why).toContain("an operator's completed stop (stop-1) was queued — done for today");
+  });
+
   it("records an operator's Stop now over the trap's ending as not self, with no signal", () => {
     const f = fixture("interrupted-self-signal-then-stop-now");
     f.loopState({});
