@@ -115,8 +115,9 @@ export const methodFromEnv = (env: NodeJS.ProcessEnv = process.env): MergeMethod
   parseMethod(env.RALPH_MERGE_METHOD) ?? "mergify";
 
 /**
- * The `gh api graphql` argv that reads `isInMergeQueue`. Without a repo gh
- * fills `{owner}` and `{repo}` from the checkout's remote, as `gh pr view` does.
+ * The `gh api graphql` argv that reads `isInMergeQueue` and any pending
+ * auto-merge. Without a repo gh fills `{owner}` and `{repo}` from the
+ * checkout's remote, as `gh pr view` does.
  */
 export function inQueueArgs(number: string, repo: string | null): string[] {
   const slash = repo === null ? -1 : repo.indexOf("/");
@@ -126,7 +127,7 @@ export function inQueueArgs(number: string, repo: string | null): string[] {
     "api",
     "graphql",
     "-f",
-    "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } }",
+    "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue autoMergeRequest { enabledAt } } } }",
     "-F",
     `owner=${owner}`,
     "-F",
@@ -136,12 +137,23 @@ export function inQueueArgs(number: string, repo: string | null): string[] {
   ];
 }
 
-/** `isInMergeQueue` out of the graphql answer, or null for anything that is not one. */
+/**
+ * Whether the graphql answer has the PR in the queue, or null for anything
+ * that is not one. A pending auto-merge counts: `gh pr merge` enables one
+ * instead of queueing when GitHub still waits on a requirement of its own,
+ * and the PR enters the queue by itself once that holds. Judged "never
+ * entered", the next session would hand off a PR that merges later anyway;
+ * one that never enters stays bounded by the wait's deadline.
+ */
 export function parseInQueue(raw: string): boolean | null {
   try {
-    const parsed = JSON.parse(raw) as { data?: { repository?: { pullRequest?: { isInMergeQueue?: unknown } } } } | null;
-    const value = parsed?.data?.repository?.pullRequest?.isInMergeQueue;
-    return typeof value === "boolean" ? value : null;
+    const parsed = JSON.parse(raw) as {
+      data?: { repository?: { pullRequest?: { isInMergeQueue?: unknown; autoMergeRequest?: unknown } } };
+    } | null;
+    const pull = parsed?.data?.repository?.pullRequest;
+    const value = pull?.isInMergeQueue;
+    if (typeof value !== "boolean") return null;
+    return value || (typeof pull?.autoMergeRequest === "object" && pull.autoMergeRequest !== null);
   } catch {
     return null;
   }

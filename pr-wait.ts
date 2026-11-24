@@ -92,6 +92,12 @@ export interface PrSnapshot {
   checks: Check[];
   /** GitHub's `isInMergeQueue`, read for `github-queue` only; when set it, not the label, decides "queued". */
   inQueue?: boolean;
+  /**
+   * Why the queue flag could not be read on an open PR in the merge wait.
+   * Set, the poll says nothing about the queue: it is neither judged nor
+   * counted, and the wait goes on to its deadline.
+   */
+  queueUnread?: string;
 }
 
 export interface WaitResult {
@@ -466,15 +472,11 @@ export function readSnapshot(
   // wait, so an unread one is "not yet": the CI wait goes on over REST when
   // GraphQL is rate limited, as it does for every other method.
   if (mode === "ci") return { ...got, snapshot: { ...got.snapshot, inQueue: false } };
-  // In the merge wait a guess could call a queued PR dequeued, so it is a
-  // failed read, carrying when the GraphQL quota resets when that is why.
-  const resetAt = !queue.ok && isRateLimited(queue.error) ? graphqlResetAt(gh) : null;
-  return {
-    ok: false,
-    error,
-    ...(got.via ? { via: got.via } : {}),
-    ...(resetAt !== null ? { resetAt } : {}),
-  };
+  // In the merge wait a guess could call a queued PR dequeued, so the poll
+  // is left unjudged. Nor is it a failed read: the state was read, and a
+  // GraphQL rate limit (the state then read over REST) would otherwise give
+  // up on a queued PR after a few minutes instead of at the queue deadline.
+  return { ...got, snapshot: { ...got.snapshot, queueUnread: error } };
 }
 
 function readPrSnapshot(pr: string, repo: string | null, gh: Gh): Read {
@@ -551,7 +553,9 @@ export async function wait(options: Options, read: typeof readSnapshot = readSna
         console.error(`pr-wait: #${options.pr} entered the queue — waiting for the merge instead`);
       }
 
-      if (mode === "merge") {
+      if (mode === "merge" && snapshot.queueUnread !== undefined) {
+        console.error(`pr-wait: #${options.pr} queue unread, ${elapsed()}s → wait (${snapshot.queueUnread})`);
+      } else if (mode === "merge") {
         queue.polls += 1;
         if (isQueued(snapshot, options.labels)) queue.sawQueued = true;
         const verdict = judge(snapshot, queue, options.labels, options.gracePolls);

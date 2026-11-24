@@ -1231,6 +1231,7 @@ export function spliceProject(text: string, project?: ProjectRender, role: Role 
 
 /** The `{{RALPH_…}}` values a project config contributes. */
 export function projectValues(config: ProjectConfig): Record<string, string> {
+  const humanMerges = config.merge === "human";
   return {
     RALPH_PROJECT_REPO: config.repo,
     RALPH_PROJECT_OWNER: config.owner,
@@ -1257,9 +1258,11 @@ export function projectValues(config: ProjectConfig): Record<string, string> {
     // Rendered from `mergeMethod`, the key `pr-wait.ts` reads to decide what a
     // merge wait watches, so the commands the prompt gives and the signal the
     // supervisor waits on never disagree. Absent renders as today.
-    RALPH_MERGE_ROUTE: mergeRoute(config.mergeMethod),
-    RALPH_MERGE_ENQUEUE: mergeEnqueue(config.mergeMethod),
-    RALPH_MERGE_REQUEUE: mergeRequeue(config.mergeMethod),
+    // On `merge: "human"` the session never merges, whatever the method: no
+    // paragraph after the hand-off may tell it to run `gh pr merge`.
+    RALPH_MERGE_ROUTE: mergeRoute(humanMerges ? undefined : config.mergeMethod),
+    RALPH_MERGE_ENQUEUE: mergeEnqueue(humanMerges ? undefined : config.mergeMethod),
+    RALPH_MERGE_REQUEUE: mergeRequeue(humanMerges ? undefined : config.mergeMethod),
   };
 }
 
@@ -1326,11 +1329,12 @@ export function mergeEnqueue(method: MergeMethod | undefined): string {
       "     reads whether the PR is in it:",
       "",
       "     ```bash",
-      "     gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue}}}' -F owner='{owner}' -F name='{repo}' -F number=<pr>",
+      "     gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue autoMergeRequest{enabledAt}}}}' -F owner='{owner}' -F name='{repo}' -F number=<pr>",
       "     ```",
       "",
       "     On this project, read \"carries `queued`\" below as `isInMergeQueue`",
-      "     being `true`.",
+      "     being `true` or `autoMergeRequest` being set: `gh pr merge` enables",
+      "     auto-merge instead while GitHub waits on a requirement of its own.",
     ].join("\n");
   }
   return [

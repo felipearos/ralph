@@ -17,6 +17,7 @@ import {
   EXIT,
   judge,
   parseArgs,
+  parseInQueue,
   parseSnapshot,
   resultPath,
   type Labels,
@@ -180,7 +181,7 @@ const inQueue = (value: boolean): string => JSON.stringify({ data: { repository:
 const IN = inQueue(true);
 const OUT = inQueue(false);
 const GRAPHQL =
-  "gh api graphql -f query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } } -F owner=example-org -F name=acme-app -F number=948";
+  "gh api graphql -f query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue autoMergeRequest { enabledAt } } } } -F owner=example-org -F name=acme-app -F number=948";
 
 describe("the merge method decides what in the queue means", () => {
   const numbered = (state: string, mergedAt: string | null = null): string =>
@@ -222,6 +223,23 @@ describe("the merge method decides what in the queue means", () => {
     expect(result.status).toBe(EXIT.dequeued);
     expect(result.stdout).toMatch(/never entered GitHub's merge queue within 2 polls/);
     expect(result.stdout).not.toMatch(/Mergify/);
+  });
+
+  it("github-queue: a pending auto-merge counts as in the queue", () => {
+    const answer = (pullRequest: Record<string, unknown>): string => JSON.stringify({ data: { repository: { pullRequest } } });
+    expect(parseInQueue(answer({ isInMergeQueue: false, autoMergeRequest: { enabledAt: "2026-11-24T10:00:00Z" } }))).toBe(true);
+    expect(parseInQueue(answer({ isInMergeQueue: false, autoMergeRequest: null }))).toBe(false);
+    expect(parseInQueue(answer({ isInMergeQueue: true, autoMergeRequest: null }))).toBe(true);
+    expect(parseInQueue(answer({ autoMergeRequest: { enabledAt: "2026-11-24T10:00:00Z" } }))).toBeNull();
+    // gh pr merge enabled auto-merge instead of queueing: the wait holds, then sees the merge.
+    const pending = answer({ isInMergeQueue: false, autoMergeRequest: { enabledAt: "2026-11-24T10:00:00Z" } });
+    const result = run(
+      [numbered("OPEN"), numbered("OPEN"), numbered("OPEN"), numbered("OPEN"), numbered("MERGED", "2026-11-24T10:00:00Z")],
+      ["--method", "github-queue", "--grace", "2"],
+      {},
+      [pending],
+    );
+    expect(result.status).toBe(EXIT.merged);
   });
 
   it("github-queue: a failing queue read counts as an unreadable poll", () => {

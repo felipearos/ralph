@@ -256,16 +256,17 @@ describe('a project where a person merges (merge: human)', () => {
 
 describe('the merge method (mergeMethod) picks step 6\'s commands', () => {
   /** loggd's config with no prompt fragment, so the commands come from `mergeMethod` alone. */
-  function withMethod(method?: string): string {
+  function withMethod(method?: string, merge?: string): string {
     const root = projectWithFragment('');
     const path = join(root, '.ralph', 'config.json');
     const config = JSON.parse(readFileSync(path, 'utf8'));
     if (method !== undefined) config.mergeMethod = method;
+    if (merge !== undefined) config.merge = merge;
     writeFileSync(path, JSON.stringify(config));
     return root;
   }
-  function rendered(method?: string): string {
-    const run = render('prompt.md', withMethod(method));
+  function rendered(method?: string, merge?: string): string {
+    const run = render('prompt.md', withMethod(method, merge));
     expect(run.status, run.stderr).toBe(0);
     expect(run.stdout).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
     return run.stdout;
@@ -313,6 +314,19 @@ describe('the merge method (mergeMethod) picks step 6\'s commands', () => {
     expect(step).toMatch(/```bash\n\s+gh pr merge <pr>\n/);
     expect(step).toContain('isInMergeQueue');
     expect(requeueStep(out)).toContain('Here the re-queue command is `gh pr merge <pr>`, the same command that enqueues');
+  });
+
+  it('tells a merge: "human" project to run no gh pr merge, whatever the method', () => {
+    for (const method of ['direct', 'github-queue', 'mergify']) {
+      const out = rendered(method, 'human');
+      expect(out).toContain('**On this project a person merges, never you**');
+      expect(out).not.toContain('you merge the PR yourself');
+      expect(enqueueStep(out)).not.toContain('```bash');
+      expect(requeueStep(out)).not.toContain('Here the re-queue command is');
+      // What follows the hand-off is the absent method's text.
+      const tail = (text: string) => text.slice(text.indexOf('   The base branch merges'), text.indexOf('**closed**'));
+      expect(tail(out)).toBe(tail(rendered(undefined, 'human')));
+    }
   });
 
   it('merges with gh pr merge --squash and never re-queues (direct)', () => {

@@ -446,21 +446,34 @@ describe("the merge method", () => {
       ["pr view", view()],
     ]);
     expect(readSnapshot("7", null, gh, "github-queue", "ci")).toMatchObject({ ok: true, snapshot: { inQueue: false } });
-    expect(readSnapshot("7", null, gh, "github-queue", "merge")).toMatchObject({ ok: false });
+    expect(readSnapshot("7", null, gh, "github-queue", "merge")).toMatchObject({
+      ok: true,
+      snapshot: { queueUnread: "merge queue read: HTTP 502: Bad Gateway" },
+    });
   });
 
-  it("github-queue: a failing queue read is a failed read, and enough of them are unreadable", async () => {
+  it("github-queue: an unread queue flag is neither judged nor counted, so a queued PR waits to its merge", async () => {
+    // GraphQL is rate limited: the state reads over REST, the queue not at all.
+    const unread = snapshot({ queueUnread: "merge queue read: API rate limit exceeded" });
+    // More unread polls than MAX_CONSECUTIVE_FAILURES or the grace allows.
+    const reads = Array.from({ length: MAX_CONSECUTIVE_FAILURES + 3 }, () => unread);
+    const result = await wait(
+      options({ mode: "merge", method: "github-queue" }),
+      sequence([...reads, snapshot({ state: "MERGED", mergedAt: "2026-11-24T10:00:00Z" })]),
+    );
+    expect(result).toMatchObject({ outcome: "merged", polls: 0 });
+  });
+
+  it("github-queue: a failing state read is still a failed read, and enough of them are unreadable", async () => {
     const { gh } = fakeGh([
-      ["pr view", view()],
-      ["api graphql", new Error("HTTP 502: Bad Gateway")],
+      ["pr view", new Error("HTTP 502: Bad Gateway")],
+      ["api graphql", inQueue(true)],
     ]);
-    expect(readSnapshot("7", null, gh, "github-queue")).toMatchObject({ ok: false });
     const result = await wait(
       options({ mode: "merge", method: "github-queue" }),
       (pr, repo, _gh, method) => readSnapshot(pr, repo, gh, method),
     );
     expect(result.outcome).toBe("unreadable");
-    expect(result.detail).toContain("merge queue read");
   });
 
   it("mergify and no method make only the pr view call", () => {
