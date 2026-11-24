@@ -877,7 +877,8 @@ Once the gates are green, `verify` is done: write
      number of flake reds blocks the ticket through the budget below. The
      first flake red in this iteration: re-run CI once (for a GitHub
      Actions check, `bun "$RALPH_HOME/ci-log.ts" --pr <pr> --rerun`, which
-     re-runs the failed jobs and refuses a second attempt; otherwise the
+     re-runs the failed jobs of every red Actions run at the PR's head, once
+     each, and refuses a second attempt; otherwise the
      project's retry if you have one, else an empty commit whose message
      says why) and hand the wait back. A flake red again after that
      re-run means the CI host is busy, and re-running into it at once is how rulo parked PR #1814 on
@@ -904,7 +905,8 @@ Once the gates are green, `verify` is done: write
    every command the failing job runs is green locally on this exact commit.
    Then the failure is not yours to explain. Spend at most 15 minutes placing
    it (which job, which step, how far it got), then re-run CI once: for a
-   GitHub Actions check `ci-log.ts --pr <pr> --rerun`, else the project's
+   GitHub Actions check `ci-log.ts --pr <pr> --rerun` (it re-runs the failed
+   jobs of every red Actions run at the PR's head, once each), else the project's
    retry if you have one, else an empty commit whose message says why.
    Then hand the wait back. Green is green; carry on to step 6. The
    earlier waits listed in your session's preamble say whether this is the
@@ -1312,7 +1314,9 @@ budget (48h by default). The four kinds, and nothing else:
 - `{"kind":"check","name":"<check>","on":"pr"}` — a check going green on this
   ticket's PR (`"on":"main"` for the base branch's head instead);
 - `{"kind":"step","check":"<check>","step":"<step>"}` — a CI step passing, as
-  `ci-log.ts` names it;
+  `ci-log.ts` names it; the probe reads only the builds `bk-log.ts` reads, so
+  for a GitHub Actions job park on `{"kind":"check","name":"<check>","on":"pr"}`
+  instead;
 - `{"kind":"label-removed","label":"<loop>-blocked"}` — a person taking a
   `-blocked` label off, the one way to wait on a person's decision.
 

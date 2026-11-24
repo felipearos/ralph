@@ -472,7 +472,12 @@ describe("the preflight end to end", () => {
     // allowlist admits is exercised rather than merely permitted.
     const { color, description } = CREATED_LABELS["migration-applied"]!;
     const create = `gh label create migration-applied --color ${color} --description ${description}`;
-    const reads = /^(gh auth status|gh label list --limit \d+ --json name|gh api repos\/felipearos\/loggd\/actions\/runs\?per_page=1|doppler secrets --only-names --json -p loggd-web -c dev|git rev-parse( --verify --quiet origin\/main| --git-dir))$/;
+    // The Actions probe reads the scratch project's own repo; built from its
+    // config so no project's repo is spelled here (house rule 5).
+    const actionsProbe = `gh api repos/${LOGGD_CONFIG.repo}/actions/runs?per_page=1`.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    const reads = new RegExp(
+      `^(gh auth status|gh label list --limit \\d+ --json name|${actionsProbe}|doppler secrets --only-names --json -p loggd-web -c dev|git rev-parse( --verify --quiet origin\\/main| --git-dir))$`,
+    );
 
     const ready = fakes();
     runPreflight(ready);

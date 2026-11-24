@@ -7,17 +7,22 @@
  *
  *   bun ci-log.ts <build-or-run> | --pr <n> | --branch <name>  [the reader's flags]
  *
- * The arguments go, unchanged, to the reader of the check's provider, and the
- * reader's output and exit code are ci-log's own: for a Buildkite project this
- * is exactly `bk-log.ts` with the same arguments. ci-log prints nothing of its
- * own before routing, so a session reads the same digest it always did.
+ * The arguments go to the reader of the check's provider, less the one flag
+ * that reader does not know: `--repo <owner/name>` is stripped for bk-log (it
+ * reads the project's repo itself) and `--no-history` for gh-actions-log (it
+ * has no build history to skip). The reader's output and exit code are
+ * ci-log's own: for a Buildkite project this is `bk-log.ts` with the same
+ * arguments. ci-log prints nothing of its own before routing, so a session
+ * reads the same digest it always did.
  *
  * Routing: an Actions run/job URL → Actions; a Buildkite URL → Buildkite;
  * `--pr` → the provider of the PR's failing checks (both, Buildkite first, when
  * both are red); a bare number, `--branch`, or a PR with nothing failing → the
  * project's: Buildkite when a required check is `buildkite/…`, else Actions.
  *
- * Exit: the reader's; 1 for `--rerun` on a Buildkite check (no session re-run
+ * Exit: the reader's (on a two-reader route, the first non-zero — except that
+ * with `--job` one reader's 1, "no job by that name", yields to the other's
+ * 0: the job lives in one CI, not both); 1 for `--rerun` on a Buildkite check (no session re-run
  * there); 2 for an unexpected error in ci-log itself.
  */
 import { main as buildkiteMain, parseBuildRef, projectFacts } from "./bk-log";
@@ -31,7 +36,7 @@ export type Route = Provider[];
 
 export const USAGE =
   "usage: ci-log.ts <build|run> | --pr <n> | --branch <name>  [flags]  — the same arguments as bk-log.ts / gh-actions-log.ts,\n" +
-  "       passed unchanged to gh-actions-log.ts for a GitHub Actions check and to bk-log.ts for a Buildkite one\n" +
+  "       passed (less --repo for bk-log, --no-history for gh-actions-log) to gh-actions-log.ts for a GitHub Actions check and to bk-log.ts for a Buildkite one\n" +
   "       (by the URL, else by the PR's failing checks, else by the project's required checks; --rerun is Actions-only)";
 
 export const BUILDKITE_RERUN_REFUSAL =
@@ -80,10 +85,32 @@ export function routeFor(input: RouteInput): Route {
   return byProject;
 }
 
+/**
+ * The argv one reader gets: each reader refuses a flag only the other knows,
+ * so a session that names both (`--repo` for a PR in another repo,
+ * `--no-history` to skip Buildkite's history) would otherwise get a usage
+ * error from whichever reader the route picked.
+ */
+export function readerArgv(provider: Provider, argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (provider === "buildkite" && arg === "--repo") {
+      const value = argv[i + 1];
+      if (value !== undefined && !value.startsWith("--")) i += 1;
+      continue;
+    }
+    if (provider === "actions" && arg === "--no-history") continue;
+    out.push(arg);
+  }
+  return out;
+}
+
 interface Args {
   target: string | null;
   pr: string | null;
   repo: string | null;
+  job: boolean;
   rerun: boolean;
   help: boolean;
   checkRetryToken: boolean;
@@ -94,7 +121,7 @@ const VALUED = new Set(["--pr", "--branch", "--full", "--job", "--grep", "--repo
 
 /** Just enough of the readers' arguments to route; validating them is the reader's job. */
 function scan(argv: readonly string[]): Args {
-  const args: Args = { target: null, pr: null, repo: null, rerun: false, help: false, checkRetryToken: false };
+  const args: Args = { target: null, pr: null, repo: null, job: false, rerun: false, help: false, checkRetryToken: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (VALUED.has(arg)) {
@@ -103,6 +130,7 @@ function scan(argv: readonly string[]): Args {
       i += 1;
       if (arg === "--pr") args.pr = value.replace(/^#/, "");
       else if (arg === "--repo") args.repo = value;
+      else if (arg === "--job") args.job = true;
     } else if (arg === "--rerun") args.rerun = true;
     else if (arg === "--check-retry-token") args.checkRetryToken = true;
     else if (arg === "-h" || arg === "--help") args.help = true;
@@ -154,7 +182,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
     // the Buildkite refusal beside it would read as "nothing was re-run" and
     // send the session to push an empty commit over the re-run it just started.
     if (args.rerun && route.includes("actions")) route = ["actions"];
-    let code = 0;
+    const results: number[] = [];
     for (const provider of route) {
       let result: number;
       if (provider === "buildkite") {
@@ -163,11 +191,14 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
         if (args.rerun) {
           console.error(BUILDKITE_RERUN_REFUSAL);
           result = 1;
-        } else result = await buildkite([...argv], env);
-      } else result = actions([...argv], env);
-      if (code === 0) code = result;
+        } else result = await buildkite(readerArgv("buildkite", argv), env);
+      } else result = actions(readerArgv("actions", argv), env);
+      results.push(result);
     }
-    return code;
+    // A named job lives in one CI: the other reader's "no job by that name"
+    // (1) is not a failure when the one that has the job printed it.
+    const counted = args.job && results.length > 1 && results.includes(0) ? results.filter((result) => result !== 1) : results;
+    return counted.find((result) => result !== 0) ?? 0;
   } catch (error) {
     console.error(`ci-log: ${error instanceof Error ? error.message : String(error)}`);
     return 2;

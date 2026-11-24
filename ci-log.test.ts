@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * What `ci-log.ts` promises a session with a red check: its arguments reach
- * the reader of that check's CI unchanged — gh-actions-log for GitHub Actions,
+ * the reader of that check's CI — less the one flag that reader refuses — gh-actions-log for GitHub Actions,
  * bk-log for Buildkite — and the reader's exit code is ci-log's. A fake gh and
  * fake readers that record their argv; nothing is spawned.
  */
@@ -123,6 +123,34 @@ describe("ci-log routing by PR", () => {
     const gh = rollupGh([failingActions]);
     await main(["--pr", "#12", "--repo", "acme-org/other"], ACTIONS_PROJECT, { gh, ...readers() });
     expect(gh.calls).toEqual([["pr", "view", "12", "--repo", "acme-org/other", "--json", "statusCheckRollup"]]);
+  });
+});
+
+describe("ci-log strips the flag a reader does not know", () => {
+  it("drops --repo <value> from bk-log's argv on a Buildkite route", async () => {
+    const r = readers();
+    const gh = rollupGh([failingBuildkite]);
+    expect(await main(["--pr", "12", "--repo", "acme-org/other", "--json"], BK_PROJECT, { gh, ...r })).toBe(0);
+    expect(r.calls).toEqual([{ reader: "buildkite", argv: ["--pr", "12", "--json"] }]);
+    // The rollup is still read in the named repo.
+    expect(gh.calls).toEqual([["pr", "view", "12", "--repo", "acme-org/other", "--json", "statusCheckRollup"]]);
+  });
+
+  it("on a dual route with --job, drops --no-history for gh-actions-log and ignores the reader without the job", async () => {
+    const both = { ...ACTIONS_PROJECT, RALPH_REQUIRED_CHECKS: "buildkite/acme-app\ntest" };
+    const argv = ["--pr", "12", "--job", "e2e", "--no-history"];
+    const r = readers({ buildkite: 1, actions: 0 });
+    expect(await main(argv, both, { gh: rollupGh([failingActions, failingBuildkite]), ...r })).toBe(0);
+    expect(r.calls).toEqual([
+      { reader: "buildkite", argv },
+      { reader: "actions", argv: ["--pr", "12", "--job", "e2e"] },
+    ]);
+    // Neither has the job: that is a 1.
+    const none = readers({ buildkite: 1, actions: 1 });
+    expect(await main(argv, both, { gh: rollupGh([failingActions, failingBuildkite]), ...none })).toBe(1);
+    // A real failure in the other reader still counts.
+    const broken = readers({ buildkite: 2, actions: 0 });
+    expect(await main(argv, both, { gh: rollupGh([failingActions, failingBuildkite]), ...broken })).toBe(2);
   });
 });
 

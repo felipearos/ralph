@@ -12,21 +12,24 @@
  *                                       or a job URL (…/runs/N/job/M: its run)
  *   bun gh-actions-log.ts --pr <n>      the run the PR's failing Actions check
  *                                       links, a required check first
- *   bun gh-actions-log.ts --branch <b>  the latest run on a branch
+ *   bun gh-actions-log.ts --branch <b>  the branch's newest commit's red run
+ *                                       (one per workflow), else its newest run
  *     --repo <owner/name>  else RALPH_PROJECT_REPO, else the project config's
  *     --full <dir>    also write each failed job's whole cleaned log to <dir>
  *     --json          the digest as JSON
  *     --job <name|id> one job's whole cleaned log, whatever its conclusion
  *       --grep <re>   only the lines that match, with their line numbers
- *     --rerun         re-run the run's failed jobs, once (see `rerunRefusal`)
+ *     --rerun         re-run the run's failed jobs, once (see `rerunRefusal`);
+ *                     with --pr, those of every red Actions run in the PR's rollup
  *   bun gh-actions-log.ts --check-token  can gh read this repo's runs and jobs?
  *
  * Every GitHub call goes through gh (`Gh` from `pr-wait.ts`), so the token is
  * gh's own and never passes through, or out of, this file.
  *
  * Exit: 0 digest, `--job` log or re-run printed (a passing run included), 1
- * nothing to resolve, no job matching `--job`, or a re-run refused, 2 GitHub
- * could not be read, 3 gh's token cannot read Actions (`--check-token`), 64
+ * nothing to resolve, no job matching `--job`, or a re-run refused (with
+ * --pr: every run refused), 2 GitHub could not be read or a failed job's log
+ * was unreadable (the rest is still printed), 3 gh's token cannot read Actions (`--check-token`), 64
  * usage, 75 GitHub rate-limited the read (retry later; nothing is wrong).
  */
 import { spawnSync } from "node:child_process";
@@ -109,15 +112,21 @@ export interface ActionsRun {
   run_attempt?: number;
   html_url?: string | null;
   event?: string;
+  workflow_id?: number | null;
 }
 
 /**
  * The conclusions that make a job red. `cancelled` counts: a fail-fast matrix
  * cancels a failing job's siblings, a run's check shows red for it (pr-wait's
  * FAILED_CONCLUSIONS has CANCELLED too), and GitHub's `rerun-failed-jobs`
- * re-runs cancelled jobs — so the digest lists exactly what `--rerun` covers.
+ * re-runs cancelled jobs. `action_required` counts too — pr-wait reads its
+ * check as failed, so the digest must list the job a session is stuck on —
+ * but a re-run cannot clear it (RERUNNABLE_CONCLUSIONS).
  */
-const FAILED_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled"]);
+const FAILED_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+
+/** What `rerun-failed-jobs` can turn green: everything red but a pending approval. */
+const RERUNNABLE_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled"]);
 
 export function failedActionsJobs(jobs: readonly ActionsJob[]): ActionsJob[] {
   return jobs.filter((job) => job.conclusion !== null && FAILED_CONCLUSIONS.has(job.conclusion));
@@ -135,7 +144,12 @@ export function failedStep(job: ActionsJob): Step | null {
  */
 export function rerunRefusal(run: ActionsRun, jobs: readonly ActionsJob[], prHead: string | null): string | null {
   if (run.status !== "completed") return `run #${run.id} is ${run.status}, not completed; wait for it to finish`;
-  if (failedActionsJobs(jobs).length === 0) return `run #${run.id} has no failed job to re-run`;
+  const failed = failedActionsJobs(jobs);
+  if (failed.length === 0) return `run #${run.id} has no failed job to re-run`;
+  if (!failed.some((job) => RERUNNABLE_CONCLUSIONS.has(job.conclusion!))) {
+    const named = failed.map((job) => `job ${job.name} is ${job.conclusion}`).join(", ");
+    return `run #${run.id}: ${named}, which a re-run cannot clear; a person must approve it`;
+  }
   const attempt = run.run_attempt ?? 1;
   if (attempt > 1) {
     return `run #${run.id} was already re-run (attempt ${attempt}); one re-run per red is the limit — read the new attempt's log`;
@@ -235,9 +249,25 @@ export function readRun(gh: Gh, repo: string, run: string): ActionsRun {
   return readJson<ActionsRun>(gh, repo, ["api", `repos/${repo}/actions/runs/${run}`]);
 }
 
+const JOBS_PER_PAGE = 100;
+// A matrix past 2000 jobs is not a run a session reads; the cap keeps a
+// misbehaving API from paging forever.
+const MAX_JOB_PAGES = 20;
+
+/** Every job of a run, page by page: a big matrix's failing job may sit past the first 100. */
 export function readJobs(gh: Gh, repo: string, run: string): ActionsJob[] {
-  const body = readJson<{ jobs?: ActionsJob[] }>(gh, repo, ["api", `repos/${repo}/actions/runs/${run}/jobs?per_page=100`]);
-  return Array.isArray(body.jobs) ? body.jobs : [];
+  const jobs: ActionsJob[] = [];
+  for (let page = 1; page <= MAX_JOB_PAGES; page += 1) {
+    const body = readJson<{ jobs?: ActionsJob[]; total_count?: number }>(gh, repo, [
+      "api",
+      `repos/${repo}/actions/runs/${run}/jobs?per_page=${JOBS_PER_PAGE}&page=${page}`,
+    ]);
+    const batch = Array.isArray(body.jobs) ? body.jobs : [];
+    jobs.push(...batch);
+    if (batch.length < JOBS_PER_PAGE) break;
+    if (typeof body.total_count === "number" && jobs.length >= body.total_count) break;
+  }
+  return jobs;
 }
 
 /**
@@ -390,6 +420,38 @@ export function actionsCheckFromRollup(rollup: unknown, required: readonly strin
   return failing.find(isRequired) ?? failing[0] ?? checks.find(isRequired) ?? checks[0] ?? null;
 }
 
+/**
+ * The run `--branch` reads, from the branch's runs newest first. The newest
+ * run alone is whichever workflow finished last — often a green lint beside a
+ * red test — so: the newest commit's runs, the newest per workflow, the first
+ * red of those, else the newest run.
+ */
+export function branchRun(runs: readonly ActionsRun[]): ActionsRun | null {
+  const newest = runs.find((entry) => typeof entry?.id === "number");
+  if (newest === undefined) return null;
+  const seen = new Set<string>();
+  const latest = runs.filter((entry) => {
+    if (typeof entry?.id !== "number" || (entry.head_sha ?? null) !== (newest.head_sha ?? null)) return false;
+    const workflow = entry.workflow_id != null ? `id:${entry.workflow_id}` : `name:${entry.name ?? ""}`;
+    if (seen.has(workflow)) return false;
+    seen.add(workflow);
+    return true;
+  });
+  return latest.find((entry) => entry.conclusion !== null && FAILED_CONCLUSIONS.has(entry.conclusion)) ?? newest;
+}
+
+interface PrView {
+  rollup: unknown;
+  head: string | null;
+}
+
+function readPrView(gh: Gh, repo: string, pr: string): PrView {
+  const view = readJson<{ statusCheckRollup?: unknown; headRefOid?: string }>(gh, repo, [
+    "pr", "view", pr, "--repo", repo, "--json", "statusCheckRollup,headRefOid",
+  ]);
+  return { rollup: view.statusCheckRollup, head: view.headRefOid ?? null };
+}
+
 function resolve(options: Options, env: NodeJS.ProcessEnv, gh: Gh): Resolved {
   if (options.target !== null) {
     const ref = parseActionsUrl(options.target);
@@ -398,26 +460,98 @@ function resolve(options: Options, env: NodeJS.ProcessEnv, gh: Gh): Resolved {
   }
   const repo = repoFrom(options, env);
   if (options.branch !== null) {
-    const body = readJson<{ workflow_runs?: Array<{ id?: number }> }>(gh, repo, [
+    const body = readJson<{ workflow_runs?: ActionsRun[] }>(gh, repo, [
       "api",
-      `repos/${repo}/actions/runs?branch=${encodeURIComponent(options.branch)}&per_page=1`,
+      `repos/${repo}/actions/runs?branch=${encodeURIComponent(options.branch)}&per_page=20`,
     ]);
-    const id = body.workflow_runs?.[0]?.id;
-    if (id === undefined) throw new HelperError(`no GitHub Actions run on branch ${options.branch} of ${repo}`, 1);
-    return { repo, run: String(id), prHead: null };
+    const picked = branchRun(Array.isArray(body.workflow_runs) ? body.workflow_runs : []);
+    if (picked === null) throw new HelperError(`no GitHub Actions run on branch ${options.branch} of ${repo}`, 1);
+    return { repo, run: String(picked.id), prHead: null };
   }
   const pr = options.pr!;
-  const view = readJson<{ statusCheckRollup?: unknown; headRefOid?: string }>(gh, repo, [
-    "pr", "view", pr, "--repo", repo, "--json", "statusCheckRollup,headRefOid",
-  ]);
-  const check = actionsCheckFromRollup(view.statusCheckRollup, projectFacts(env).checks);
-  if (check === null) {
-    const names = (Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : [])
-      .map(parseCheck)
-      .flatMap((entry) => (entry ? [`${entry.name} (${entry.state})`] : []));
-    throw new HelperError(`PR #${pr} has no GitHub Actions check; its checks: ${names.join(", ") || "none"}`, 1);
+  const view = readPrView(gh, repo, pr);
+  const check = actionsCheckFromRollup(view.rollup, projectFacts(env).checks);
+  if (check === null) throw new HelperError(`PR #${pr} has no GitHub Actions check; its checks: ${checkNames(view.rollup)}`, 1);
+  return { repo: check.ref.repo, run: check.ref.run, prHead: view.head };
+}
+
+function checkNames(rollup: unknown): string {
+  const names = (Array.isArray(rollup) ? rollup : [])
+    .map(parseCheck)
+    .flatMap((entry) => (entry ? [`${entry.name} (${entry.state})`] : []));
+  return names.join(", ") || "none";
+}
+
+/** The distinct Actions runs the rollup's failing checks link, in rollup order. Pure. */
+export function failingActionsRuns(rollup: unknown): ActionsRef[] {
+  const seen = new Set<string>();
+  const refs: ActionsRef[] = [];
+  for (const check of (Array.isArray(rollup) ? rollup : []).map(parseCheck)) {
+    if (check === null || check.state !== "fail" || !check.url) continue;
+    const ref = parseActionsUrl(check.url);
+    if (ref === null) continue;
+    const key = `${ref.repo.toLowerCase()}#${ref.run}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ repo: ref.repo, run: ref.run });
   }
-  return { repo: check.ref.repo, run: check.ref.run, prHead: view.headRefOid ?? null };
+  return refs;
+}
+
+/** POST a run's re-run; a failure throws as main reports it. */
+function postRerun(gh: Gh, repo: string, actionsRun: ActionsRun): string {
+  const id = actionsRun.id;
+  const result = call(gh, ["api", "-X", "POST", `repos/${repo}/actions/runs/${id}/rerun-failed-jobs`]);
+  if (!result.ok) {
+    if (isRateLimited(result.error)) throw new HelperError(`GitHub rate-limited the re-run: ${result.error}`, 75);
+    throw new HelperError(`gh could not re-run run #${id}: ${result.error}`, 2);
+  }
+  const url = actionsRun.html_url ?? `https://github.com/${repo}/actions/runs/${id}`;
+  const next = (actionsRun.run_attempt ?? 1) + 1;
+  return `re-ran the failed jobs of run #${id} (attempt ${next} will follow): ${url}`;
+}
+
+/**
+ * `--pr --rerun`: the failed jobs of EVERY red Actions run in the PR's rollup,
+ * each once and each at the PR's head. The flake rule re-runs CI once when
+ * every failure is a flake, so re-running only the first red run would leave
+ * the others red and the PR waiting on nothing. A run whose link names
+ * another repository is refused: a check's URL must not aim the POST
+ * elsewhere than the repository the PR was read in.
+ */
+function rerunPr(options: Options, env: NodeJS.ProcessEnv, gh: Gh): RunResult {
+  const repo = repoFrom(options, env);
+  const pr = options.pr!;
+  const view = readPrView(gh, repo, pr);
+  const refs = failingActionsRuns(view.rollup);
+  if (refs.length === 0) {
+    throw new HelperError(`not re-running: PR #${pr} has no red GitHub Actions run; its checks: ${checkNames(view.rollup)}`, 1);
+  }
+  const lines: string[] = [];
+  const refused: string[] = [];
+  let rerun = 0;
+  for (const ref of refs) {
+    if (ref.repo.toLowerCase() !== repo.toLowerCase()) {
+      refused.push(`not re-running run #${ref.run}: its check links ${ref.repo}, not ${repo} where PR #${pr} lives; a check link must not send a re-run to another repository`);
+      continue;
+    }
+    const actionsRun = readRun(gh, repo, ref.run);
+    const refusal = rerunRefusal(actionsRun, readJobs(gh, repo, ref.run), view.head);
+    if (refusal !== null) {
+      refused.push(`not re-running: ${refusal}`);
+      continue;
+    }
+    try {
+      lines.push(postRerun(gh, repo, actionsRun));
+    } catch (error) {
+      // Say what was already re-run, so a retry does not count it twice.
+      if (error instanceof HelperError && lines.length > 0) throw new HelperError(`${error.message} (already: ${lines.join("; ")})`, error.code);
+      throw error;
+    }
+    rerun += 1;
+  }
+  if (rerun === 0) throw new HelperError(refused.join("\n"), 1);
+  return { text: [...lines, ...refused].join("\n"), json: null, unreadable: 0 };
 }
 
 const safeName = (value: string): string => value.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "job";
@@ -449,21 +583,22 @@ function readJobLog(
   }
 }
 
-export function run(options: Options, env: NodeJS.ProcessEnv, gh: Gh): { text: string; json: unknown } {
+/** What `main` prints; `unreadable` counts the requested job logs that could not be read (exit 2). */
+export interface RunResult {
+  text: string;
+  json: unknown;
+  unreadable: number;
+}
+
+export function run(options: Options, env: NodeJS.ProcessEnv, gh: Gh): RunResult {
+  if (options.rerun && options.pr !== null) return rerunPr(options, env, gh);
   const { repo, run: id, prHead } = resolve(options, env, gh);
   const actionsRun = readRun(gh, repo, id);
   const jobs = readJobs(gh, repo, id);
   if (options.rerun) {
     const refusal = rerunRefusal(actionsRun, jobs, prHead);
     if (refusal !== null) throw new HelperError(`not re-running: ${refusal}`, 1);
-    const result = call(gh, ["api", "-X", "POST", `repos/${repo}/actions/runs/${id}/rerun-failed-jobs`]);
-    if (!result.ok) {
-      if (isRateLimited(result.error)) throw new HelperError(`GitHub rate-limited the re-run: ${result.error}`, 75);
-      throw new HelperError(`gh could not re-run run #${id}: ${result.error}`, 2);
-    }
-    const url = actionsRun.html_url ?? `https://github.com/${repo}/actions/runs/${id}`;
-    const next = (actionsRun.run_attempt ?? 1) + 1;
-    return { text: `re-ran the failed jobs of run #${id} (attempt ${next} will follow): ${url}`, json: null };
+    return { text: postRerun(gh, repo, actionsRun), json: null, unreadable: 0 };
   }
   if (options.job !== null) return jobLogs(options, options.job, repo, actionsRun, jobs, gh);
   const failed = failedActionsJobs(jobs);
@@ -473,6 +608,7 @@ export function run(options: Options, env: NodeJS.ProcessEnv, gh: Gh): { text: s
   });
   return {
     text: formatActionsReport(actionsRun, reports, jobs.length),
+    unreadable: reports.filter((report) => report.error !== null).length,
     json: {
       run: {
         repo,
@@ -508,25 +644,27 @@ function jobLogs(
   actionsRun: ActionsRun,
   jobs: readonly ActionsJob[],
   gh: Gh,
-): { text: string; json: unknown } {
+): RunResult {
   const named = jobs.filter((job) => job.name === key || String(job.id) === key);
   if (named.length === 0) {
     const list = jobs.map((job) => `"${job.name}" [${job.id}] (${job.conclusion ?? job.status})`);
     throw new HelperError(`no job of run #${actionsRun.id} is named ${key}; its jobs: ${list.join(", ") || "none"}`, 1);
   }
   const out = [runHeader(actionsRun)];
+  let unreadable = 0;
   for (const job of named) {
     const { log, saved, error } = readJobLog(gh, repo, String(actionsRun.id), job, named, options.full);
     out.push("", `== ${job.name} [${job.id}] — ${job.conclusion ?? job.status}`);
     if (saved) out.push(`   full log: ${saved}`);
     if (log === null) {
       out.push(`   log unreadable: ${error}`);
+      unreadable += 1;
       continue;
     }
     const lines = options.grep === null ? [log] : grepLog(log, options.grep);
     out.push(...(lines.length > 0 ? lines : [`(no line matches ${options.grep})`]));
   }
-  return { text: out.join("\n"), json: null };
+  return { text: out.join("\n"), json: null, unreadable };
 }
 
 /**
@@ -563,6 +701,12 @@ export function main(argv: string[], env: NodeJS.ProcessEnv = process.env, gh: G
     }
     const result = run(options, env, gh);
     console.log(options.json ? JSON.stringify(result.json, null, 2) : result.text);
+    // The partial output stands, but a session must not read "exit 0" as
+    // "every failed job was read": an unreadable log is a failed read.
+    if (result.unreadable > 0) {
+      console.error(`gh-actions-log: ${result.unreadable} job log${result.unreadable === 1 ? "" : "s"} could not be read`);
+      return 2;
+    }
     return 0;
   } catch (error) {
     if (error instanceof HelperError) {

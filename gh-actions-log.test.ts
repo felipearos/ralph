@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Gh, GhResult } from "./pr-wait";
-import { cleanActionsLog, main, parseActionsUrl, probeActionsRead } from "./gh-actions-log";
+import { branchRun, cleanActionsLog, main, parseActionsUrl, probeActionsRead } from "./gh-actions-log";
 
 const REPO = "acme-org/acme-app";
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
@@ -98,7 +98,7 @@ const lintJob = {
 function routes(over: { run?: Record<string, unknown>; jobs?: unknown[] } = {}): Record<string, Route> {
   return {
     [`api repos/${REPO}/actions/runs/700`]: ok(run(over.run)),
-    [`api repos/${REPO}/actions/runs/700/jobs?per_page=100`]: ok({ jobs: over.jobs ?? [testJob, lintJob] }),
+    [`api repos/${REPO}/actions/runs/700/jobs?per_page=100&page=1`]: ok({ jobs: over.jobs ?? [testJob, lintJob] }),
     [`api --allow-escape-sequences repos/${REPO}/actions/jobs/9001/logs`]: ok(LOG),
     [`api --allow-escape-sequences repos/${REPO}/actions/jobs/9002/logs`]: ok("2026-11-24T10:00:00.0000000Z Found 0 warnings and 0 errors."),
   };
@@ -210,6 +210,82 @@ describe("the digest", () => {
   });
 });
 
+describe("jobs past the first page", () => {
+  it("follows the pages, so a failing job on page 2 is in the digest and --job", () => {
+    capture();
+    const filler = Array.from({ length: 100 }, (_, i) => ({ ...lintJob, id: 8000 + i, name: `shard ${i}` }));
+    const paged = routes();
+    paged[`api repos/${REPO}/actions/runs/700/jobs?per_page=100&page=1`] = ok({ total_count: 101, jobs: filler });
+    paged[`api repos/${REPO}/actions/runs/700/jobs?per_page=100&page=2`] = ok({ total_count: 101, jobs: [testJob] });
+    const gh = fakeGh(paged);
+    expect(main(["700"], ENV, gh)).toBe(0);
+    expect(out.join("\n")).toContain("1 failed job (of 101)");
+    expect(out.join("\n")).toContain('== test [9001] — failure, step "Test"');
+    expect(gh.calls).not.toContain(`api repos/${REPO}/actions/runs/700/jobs?per_page=100&page=3`);
+    capture();
+    expect(main(["700", "--job", "test"], ENV, fakeGh(paged))).toBe(0);
+  });
+});
+
+describe("an unreadable log", () => {
+  const unreadable = (): Record<string, Route> => {
+    const broken = routes();
+    broken[`api --allow-escape-sequences repos/${REPO}/actions/jobs/9001/logs`] = { status: 1, stderr: "gh: HTTP 502 Bad Gateway" };
+    return broken;
+  };
+
+  it("still prints the digest, and exits 2", () => {
+    capture();
+    expect(main(["700"], ENV, fakeGh(unreadable()))).toBe(2);
+    expect(out.join("\n")).toContain("== test [9001] — failure");
+    expect(out.join("\n")).toContain("log unreadable:");
+    expect(err.join("\n")).toContain("1 job log could not be read");
+  });
+
+  it("still prints the --json digest, and exits 2", () => {
+    capture();
+    expect(main(["700", "--json"], ENV, fakeGh(unreadable()))).toBe(2);
+    const body = JSON.parse(out.join("\n")) as { failed: Array<{ error: string | null }> };
+    expect(body.failed[0]!.error).toContain("502");
+  });
+
+  it("exits 2 on --job too", () => {
+    capture();
+    expect(main(["700", "--job", "test"], ENV, fakeGh(unreadable()))).toBe(2);
+    expect(out.join("\n")).toContain("log unreadable:");
+  });
+});
+
+describe("--branch", () => {
+  const BRANCH = `api repos/${REPO}/actions/runs?branch=rafa%2F50&per_page=20`;
+
+  it("reads the newest commit's red run, not a newer green one of another workflow", () => {
+    capture();
+    const gh = fakeGh({
+      ...routes(),
+      [BRANCH]: ok({
+        workflow_runs: [
+          { id: 710, name: "Lint", workflow_id: 2, head_sha: HEAD, status: "completed", conclusion: "success" },
+          { id: 700, name: "CI", workflow_id: 1, head_sha: HEAD, status: "completed", conclusion: "failure" },
+          { id: 690, name: "Lint", workflow_id: 2, head_sha: HEAD, status: "completed", conclusion: "failure" },
+        ],
+      }),
+    });
+    expect(main(["--branch", "rafa/50"], ENV, gh)).toBe(0);
+    expect(gh.calls).toContain(`api repos/${REPO}/actions/runs/700`);
+    expect(gh.calls).not.toContain(`api repos/${REPO}/actions/runs/710`);
+  });
+
+  it("keeps the newest run per workflow at the newest commit, else the newest run", () => {
+    const run = (id: number, workflow_id: number, head_sha: string, conclusion: string) =>
+      ({ id, workflow_id, head_sha, status: "completed", conclusion });
+    // An older attempt of the same workflow, or a red on an older commit, is not the branch's red now.
+    expect(branchRun([run(3, 1, "b", "success"), run(2, 1, "b", "failure"), run(1, 2, "a", "failure")])!.id).toBe(3);
+    expect(branchRun([run(3, 1, "b", "success"), run(2, 2, "b", "timed_out")])!.id).toBe(2);
+    expect(branchRun([])).toBeNull();
+  });
+});
+
 describe("--pr", () => {
   it("takes the run of the failing required Actions check", () => {
     capture();
@@ -295,6 +371,19 @@ describe("--rerun", () => {
     });
   }
 
+  it("lists an action_required job and refuses its re-run by name, not as 'no failed job'", () => {
+    capture();
+    const waiting = { ...testJob, conclusion: "action_required", steps: [] };
+    const gh = fakeGh({ ...routes({ run: { conclusion: "action_required" }, jobs: [waiting, lintJob] }), [POST]: ok("") });
+    main(["700"], ENV, gh);
+    expect(out.join("\n")).toContain("== test [9001] — action_required");
+    capture();
+    expect(main(["700", "--rerun"], ENV, gh)).toBe(1);
+    expect(err.join("\n")).toContain("job test is action_required, which a re-run cannot clear; a person must approve it");
+    expect(err.join("\n")).not.toContain("no failed job");
+    expect(gh.calls).not.toContain(POST);
+  });
+
   it("refuses with --pr when the run is not of the PR's head", () => {
     capture();
     const gh = fakeGh({
@@ -308,6 +397,89 @@ describe("--rerun", () => {
     expect(main(["--pr", "12", "--rerun"], ENV, gh)).toBe(1);
     expect(err.join("\n")).toContain("a re-run of an old commit proves nothing about the head");
     expect(gh.calls).not.toContain(POST);
+  });
+});
+
+describe("--pr --rerun", () => {
+  const VIEW = `pr view 12 --repo ${REPO} --json statusCheckRollup,headRefOid`;
+  const RUN_600 = `https://github.com/${REPO}/actions/runs/600`;
+  const POST_600 = `api -X POST repos/${REPO}/actions/runs/600/rerun-failed-jobs`;
+  const e2eJob = { ...testJob, id: 6001, name: "e2e", html_url: `${RUN_600}/job/6001` };
+  const twoRuns = (over: { run600?: Record<string, unknown> } = {}): Record<string, Route> => ({
+    ...routes(),
+    [`api repos/${REPO}/actions/runs/600`]: ok(run({ id: 600, html_url: RUN_600, ...over.run600 })),
+    [`api repos/${REPO}/actions/runs/600/jobs?per_page=100&page=1`]: ok({ jobs: [e2eJob] }),
+  });
+  const rollup = (...extra: unknown[]) => [
+    { name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `${RUN_URL}/job/9001` },
+    { name: "lint", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `${RUN_URL}/job/9002` },
+    { name: "e2e", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `${RUN_600}/job/6001` },
+    { name: "deploy", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://github.com/acme-org/acme-app/actions/runs/500" },
+    ...extra,
+  ];
+
+  it("re-runs every red Actions run at the PR's head, once each", () => {
+    capture();
+    const gh = fakeGh({ ...twoRuns(), [POST]: ok(""), [POST_600]: ok(""), [VIEW]: ok({ statusCheckRollup: rollup(), headRefOid: HEAD }) });
+    expect(main(["--pr", "12", "--rerun"], ENV, gh)).toBe(0);
+    expect(gh.calls.filter((call) => call === POST)).toHaveLength(1);
+    expect(gh.calls.filter((call) => call === POST_600)).toHaveLength(1);
+    expect(gh.calls).not.toContain(`api repos/${REPO}/actions/runs/500`);
+    expect(out.join("\n").split("\n")).toEqual([
+      `re-ran the failed jobs of run #700 (attempt 2 will follow): ${RUN_URL}`,
+      `re-ran the failed jobs of run #600 (attempt 2 will follow): ${RUN_600}`,
+    ]);
+  });
+
+  it("refuses a run linked in another repository, and a run already re-run, and still re-runs the rest", () => {
+    capture();
+    const foreign = { name: "x", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://github.com/example-org/elsewhere/actions/runs/800" };
+    const gh = fakeGh({
+      ...twoRuns({ run600: { run_attempt: 2 } }),
+      [POST]: ok(""),
+      [POST_600]: ok(""),
+      [VIEW]: ok({ statusCheckRollup: rollup(foreign), headRefOid: HEAD }),
+    });
+    expect(main(["--pr", "12", "--rerun"], ENV, gh)).toBe(0);
+    expect(gh.calls).toContain(POST);
+    expect(gh.calls).not.toContain(POST_600);
+    expect(gh.calls.some((call) => call.includes("example-org/elsewhere"))).toBe(false);
+    const text = out.join("\n");
+    expect(text).toContain("re-ran the failed jobs of run #700");
+    expect(text).toContain("not re-running: run #600 was already re-run (attempt 2)");
+    expect(text).toContain(`not re-running run #800: its check links example-org/elsewhere, not ${REPO}`);
+  });
+
+  it("matches the repository case-insensitively", () => {
+    capture();
+    const upper = [{ name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/ACME-org/Acme-App/actions/runs/700` }];
+    const gh = fakeGh({ ...routes(), [POST]: ok(""), [VIEW]: ok({ statusCheckRollup: upper, headRefOid: HEAD }) });
+    expect(main(["--pr", "12", "--rerun"], ENV, gh)).toBe(0);
+    expect(gh.calls).toContain(POST);
+  });
+
+  it("exits 1 with every reason on stderr when all are refused", () => {
+    capture();
+    const gh = fakeGh({
+      ...twoRuns(),
+      [POST]: ok(""),
+      [POST_600]: ok(""),
+      [VIEW]: ok({ statusCheckRollup: rollup(), headRefOid: "ffffffffffffffffffffffffffffffffffffffff" }),
+    });
+    expect(main(["--pr", "12", "--rerun"], ENV, gh)).toBe(1);
+    expect(err.join("\n").match(/a re-run of an old commit proves nothing about the head/g)).toHaveLength(2);
+    expect(gh.calls).not.toContain(POST);
+    expect(gh.calls).not.toContain(POST_600);
+  });
+
+  it("exits 75 when the re-run is rate-limited", () => {
+    capture();
+    const gh = fakeGh({
+      ...routes(),
+      [POST]: { status: 1, stderr: "gh: API rate limit exceeded (HTTP 403)" },
+      [VIEW]: ok({ statusCheckRollup: rollup().slice(0, 1), headRefOid: HEAD }),
+    });
+    expect(main(["--pr", "12", "--rerun"], ENV, gh)).toBe(75);
   });
 });
 
