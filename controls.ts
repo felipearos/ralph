@@ -85,7 +85,7 @@
  *   ralph/controls.ts poll [--supervised] [--only <command,…>] [--json]
  *                          [--phase <next> [--after <finished>] | --in-iteration]
  *   ralph/controls.ts status [--json | --line]
- *   ralph/controls.ts interrupted --key <id> --why <reason> [--self <pid>]
+ *   ralph/controls.ts interrupted --key <id> --why <reason> [--self <pid> [--signal <name>]]
  *
  * `--supervised` is the supervisor saying "I am about to act on the answer",
  * and it is what separates a `confirmed` stop from a `pending` one — see
@@ -143,6 +143,11 @@
  * caller — so the liveness refusal is replaced by a narrower one: the loop
  * state's owner must be exactly `<pid>`. A Stop now that follows records over
  * it under its own key, and its reason replaces the trap's.
+ *
+ * `--signal <name>` (only with `--self`) names the signal the trap caught, and
+ * the loop state's `stopReason` records it with `self: true` — an operator's
+ * Stop now writes `self: false` and no signal — so the dashboard's reconciler
+ * can tell a loop a host shutdown stopped from one an operator stopped (#6).
  *
  * A project put to sleep (`ralph/project-sleep.ts`) holds the loop too, with
  * the detail `sleep`, but only at a poll between iterations: one with
@@ -2043,13 +2048,23 @@ function runInterrupted(root: string, argv: string[]): number {
   // there is the trap's, and the operator's reason is the one worth keeping.
   // A replay under a key already applied changes neither record.
   const replaces = loop.stopReason?.kind === "interrupted" && self === null && !replay;
+  const signal = flagValue(argv, "signal");
   if (loop.stopReason === null || replaces) {
     const detail = self === null ? `stopped now by an operator (${key})` : `stopped by a signal (${key})`;
     writeState(
       join(root, STATE_RELATIVE_PATH),
       applyRecord(
         loop,
-        { event: "interrupted", detail, stop: { kind: "interrupted", why } },
+        {
+          event: "interrupted",
+          detail,
+          stop: {
+            kind: "interrupted",
+            why,
+            self: self !== null,
+            ...(signal !== null && self !== null ? { signal } : {}),
+          },
+        },
         { run: loop.run, loop: loop.owner.loop, pid: loop.owner.pid, host: loop.owner.host, worktree: loop.worktree },
         nowIso,
       ),

@@ -51,7 +51,7 @@ end_on_signal() { # <name> <number>
   trap '' TERM INT HUP
   signal_descendants
   timeout "${RALPH_SIGNAL_RECORD_TIMEOUT:-5}" bun "${RALPH_HOME}/controls.ts" interrupted --self "$$" \
-    --key "signal-${RALPH_RUN_ID}" --why "stopped by ${1} (a shutdown, a reboot or a kill)" >/dev/null 2>&1 || true
+    --signal "${1}" --key "signal-${RALPH_RUN_ID}" --why "stopped by ${1} (a shutdown, a reboot or a kill)" >/dev/null 2>&1 || true
   # Straight to the file: the terminal a SIGHUP came from is gone.
   printf '%s\n' "${LOOP_DISPLAY:-ralph}: ${1} received — recorded as interrupted; Start or Resume work picks it up." \
     >> "${SUPERVISOR_LOG:-/dev/null}" 2>/dev/null || true

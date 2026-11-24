@@ -242,6 +242,15 @@ export interface StopReason {
   kind: StopKind;
   why: string;
   at: string;
+  /**
+   * The signal that ended the supervisor ("SIGTERM"), and whether the
+   * supervisor's own trap recorded the stop (`true`) or an operator's Stop now
+   * did (`false`). The dashboard's reconciler reads them to restart a loop a
+   * host shutdown stopped before the current boot (#6). Absent on records
+   * written before they existed, and on a malformed value.
+   */
+  signal?: string;
+  self?: boolean;
 }
 
 export interface LoopEvent {
@@ -528,6 +537,8 @@ export function parseLoopState(raw: string): LoopState | null {
           kind: stopRaw.kind,
           why: typeof stopRaw.why === "string" ? stopRaw.why : "",
           at: typeof stopRaw.at === "string" ? stopRaw.at : heartbeat,
+          ...(typeof stopRaw.signal === "string" && stopRaw.signal !== "" ? { signal: stopRaw.signal } : {}),
+          ...(typeof stopRaw.self === "boolean" ? { self: stopRaw.self } : {}),
         }
       : null;
 
@@ -1116,7 +1127,7 @@ export interface RecordPatch {
   stage?: Stage;
   iteration?: { index: number; max: number | null };
   branch?: string | null;
-  stop?: { kind: StopKind; why: string };
+  stop?: { kind: StopKind; why: string; signal?: string; self?: boolean };
   session?: string;
   phase?: Phase;
   resumedAt?: Phase;
@@ -1182,7 +1193,13 @@ export function applyRecord(
     heartbeat: nowIso,
     lastEvent: { name: patch.event, at: nowIso, ...(patch.detail ? { detail: patch.detail } : {}) },
     stopReason: patch.stop
-      ? { kind: patch.stop.kind, why: patch.stop.why, at: nowIso }
+      ? {
+          kind: patch.stop.kind,
+          why: patch.stop.why,
+          at: nowIso,
+          ...(patch.stop.signal !== undefined ? { signal: patch.stop.signal } : {}),
+          ...(patch.stop.self !== undefined ? { self: patch.stop.self } : {}),
+        }
       : (prior?.stopReason ?? null),
     ...(session !== undefined ? { session } : {}),
     ...(phase !== undefined ? { phase } : {}),
