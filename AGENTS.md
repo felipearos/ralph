@@ -52,6 +52,8 @@ of the live loops, so it must also pass on a loaded machine.
   CLI `ralph.sh` calls.
 - `gate-verdict-store.ts` — the per-loop record of the verdict a holding
   gate (coder, triager) waits on after an iteration refuted it (#771).
+- `ci-log.ts` — reads a red check's log: routes to `bk-log.ts` (Buildkite) or
+  `gh-actions-log.ts` (GitHub Actions, with a one-time `--rerun`).
 - `controls.ts`, `control-inbox.ts` — the operator command inbox.
 - `speed.ts` — the per-loop claim-to-hand-off ledger and its report (#578).
 - `loop-state.ts`, `observe.ts`, `timeline.ts`, `runner-failure.ts` — durable

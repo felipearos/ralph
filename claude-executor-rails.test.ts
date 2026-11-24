@@ -452,6 +452,7 @@ describe("claude orchestrator rails", () => {
     "git push origin HEAD",
     "gh pr view 7 --json state",
     "bun ${RALPH_HOME}/bk-log.ts 3205",
+    'bun "$RALPH_HOME/ci-log.ts" --pr 12 --rerun',
     'bun "$RALPH_HOME/tracker.ts" view 184',
     'bun "$RALPH_HOME/tracker.ts" done 184',
     'bun "$RALPH_HOME/ui-shots.ts" capture after /modules/checklist',

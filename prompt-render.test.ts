@@ -404,6 +404,21 @@ describe('rendering for Loggd', () => {
     expect(out.slice(flake, out.indexOf('<ralph>RETRY_LATER</ralph>', flake))).not.toContain('retry-blocker');
   });
 
+  // #50: a red check is read through ci-log.ts, which picks the reader by the
+  // check's provider, and a GitHub Actions check has a re-run of its own.
+  it('reads a red check through ci-log.ts and re-runs an Actions check once', () => {
+    const out = render('prompt.md', project).stdout.replace(/\s+/g, ' ');
+    expect(out).toContain('bun "$RALPH_HOME/ci-log.ts" --pr <pr> # or the build or run URL the wait reported');
+    expect(out).toContain('`gh-actions-log.ts` for a GitHub Actions run, `bk-log.ts` for the others, with the same arguments either way.');
+    expect(out).toContain('for a GitHub Actions check, `bun "$RALPH_HOME/ci-log.ts" --pr <pr> --rerun`, which re-runs the failed jobs of every red Actions run at the PR\'s head, once each, and refuses a second attempt');
+    expect(out).toContain('for a GitHub Actions check `ci-log.ts --pr <pr> --rerun` (it re-runs the failed jobs of every red Actions run at the PR\'s head, once each), else the project\'s retry');
+    // The step probe reads bk-log's builds only; an Actions job parks on its check.
+    expect(out).toContain('a CI step passing, as `ci-log.ts` names it; the probe reads only the builds `bk-log.ts` reads, so for a GitHub Actions job park on `{"kind":"check","name":"<check>","on":"pr"}` instead');
+    // The reader is read before anything is re-run.
+    expect(out.indexOf('bun "$RALPH_HOME/ci-log.ts" --pr <pr> #')).toBeLessThan(out.indexOf('--pr <pr> --rerun'));
+    expect(out).not.toContain('"$RALPH_HOME/bk-log.ts"');
+  });
+
   // #432: an operator who applied a needs-migration block's SQL by hand has one
   // command to run, and the block comment has to hand it over pasteable — the
   // operator's shell has no $RALPH_HOME, so the paths are filled in.

@@ -2789,9 +2789,12 @@ also checks that the executor can run the tools briefs name (`bunx`, `npm`,
 `bash ~/ralph/codex-executor.sh --probe-tools`. A `buildkite-logs` warning
 means iterations cannot read CI logs (see "Buildkite logs"); warnings never
 stop a start — though a role may override one: it is a denial for the ci-doctor,
-whose whole iteration is reading those logs. A `buildkite-retry` warning means
-the ci-doctor cannot re-run a candidate flake's failed job itself and so only
-ever sees a second verdict on a rerun somebody else triggered; it is asked of
+whose whole iteration is reading those logs. An `actions-logs` warning is its
+GitHub Actions counterpart: gh's token cannot read the repo's Actions runs, so
+iterations cannot read a red Actions check's logs; it is only ever a warning,
+and asked only of a project with a required check not named `buildkite/…`. A
+`buildkite-retry` warning means the ci-doctor cannot re-run a candidate
+flake's failed job itself and so only ever sees a second verdict on a rerun somebody else triggered; it is asked of
 the ci-doctor alone, since that is the one role declaring the token, and it
 reads the supervisor's lists of resolved and withheld secrets rather than the
 environment, which that token — a `gate` secret — is deliberately kept out of.
@@ -2827,8 +2830,8 @@ setup (the preflight's "denied") stops the loop with the remedy instead.
 **Which checks run is the loop's role's answer** (`roles.ts`, `preflight`), read
 off the project's roster and never off `RALPH_LOOP_ROLE`, so a hand-run
 preflight asks the same list the supervisor does. A triager drops
-`executor-tools`, `buildkite-logs` and `doppler-scope` — it delegates no code,
-reads no CI logs, and is given no application environment, so the secrets CLI is
+`executor-tools`, `buildkite-logs`, `actions-logs` and `doppler-scope` — it
+delegates no code, reads no CI logs, and is given no application environment, so the secrets CLI is
 not required of it either — and a ci-doctor drops `frontier-prerequisites`,
 taking no work off the frontier. A dropped check is not run at all, not merely
 left out of the report. A role also adds to the labels `loop-labels` requires:
@@ -3046,6 +3049,30 @@ fabricating env files.
 Migration generation is allowed; SQL execution and migration application remain
 human-owned. The executor receives `env -i` plus its explicit allowlist and no
 injected credentials. Permission files deny credential recovery tools.
+
+### CI logs: one command, either provider
+
+```bash
+bun ~/ralph/ci-log.ts --pr 12                        # the failing check's reader, picked for you
+bun ~/ralph/ci-log.ts --pr 12 --job test --grep 'FAIL'
+bun ~/ralph/ci-log.ts --pr 12 --rerun                # GitHub Actions only: re-run the failed jobs once
+bun ~/ralph/gh-actions-log.ts --check-token --repo <owner/name>
+```
+
+`ci-log.ts` is what the prompt names for a red check (#50). It hands its
+arguments, unchanged, to the reader of the check's CI provider:
+`gh-actions-log.ts` when the failing check links a GitHub Actions run,
+`bk-log.ts` when it links a Buildkite build, and otherwise by the project's
+required checks (a `buildkite/…` one means Buildkite). A Buildkite project
+reads exactly what `bk-log.ts` printed before.
+
+`gh-actions-log.ts` prints the same digest as `bk-log.ts` (no `history:` or
+`known:` lines) and reads through gh, so it needs no token of its own: gh's
+must read Actions on the repository, which the `actions-logs` preflight
+warning checks. `--rerun` re-runs the run's failed jobs once and refuses a
+run that is still going, one already on its second attempt, or one of a
+commit that is not the PR's head: one re-run per red, as on the Buildkite path.
+A Buildkite check has no session re-run here; the prompt's retry stands.
 
 ### Buildkite logs
 

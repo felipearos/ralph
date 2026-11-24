@@ -266,7 +266,7 @@ If the done label is absent, resume step 7's post-merge cleanup before detaching
    `#<n>` in this repository or `<owner>/<repo>#<n>`, or `null`. `key` is
    what lets the supervisor see two loops waiting on one cause, so it takes
    one of two forms: `ci:<check>:<step>` — the required check and the job or
-   step inside it as `bk-log.ts` prints it, e.g.
+   step inside it as `ci-log.ts` prints it, e.g.
    `ci:buildkite/loggd:production-migrations` — or `ref:<owner>/<repo>#<n>`,
    the PR or ticket that will clear it. Write `ci:` whenever you know the
    step, and put the blocking PR in `clearedBy`; use `ref:` only when there
@@ -817,7 +817,7 @@ Once the gates are green, `verify` is done: write
    "unreadable" and never a reason to block:
 
    ```bash
-   bun "$RALPH_HOME/bk-log.ts" <build-url> --job <step-key> --grep '<regex>'
+   bun "$RALPH_HOME/ci-log.ts" <build-or-run-url> --job <step-key|job-name> --grep '<regex>'
    ```
 
    Always narrow with `--grep` (or save with `--full .ralph/logs` and grep the
@@ -846,13 +846,17 @@ Once the gates are green, `verify` is done: write
    anything:**
 
    ```bash
-   bun "$RALPH_HOME/bk-log.ts" --pr <pr>    # or the build URL the wait reported
+   bun "$RALPH_HOME/ci-log.ts" --pr <pr>    # or the build or run URL the wait reported
    ```
 
+   `ci-log.ts` hands the check to its CI provider's reader, picked by the
+   failing check's link: `gh-actions-log.ts` for a GitHub Actions run,
+   `bk-log.ts` for the others, with the same arguments either way.
    It prints each failed job, the command it was running, the failing tests
    with the first lines of their error, and the exit line; `--full
-   .ralph/logs` saves the whole cleaned log. Under `history:` it prints how
-   many of this branch's recent builds were red, and each failing file that
+   .ralph/logs` saves the whole cleaned log. Where the provider's reader
+   has them, under `history:` it prints how many of this branch's recent
+   builds were red, and each failing file that
    other branches' recent red builds share (`— main included` when main is
    one of them). Under a failing test, a `known:` line is the ci-doctor's own
    recorded verdict on it, and there is a `known infra:` section for open
@@ -871,10 +875,13 @@ Once the gates are green, `verify` is done: write
      either `kind: timeout only`, a known flake, or `also red on other
      branches`.** It is not yours, and it never counts as a strike: no
      number of flake reds blocks the ticket through the budget below. The
-     first flake red in this iteration: re-run CI once (the project's retry
-     if you have one, else an empty commit whose message says why) and hand
-     the wait back. A flake red again after that re-run means the CI host is
-     busy, and re-running into it at once is how rulo parked PR #1814 on
+     first flake red in this iteration: re-run CI once (for a GitHub
+     Actions check, `bun "$RALPH_HOME/ci-log.ts" --pr <pr> --rerun`, which
+     re-runs the failed jobs of every red Actions run at the PR's head, once
+     each, and refuses a second attempt; otherwise the
+     project's retry if you have one, else an empty commit whose message
+     says why) and hand the wait back. A flake red again after that
+     re-run means the CI host is busy, and re-running into it at once is how rulo parked PR #1814 on
      2026-09-29 over a timeout unrelated PR #1809 hit too. Do not re-run and
      do not block: update the handoff note with both builds and the failing
      line, leave the claim and the PR as they are, and end with
@@ -894,12 +901,14 @@ Once the gates are green, `verify` is done: write
 
    **A red check you cannot reproduce has a budget: one re-run and 15
    minutes.** It applies only when the log does not explain the failure (or
-   `bk-log.ts` cannot read it), the failure is not a flake as above, and
+   `ci-log.ts` cannot read it), the failure is not a flake as above, and
    every command the failing job runs is green locally on this exact commit.
    Then the failure is not yours to explain. Spend at most 15 minutes placing
-   it (which job, which step, how far it got), then re-run CI once: the
-   project's retry if you have one, else an empty commit whose message says
-   why. Then hand the wait back. Green is green; carry on to step 6. The
+   it (which job, which step, how far it got), then re-run CI once: for a
+   GitHub Actions check `ci-log.ts --pr <pr> --rerun` (it re-runs the failed
+   jobs of every red Actions run at the PR's head, once each), else the project's
+   retry if you have one, else an empty commit whose message says why.
+   Then hand the wait back. Green is green; carry on to step 6. The
    earlier waits listed in your session's preamble say whether this is the
    second red. Red again means
    stuck, as in §6: comment on the PR with the failing test line quoted from
@@ -996,8 +1005,8 @@ Once the gates are green, `verify` is done: write
          entered the queue. The queue's comment on the PR says which. The PR
          is still open and its branch untouched. A failed queue build is the
          combination with what merged in between, so read that build's log
-         (the enqueue note above says where it runs; `bk-log.ts <build-url>`
-         or `bk-log.ts --branch <queue-branch>` reads it as in §5.4), fix on
+         (the enqueue note above says where it runs; `ci-log.ts <build-url>`
+         or `ci-log.ts --branch <queue-branch>` reads it as in §5.4), fix on
          the PR branch, push,
          hand the CI wait back (`AWAIT_PR <pr> ci`), and re-check this step
          from the top. A PR that never entered the queue was not green in
@@ -1305,7 +1314,9 @@ budget (48h by default). The four kinds, and nothing else:
 - `{"kind":"check","name":"<check>","on":"pr"}` — a check going green on this
   ticket's PR (`"on":"main"` for the base branch's head instead);
 - `{"kind":"step","check":"<check>","step":"<step>"}` — a CI step passing, as
-  `bk-log.ts` names it;
+  `ci-log.ts` names it; the probe reads only the builds `bk-log.ts` reads, so
+  for a GitHub Actions job park on `{"kind":"check","name":"<check>","on":"pr"}`
+  instead;
 - `{"kind":"label-removed","label":"<loop>-blocked"}` — a person taking a
   `-blocked` label off, the one way to wait on a person's decision.
 
@@ -1359,7 +1370,7 @@ nothing else on the ticket tells them apart:
   PR ready.
 - Every other block starts `blocked:`, e.g. `blocked: PR #1276 red twice in CI;
   not reproducible locally`. A CI block quotes the failing line from
-  `bk-log.ts` right after it, e.g. `<job>: FAIL <file> > <test> — Error: …`.
+  `ci-log.ts` right after it, e.g. `<job>: FAIL <file> > <test> — Error: …`.
   If you cannot quote one, you have not read the log yet; read it before
   blocking.
 

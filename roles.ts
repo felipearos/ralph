@@ -141,6 +141,7 @@ export const PREFLIGHT_CHECKS = [
   "github-credentials",
   "loop-labels",
   "clerk-intake-board",
+  "actions-logs",
   "doppler-scope",
 ] as const;
 
@@ -582,11 +583,11 @@ export const ROLE_DESCRIPTORS: Readonly<Record<Role, RoleDescriptor>> = {
       manager: false,
       named: [{ name: "RALPH_CLERK_JIRA_TOKEN", check: "clerk/jira.ts --check-token", targets: ["gate"] }],
     },
-    // Three drops, each a prerequisite this role never reaches: it delegates no
-    // code, so the executor's sandbox is nothing to it; it reads no CI logs; and
-    // it is given no application environment at all (`secrets.manager` above),
-    // so a Doppler scope it can never be handed would refuse every start for a
-    // credential it cannot use.
+    // Four drops, each a prerequisite this role never reaches: it delegates no
+    // code, so the executor's sandbox is nothing to it; it reads no CI logs,
+    // Buildkite's or GitHub Actions'; and it is given no application
+    // environment at all (`secrets.manager` above), so a Doppler scope it can
+    // never be handed would refuse every start for a credential it cannot use.
     //
     // Its labels ARE required. A triager's product is a label, and one that does
     // not exist in the repository makes `gh issue edit` fail on an issue the
@@ -594,7 +595,7 @@ export const ROLE_DESCRIPTORS: Readonly<Record<Role, RoleDescriptor>> = {
     // `-wip` is. `javLabels` because the difficulty labels a triager applies are
     // configured per project, and they are what every coder's intake is routed by.
     preflight: {
-      checks: without("executor-tools", "buildkite-logs", "doppler-scope"),
+      checks: without("executor-tools", "buildkite-logs", "actions-logs", "doppler-scope"),
       verdicts: {},
       labels: [...TRIAGE_LABELS],
       requiresDifficultyLabels: true,
@@ -886,16 +887,16 @@ export const ROLE_DESCRIPTORS: Readonly<Record<Role, RoleDescriptor>> = {
     },
     // `frontier-prerequisites` drops because it takes nothing off the
     // frontier, and a harness checkout missing the coder's gate is no reason to
-    // refuse a loop that never runs it. `buildkite-logs` drops too, as the
-    // triager's does: it never reads why a CI check is red, so a missing read
-    // token would warn on every start of a loggd verifier over nothing it
-    // needs, and train the operator to skip warnings. Its verdict labels are the spec's loop-labels
+    // refuse a loop that never runs it. `buildkite-logs` and `actions-logs`
+    // drop too, as the triager's do: it never reads why a CI check is red, so
+    // a missing read token would warn on every start of a loggd verifier over
+    // nothing it needs, and train the operator to skip warnings. Its verdict labels are the spec's loop-labels
     // requirement (felipearos/ralph#560): a ticket it follows is marked with
     // one of them, so a project missing any of them would fail the first
     // verdict it writes. They are in `CREATED_LABELS`, so preflight makes them
     // on a GitHub tracker. No difficulty labels, because it routes nothing.
     preflight: {
-      checks: without("frontier-prerequisites", "buildkite-logs"),
+      checks: without("frontier-prerequisites", "buildkite-logs", "actions-logs"),
       verdicts: {},
       labels: ["following", "verified", "unexercised", "inconclusive", "needs-human"],
       requiresDifficultyLabels: false,
@@ -952,7 +953,7 @@ export const ROLE_DESCRIPTORS: Readonly<Record<Role, RoleDescriptor>> = {
     // filed; it is in `CREATED_LABELS`, so preflight makes it on a GitHub
     // tracker. No difficulty labels, because it routes nothing.
     preflight: {
-      checks: without("frontier-prerequisites", "buildkite-logs"),
+      checks: without("frontier-prerequisites", "buildkite-logs", "actions-logs"),
       verdicts: {},
       labels: ["ready-for-human"],
       requiresDifficultyLabels: false,
