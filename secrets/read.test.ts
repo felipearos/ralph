@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFileSync, spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -57,6 +58,14 @@ describe("bun secrets/read.ts", () => {
     expect(readSecret(["API_TOKEN"], env)).toMatchObject({ status: 0, stdout: "tok_env" });
     // STORED is only in the fake Doppler: an environment read must not find it.
     expect(readSecret(["STORED"], env)).toMatchObject({ status: 3, stdout: "" });
+  });
+
+  it("reads the file named by RALPH_SECRETS_FILE under the dotenv runner", () => {
+    const file = join(scratchDir("ralph-read-dotenv-"), "secrets.env");
+    writeFileSync(file, 'API_TOKEN="tok_file"\n');
+    const env = { RALPH_NAMED_SECRETS_RUNNER: "dotenv", RALPH_SECRETS_FILE: file, API_TOKEN: "tok_env" };
+    expect(readSecret(["API_TOKEN"], env)).toMatchObject({ status: 0, stdout: "tok_file" });
+    expect(readSecret(["NOT_THERE"], env)).toMatchObject({ status: 3, stdout: "" });
   });
 
   it("exits 2 on a usage error", () => {
