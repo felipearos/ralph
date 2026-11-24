@@ -22,6 +22,7 @@ import {
   resultPath,
   type Labels,
 } from "./merge-wait";
+import { mergeEnqueue } from "./models";
 import type { WaitResult } from "./pr-wait";
 import { subprocessSuite } from "./test-timeouts";
 
@@ -290,6 +291,45 @@ describe("the merge method decides what in the queue means", () => {
     expect(result.status).toBe(EXIT.usage);
     expect(result.stderr).toMatch(/--method must be one of mergify, github-queue, direct/);
     expect(result.argv).toEqual([]);
+  });
+});
+
+describe("each method's enqueue command, as the prompt renders it, against the fake (#51)", () => {
+  /**
+   * The command step 6 tells the loop to run is prompt text, so the test
+   * takes it from the rendered block itself: the first line of the first
+   * bash fence. Running that line through `sh` against the fake `gh` pins
+   * the argv the loop's enqueue actually sends, not a paraphrase of it.
+   */
+  const enqueueCommand = (method: "mergify" | "github-queue" | "direct"): string => {
+    const fenced = /```bash\n\s*(.+)\n/.exec(mergeEnqueue(method));
+    const command = fenced?.[1];
+    if (command === undefined) throw new Error(`no enqueue command rendered for ${method}`);
+    return command.replaceAll("<pr>", "948");
+  };
+
+  const enqueue = (method: "mergify" | "github-queue" | "direct"): { status: number | null; argv: string[] } => {
+    const dir = mkdtempSync(join(fakeBinDir, "enqueue-"));
+    writeFileSync(join(dir, "0.json"), "");
+    const result = spawnSync("sh", ["-c", enqueueCommand(method)], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`, FAKE_DIR: dir },
+    });
+    return { status: result.status, argv: readFileSync(join(dir, "argv"), "utf8").trim().split("\n") };
+  };
+
+  it.each([
+    ["mergify", "gh pr comment 948 --body @mergifyio queue"],
+    ["github-queue", "gh pr merge 948"],
+    ["direct", "gh pr merge 948 --squash"],
+  ] as const)("%s enqueues with `%s`, and its wait then returns merged", (method, argv) => {
+    const sent = enqueue(method);
+    expect(sent.status).toBe(0);
+    expect(sent.argv).toEqual([argv]);
+
+    const IN = JSON.stringify({ data: { repository: { pullRequest: { isInMergeQueue: true, autoMergeRequest: null } } } });
+    const waited = run([method === "mergify" ? QUEUED : OPEN, MERGED], ["--method", method], {}, [IN]);
+    expect(waited.status).toBe(EXIT.merged);
   });
 });
 
