@@ -11,6 +11,7 @@ split.
 - **Workaround:** Not the diff. First red: re-run CI with an empty commit. Second red: RETRY_LATER without re-running; block only at the 4th flake red per harness §5.4.
 - **Fix:** #3749
 - **Seen again:** 2026-11-24
+- **Seen again:** 2026-11-24
 
 ### Mobile DiaryTab Books-mode empty-state test fails on main and dequeues every PR (2026-11-23)
 <!-- learning: mobile-diarytab-books-empty-state-fails-on-main -->
