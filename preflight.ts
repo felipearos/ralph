@@ -81,6 +81,7 @@ import { keyedTriagerLabels, type AppLabels } from "./triage/intake";
 import { TrackerUnavailableError, type Tracker } from "./tracker/types";
 import { JIRA_TOKEN_ENV, JiraError, jiraClient, parseJiraToken, type JiraClient } from "./clerk/jira";
 import { SENTRY_TOKEN_ENV, VERCEL_TOKEN_ENV } from "./verifier/credentials";
+import { isRateLimited } from "./pr-wait";
 import {
   CREATED_LABELS,
   DEFAULT_ROLE,
@@ -1091,7 +1092,9 @@ export async function checkActionsLogs(
   // gh prints the response body on stdout before its own `gh: … (HTTP 403)` line, so prefer that line.
   const lines = ran.output.split("\n").map((line) => line.trim()).filter((line) => line !== "");
   const first = lines.find((line) => line.startsWith("gh:")) ?? lines[0] ?? "gh printed nothing";
-  if (ran.timedOut || !/HTTP 40[34]|resource not accessible/i.test(ran.output)) {
+  // GitHub answers a rate limit with a 403 too; that is "try later", not a
+  // missing scope, and a wrong remedy teaches an operator to skip warnings.
+  if (ran.timedOut || isRateLimited(ran.output) || !/HTTP 40[34]|resource not accessible/i.test(ran.output)) {
     return {
       name: "actions-logs",
       outcome: {

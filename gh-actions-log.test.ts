@@ -8,7 +8,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Gh, GhResult } from "./pr-wait";
 import { cleanActionsLog, main, parseActionsUrl, probeActionsRead } from "./gh-actions-log";
@@ -164,7 +164,6 @@ describe("the digest", () => {
   it("reads a log through a gh too old to know --allow-escape-sequences", () => {
     capture();
     const old = routes();
-    delete old[`api --allow-escape-sequences repos/${REPO}/actions/jobs/9001/logs`];
     old[`api --allow-escape-sequences repos/${REPO}/actions/jobs/9001/logs`] = {
       status: 1,
       stderr: "unknown flag: --allow-escape-sequences",
@@ -365,4 +364,3 @@ describe("failures", () => {
   });
 });
 
-afterAll(() => vi.restoreAllMocks());

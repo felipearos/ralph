@@ -1986,6 +1986,14 @@ describe("whether gh can read a project's GitHub Actions logs (#50)", () => {
     expect((await checkActionsLogs(config(["test"]), down))!.outcome).toMatchObject({ status: "warn", why: expect.stringContaining("could not be reached") });
   });
 
+  it("reads a rate limit's 403 as unreachable, not as a missing scope", async () => {
+    const { read } = reader({ ok: false, output: "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n" });
+    const outcome = (await checkActionsLogs(config(["test"]), read))!.outcome as { status: string; why: string; remedy: string };
+    expect(outcome.status).toBe("warn");
+    expect(outcome.why).toContain("could not be reached");
+    expect(outcome.remedy).not.toContain("read access");
+  });
+
   it("asks gh nothing of a project with no required check that could be an Actions job", async () => {
     const { calls, read } = reader({ ok: true });
     expect(await checkActionsLogs(config(["buildkite/acme-app"]), read)).toBeNull();

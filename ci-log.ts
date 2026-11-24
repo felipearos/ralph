@@ -40,7 +40,7 @@ export const BUILDKITE_RERUN_REFUSAL =
 
 /** The project's CI: a required `buildkite/…` check means Buildkite runs it. */
 export function projectProvider(requiredChecks: readonly string[]): Provider {
-  return requiredChecks.some((name) => name.trim().startsWith("buildkite/")) ? "buildkite" : "actions";
+  return requiredChecks.some((name) => name.startsWith("buildkite/")) ? "buildkite" : "actions";
 }
 
 // Only a URL names its provider: parseBuildRef also takes a bare number, which
@@ -67,8 +67,13 @@ export function routeFor(input: RouteInput): Route {
   const failing = (Array.isArray(input.rollup) ? input.rollup : [])
     .map(parseCheck)
     .filter((check) => check !== null && check.state === "fail" && check.url !== null);
-  const buildkite = failing.some((check) => isBuildkiteUrl(check!.url!));
-  const actions = failing.some((check) => parseActionsUrl(check!.url!) !== null);
+  // The failing REQUIRED checks decide when there are any: a red optional
+  // workflow beside a red required Buildkite build must not swap the reader a
+  // Buildkite project has always got, nor add a second one to its output.
+  const required = failing.filter((check) => input.requiredChecks.includes(check!.name));
+  const deciding = required.length > 0 ? required : failing;
+  const buildkite = deciding.some((check) => isBuildkiteUrl(check!.url!));
+  const actions = deciding.some((check) => parseActionsUrl(check!.url!) !== null);
   if (buildkite && actions) return ["buildkite", "actions"];
   if (buildkite) return ["buildkite"];
   if (actions) return ["actions"];
@@ -145,6 +150,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
       const rollup = args.target === null && args.pr !== null ? readRollup(gh, args.pr, args.repo ?? facts.repo) : undefined;
       route = routeFor({ target: args.target, rollup, requiredChecks: facts.checks });
     }
+    // A re-run with an Actions run on the route is that run's re-run: printing
+    // the Buildkite refusal beside it would read as "nothing was re-run" and
+    // send the session to push an empty commit over the re-run it just started.
+    if (args.rerun && route.includes("actions")) route = ["actions"];
     let code = 0;
     for (const provider of route) {
       let result: number;

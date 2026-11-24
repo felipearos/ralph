@@ -855,8 +855,8 @@ Once the gates are green, `verify` is done: write
    It prints each failed job, the command it was running, the failing tests
    with the first lines of their error, and the exit line; `--full
    .ralph/logs` saves the whole cleaned log. Where the provider's reader
-   has them, under `history:` it prints how
-   many of this branch's recent builds were red, and each failing file that
+   has them, under `history:` it prints how many of this branch's recent
+   builds were red, and each failing file that
    other branches' recent red builds share (`— main included` when main is
    one of them). Under a failing test, a `known:` line is the ci-doctor's own
    recorded verdict on it, and there is a `known infra:` section for open
@@ -879,8 +879,8 @@ Once the gates are green, `verify` is done: write
      Actions check, `bun "$RALPH_HOME/ci-log.ts" --pr <pr> --rerun`, which
      re-runs the failed jobs and refuses a second attempt; otherwise the
      project's retry if you have one, else an empty commit whose message
-     says why) and hand the wait back. A flake red again after that re-run means the CI host is
-     busy, and re-running into it at once is how rulo parked PR #1814 on
+     says why) and hand the wait back. A flake red again after that
+     re-run means the CI host is busy, and re-running into it at once is how rulo parked PR #1814 on
      2026-09-29 over a timeout unrelated PR #1809 hit too. Do not re-run and
      do not block: update the handoff note with both builds and the failing
      line, leave the claim and the PR as they are, and end with
@@ -905,7 +905,8 @@ Once the gates are green, `verify` is done: write
    Then the failure is not yours to explain. Spend at most 15 minutes placing
    it (which job, which step, how far it got), then re-run CI once: for a
    GitHub Actions check `ci-log.ts --pr <pr> --rerun`, else the project's
-   retry if you have one, else an empty commit whose message says why. Then hand the wait back. Green is green; carry on to step 6. The
+   retry if you have one, else an empty commit whose message says why.
+   Then hand the wait back. Green is green; carry on to step 6. The
    earlier waits listed in your session's preamble say whether this is the
    second red. Red again means
    stuck, as in §6: comment on the PR with the failing test line quoted from

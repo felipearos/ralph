@@ -2792,10 +2792,9 @@ stop a start — though a role may override one: it is a denial for the ci-docto
 whose whole iteration is reading those logs. An `actions-logs` warning is its
 GitHub Actions counterpart: gh's token cannot read the repo's Actions runs, so
 iterations cannot read a red Actions check's logs; it is only ever a warning,
-and asked only of a project with a required check not named `buildkite/…`.
-A `buildkite-retry` warning means
-the ci-doctor cannot re-run a candidate flake's failed job itself and so only
-ever sees a second verdict on a rerun somebody else triggered; it is asked of
+and asked only of a project with a required check not named `buildkite/…`. A
+`buildkite-retry` warning means the ci-doctor cannot re-run a candidate
+flake's failed job itself and so only ever sees a second verdict on a rerun somebody else triggered; it is asked of
 the ci-doctor alone, since that is the one role declaring the token, and it
 reads the supervisor's lists of resolved and withheld secrets rather than the
 environment, which that token — a `gate` secret — is deliberately kept out of.
@@ -2831,8 +2830,8 @@ setup (the preflight's "denied") stops the loop with the remedy instead.
 **Which checks run is the loop's role's answer** (`roles.ts`, `preflight`), read
 off the project's roster and never off `RALPH_LOOP_ROLE`, so a hand-run
 preflight asks the same list the supervisor does. A triager drops
-`executor-tools`, `buildkite-logs`, `actions-logs` and `doppler-scope` — it delegates no code,
-reads no CI logs, and is given no application environment, so the secrets CLI is
+`executor-tools`, `buildkite-logs`, `actions-logs` and `doppler-scope` — it
+delegates no code, reads no CI logs, and is given no application environment, so the secrets CLI is
 not required of it either — and a ci-doctor drops `frontier-prerequisites`,
 taking no work off the frontier. A dropped check is not run at all, not merely
 left out of the report. A role also adds to the labels `loop-labels` requires:

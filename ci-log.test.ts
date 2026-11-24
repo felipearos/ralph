@@ -88,11 +88,20 @@ describe("ci-log routing by PR", () => {
   it("runs both readers, Buildkite first, when both kinds are failing; exit is the first non-zero", async () => {
     const r = readers({ buildkite: 0, actions: 2 });
     const argv = ["--pr", "12"];
-    expect(await main(argv, ACTIONS_PROJECT, { gh: rollupGh([failingActions, failingBuildkite]), ...r })).toBe(2);
+    const both = { ...ACTIONS_PROJECT, RALPH_REQUIRED_CHECKS: "buildkite/acme-app\ntest" };
+    expect(await main(argv, both, { gh: rollupGh([failingActions, failingBuildkite]), ...r })).toBe(2);
     expect(r.calls).toEqual([
       { reader: "buildkite", argv },
       { reader: "actions", argv },
     ]);
+  });
+
+  it("lets the failing required checks decide over a failing optional one", async () => {
+    const r = readers();
+    const optionalActions = { ...failingActions, name: "nightly" };
+    const argv = ["--pr", "12"];
+    expect(await main(argv, BK_PROJECT, { gh: rollupGh([optionalActions, failingBuildkite]), ...r })).toBe(0);
+    expect(r.calls).toEqual([{ reader: "buildkite", argv }]);
   });
 
   it("routes by the project when nothing is failing", async () => {
@@ -145,6 +154,16 @@ describe("ci-log --rerun", () => {
     expect(await main(["--pr", "12", "--rerun"], ACTIONS_PROJECT, { gh: rollupGh([failingBuildkite]), ...r })).toBe(1);
     expect(r.calls).toEqual([]);
     expect(err).toEqual([BUILDKITE_RERUN_REFUSAL]);
+  });
+
+  it("re-runs only the Actions run, without the Buildkite refusal, when both are failing", async () => {
+    const err: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void err.push(args.join(" ")));
+    const r = readers();
+    const argv = ["--pr", "12", "--rerun"];
+    expect(await main(argv, ACTIONS_PROJECT, { gh: rollupGh([failingActions, failingBuildkite]), ...r })).toBe(0);
+    expect(r.calls).toEqual([{ reader: "actions", argv }]);
+    expect(err).toEqual([]);
   });
 
   it("passes a re-run on an Actions route to gh-actions-log", async () => {
