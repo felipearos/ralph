@@ -77,6 +77,8 @@ import { push } from "../push-notification";
 import { loopsWithRole } from "../roster";
 import { retryOnce, type RetryDeps, type RetryResult } from "./retry";
 import { GitFacts, defaultScanOptions, gitIn, scan } from "./scan";
+import { actionsSource, isActionsProject } from "./actions-source";
+import { runGhForLogs } from "../gh-actions-log";
 import {
   controlSliceSeconds,
   formatDuration,
@@ -961,20 +963,52 @@ export const ghRunner: Gh = (args) =>
     });
   });
 
-/** The Buildkite poll, wired as `ci-doctor/scan.ts`'s own CLI wires it. */
+/**
+ * What the scan and the retry both read about the project: its required
+ * checks (which say whose CI it is), its repository and base branch, and its
+ * config. Read leniently: a missing config leaves the env's answers, and the
+ * caller decides what an empty one means.
+ */
+function projectCi(root: string, env: NodeJS.ProcessEnv): { required: string[]; repo: string | null; baseBranch: string; config: unknown } {
+  let config: unknown = null;
+  let repo: string | null = env.RALPH_PROJECT_REPO?.trim() || null;
+  let baseBranch = env.RALPH_BASE_BRANCH?.trim() || "";
+  // `host-lease.ts`'s own reader, not a second copy of the split: the two
+  // copies disagreed by a `.trim()`, and `readCi` matches a check name exactly.
+  let required: string[] = requiredChecksFrom(env);
+  try {
+    const loaded = loadProjectConfig(root);
+    config = loaded;
+    repo ??= loaded.repo;
+    if (baseBranch === "") baseBranch = loaded.baseBranch;
+    if (required.length === 0) required = [...loaded.requiredChecks];
+  } catch {
+    // Read leniently, as `pollSeconds` does: a project without a readable
+    // config still gets the ceilings `retry.ts` clamps to.
+  }
+  return { required, repo, baseBranch, config };
+}
+
+/** The poll, wired as `ci-doctor/scan.ts`'s own CLI wires it: Buildkite builds, or GitHub Actions runs. */
 async function scanOnce(storePath: string, root: string, env: NodeJS.ProcessEnv): Promise<{ ok: boolean; why: string }> {
+  const project = projectCi(root, env);
+  const baseBranch = project.baseBranch || "main";
+  if (isActionsProject(project.required, env)) {
+    const repo = project.repo;
+    if (repo === null) return { ok: false, why: "no repository to read GitHub Actions from" };
+    const [owner = repo, name = repo] = repo.split("/");
+    try {
+      const source = actionsSource(runGhForLogs, repo, { workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null });
+      await scan(source, new GitFacts(gitIn(root), baseBranch), storePath, defaultScanOptions(owner, name, { baseBranch }));
+      return { ok: true, why: "" };
+    } catch (error) {
+      return { ok: false, why: `GitHub Actions could not be read (${error instanceof Error ? error.message : String(error)})` };
+    }
+  }
   const token = tokenFrom(env);
   if (token === null) return { ok: false, why: "no Buildkite token — RALPH_BUILDKITE_READ_TOKEN is not set" };
   const pipeline = configuredPipeline(env);
   if (pipeline === null) return { ok: false, why: "no Buildkite pipeline configured" };
-  let baseBranch = env.RALPH_BASE_BRANCH?.trim() || "";
-  if (baseBranch === "") {
-    try {
-      baseBranch = loadProjectConfig(root).baseBranch;
-    } catch {
-      baseBranch = "main";
-    }
-  }
   const api = new Buildkite(token);
   try {
     const org = await resolveOrg(api, env, pipeline);
@@ -1009,6 +1043,8 @@ export function retryDep(root: string, env: NodeJS.ProcessEnv): NonNullable<Poll
  * under the same fences and must not be wired a second way.
  */
 export function retryDepsFrom(root: string, env: NodeJS.ProcessEnv): Omit<RetryDeps, "afford"> | undefined {
+  const project = projectCi(root, env);
+  if (isActionsProject(project.required, env)) return actionsRetryDeps(root, project);
   const token = retryTokenFrom(env);
   const readToken = tokenFrom(env);
   const pipeline = configuredPipeline(env);
@@ -1020,22 +1056,7 @@ export function retryDepsFrom(root: string, env: NodeJS.ProcessEnv): Omit<RetryD
   // unless `RALPH_BUILDKITE_ORG` happened to be set, and printed a `fault`
   // line each time. Both review axes found it independently.
   if (token === null || readToken === null || pipeline === null) return undefined;
-  let config: unknown = null;
-  let repo: string | null = env.RALPH_PROJECT_REPO?.trim() || null;
-  let baseBranch = env.RALPH_BASE_BRANCH?.trim() || "";
-  // `host-lease.ts`'s own reader, not a second copy of the split: the two
-  // copies disagreed by a `.trim()`, and `readCi` matches a check name exactly.
-  let required: string[] = requiredChecksFrom(env);
-  try {
-    const loaded = loadProjectConfig(root);
-    config = loaded;
-    repo ??= loaded.repo;
-    if (baseBranch === "") baseBranch = loaded.baseBranch;
-    if (required.length === 0) required = [...loaded.requiredChecks];
-  } catch {
-    // Read leniently, as `pollSeconds` does: a project without a readable
-    // config still gets the ceilings `retry.ts` clamps to.
-  }
+  const { config, repo, baseBranch, required } = project;
   if (repo === null || baseBranch === "") return undefined;
   const writer = new Buildkite(token);
   const reader = new Buildkite(readToken);
@@ -1066,6 +1087,43 @@ export function retryDepsFrom(root: string, env: NodeJS.ProcessEnv): Omit<RetryD
     },
   };
   return deps;
+}
+
+/** `git ls-remote` for one branch's head, or null. */
+const headOf =
+  (root: string) =>
+  (branch: string): string | null => {
+    const out = gitIn(root)(["ls-remote", "--heads", "origin", branch]);
+    const sha = out === null ? null : /^([0-9a-f]{40})\s/.exec(out)?.[1];
+    return sha ?? null;
+  };
+
+/**
+ * The retry for a GitHub Actions project: one job re-run through gh's own
+ * auth, so no token of ours is needed. The organization and pipeline retry.ts
+ * passes along are the repo itself; the job id is all the path needs.
+ */
+function actionsRetryDeps(root: string, project: ReturnType<typeof projectCi>): Omit<RetryDeps, "afford"> | undefined {
+  const { config, repo, baseBranch, required } = project;
+  if (repo === null || baseBranch === "") return undefined;
+  return {
+    storePath: storePathFromGit(root),
+    org: async () => repo,
+    pipeline: repo,
+    retryPath: (_org, _pipeline, _build, job) => `repos/${repo}/actions/jobs/${job}/rerun`,
+    baseBranch,
+    config,
+    now: () => Date.now(),
+    // A failed POST rejects with gh's own words, so retry.ts reports a `fault`.
+    put: async (path) => {
+      const ran = await ghRunner(["api", "-X", "POST", path]);
+      if (!ran.ok) throw new Error((ran.stderr || ran.stdout || "gh api failed").trim());
+    },
+    readCi: () => readCi(repo, baseBranch, required),
+    hostLeaseBusy: () => leaseInUse(readHostLeaseStore(hostLeaseStorePath(root)), Date.now()),
+    ciReadCalls: CI_READ_GH_CALLS,
+    branchHead: headOf(root),
+  };
 }
 
 function deps(root: string, loop: string): PollDeps {

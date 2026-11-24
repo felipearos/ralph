@@ -45,9 +45,12 @@ import {
   type Failure as DigestFailure,
   type Job,
 } from "../bk-log";
+import { runGhForLogs } from "../gh-actions-log";
+import { requiredChecksFrom } from "../host-lease";
 import { projectRoot } from "../paths";
 import { loadProjectConfig } from "../project-config";
 import { DEFAULT_CLASSIFY, QUEUE_BRANCH, classify, mergeCases, type ClassifyOptions } from "./classify";
+import { actionsSource, isActionsProject } from "./actions-source";
 import { rekeyJestIdentities } from "./rekey";
 import {
   FINISHED_BUILD_STATES,
@@ -593,30 +596,53 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     console.error(`ci-doctor/scan: unknown argument ${unknown[0]}\nusage: ci-doctor/scan.ts [--json]`);
     return 64;
   }
-  const token = tokenFrom(env);
-  if (token === null) {
-    console.error("ci-doctor/scan: no Buildkite token — RALPH_BUILDKITE_READ_TOKEN is not set");
-    return 1;
-  }
-  const pipeline = configuredPipeline(env);
-  if (pipeline === null) {
-    console.error("ci-doctor/scan: which pipeline? set RALPH_BUILDKITE_PIPELINE, or require a buildkite/<slug> check");
-    return 1;
-  }
   const root = projectRoot(process.cwd(), env);
   let baseBranch = env.RALPH_BASE_BRANCH?.trim() || "";
-  if (baseBranch === "") {
-    try {
-      baseBranch = loadProjectConfig(root).baseBranch;
-    } catch {
-      baseBranch = DEFAULT_CLASSIFY.baseBranch;
-    }
-  }
-  const api = new Buildkite(token);
+  let repo: string | null = env.RALPH_PROJECT_REPO?.trim() || null;
+  let required = requiredChecksFrom(env);
   try {
-    const org = await resolveOrg(api, env, pipeline);
-    const options = defaultScanOptions(org, pipeline, { baseBranch });
-    const result = await scan(api, new GitFacts(gitIn(root), baseBranch), storePathFromGit(root), options);
+    const config = loadProjectConfig(root);
+    if (baseBranch === "") baseBranch = config.baseBranch;
+    repo ??= config.repo;
+    if (required.length === 0) required = [...config.requiredChecks];
+  } catch {
+    // No readable config: the env's answers, and the default base branch.
+  }
+  if (baseBranch === "") baseBranch = DEFAULT_CLASSIFY.baseBranch;
+  // A project whose required checks name no Buildkite pipeline runs GitHub
+  // Actions, read through gh's own auth: no token of ours is needed.
+  const actions = isActionsProject(required, env);
+  let source: Buildkite | BuildSource;
+  let pipeline: string | null = null;
+  if (actions) {
+    if (repo === null) {
+      console.error("ci-doctor/scan: no repository to read GitHub Actions from — set RALPH_PROJECT_REPO");
+      return 1;
+    }
+    source = actionsSource(runGhForLogs, repo, { workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null });
+  } else {
+    const token = tokenFrom(env);
+    if (token === null) {
+      console.error("ci-doctor/scan: no Buildkite token — RALPH_BUILDKITE_READ_TOKEN is not set");
+      return 1;
+    }
+    pipeline = configuredPipeline(env);
+    if (pipeline === null) {
+      console.error("ci-doctor/scan: which pipeline? set RALPH_BUILDKITE_PIPELINE, or require a buildkite/<slug> check");
+      return 1;
+    }
+    source = new Buildkite(token);
+  }
+  try {
+    let options: ScanOptions;
+    if (source instanceof Buildkite) {
+      const org = await resolveOrg(source, env, pipeline!);
+      options = defaultScanOptions(org, pipeline!, { baseBranch });
+    } else {
+      const [owner = repo!, name = repo!] = repo!.split("/");
+      options = defaultScanOptions(owner, name, { baseBranch });
+    }
+    const result = await scan(source, new GitFacts(gitIn(root), baseBranch), storePathFromGit(root), options);
     if (argv.includes("--json")) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -631,7 +657,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     return 0;
   } catch (error) {
     if (error instanceof HelperError) {
-      console.error(`ci-doctor/scan: ${error.message}`);
+      console.error(`ci-doctor/scan: ${actions ? "GitHub Actions could not be read: " : ""}${error.message}`);
       return error.code === 64 ? 64 : error.code === 1 ? 1 : 2;
     }
     throw error;

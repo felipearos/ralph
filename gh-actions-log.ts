@@ -682,9 +682,10 @@ function jobLogs(
  * `runGh` with room for a job log. Its 30s timeout and the default output cap
  * suit a JSON read, but a verbose test job's log runs to megabytes, and a log
  * cut off there reads as "unreadable" and sends the session to re-run what it
- * could have read.
+ * could have read. Exported for the ci-doctor's Actions scan, which reads the
+ * same logs.
  */
-const runGhForLogs: Gh = (args) => {
+export const runGhForLogs: Gh = (args) => {
   const result = spawnSync("gh", args, { encoding: "utf8", timeout: 120_000, maxBuffer: 256 * 1024 * 1024 });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", error: result.error };
 };

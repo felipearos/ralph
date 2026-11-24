@@ -10,6 +10,7 @@
  */
 import { HelperError, type Job } from "../bk-log";
 import { cleanActionsLog, failedStep, readJobs, readLog, type ActionsJob, type ActionsRun } from "../gh-actions-log";
+import { projectProvider } from "../ci-log";
 import type { Gh } from "../pr-wait";
 import type { ApiBuild, BuildSource } from "./scan";
 
@@ -123,4 +124,15 @@ export function actionsSource(gh: Gh, repo: string, options: { workflow?: string
       return cleanActionsLog(readLog(gh, repo, Number(job.id)));
     },
   };
+}
+
+/**
+ * Is this project's CI GitHub Actions? `ci-log.ts`'s rule (no required
+ * `buildkite/…` check), except that a named Buildkite pipeline always wins: a
+ * Buildkite project that sets `RALPH_BUILDKITE_PIPELINE` but whose required
+ * checks are unreadable must keep its Buildkite doctor, not lose it to gh.
+ */
+export function isActionsProject(required: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  if (env.RALPH_BUILDKITE_PIPELINE?.trim()) return false;
+  return projectProvider(required) === "actions";
 }

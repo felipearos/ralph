@@ -510,19 +510,21 @@ describe("the retry, wired into the poll (#161)", () => {
       expect(retryDep(PROJECT, { ...both, RALPH_BUILDKITE_READ_TOKEN: "" })).toBeUndefined();
     });
 
-    it("is not wired without a retry token, or without a pipeline to retry in", () => {
+    it("is not wired without a retry token", () => {
       expect(retryDep(PROJECT, { ...both, RALPH_BUILDKITE_RETRY_TOKEN: "" })).toBeUndefined();
-      // No `RALPH_BUILDKITE_PIPELINE`, and a project whose required checks name
-      // no `buildkite/<slug>` one: there is no pipeline to address a retry at.
+    });
+
+    it("wires the GitHub Actions retry, with no Buildkite token, when no required check is a buildkite/<slug> one (#52)", () => {
+      // Such a project's CI is Actions (`ci-log.ts`'s projectProvider): there
+      // is no pipeline to address, but a failed job re-runs through gh's own
+      // auth, under the same ciDoctor.retry limits.
       expect(
         retryDep(PROJECT, {
-          RALPH_BUILDKITE_READ_TOKEN: READ,
-          RALPH_BUILDKITE_RETRY_TOKEN: RETRY,
           RALPH_REQUIRED_CHECKS: "test",
-          RALPH_PROJECT_REPO: "felipearos/ralph",
+          RALPH_PROJECT_REPO: "acme-org/acme-app",
           RALPH_BASE_BRANCH: "main",
         }),
-      ).toBeUndefined();
+      ).toBeDefined();
     });
   });
 

@@ -278,6 +278,12 @@ export interface RetryDeps {
   /** Is a host lease held, or anybody queued for one? */
   hostLeaseBusy: () => { busy: boolean; detail: string };
   branchHead: (branch: string) => string | null;
+  /**
+   * Where the write goes, when it is not Buildkite's job retry: an Actions
+   * project re-runs one job via `repos/<repo>/actions/jobs/<id>/rerun`.
+   * Unset, the module's Buildkite `retryPath`.
+   */
+  retryPath?: (org: string, pipeline: string, build: number, job: string) => string;
 }
 
 export const retryPath = (org: string, pipeline: string, build: number, job: string): string =>
@@ -383,14 +389,14 @@ export async function retryOnce(deps: RetryDeps): Promise<RetryResult> {
 
   let path: string;
   try {
-    path = retryPath(await deps.org(), deps.pipeline, pick.build, pick.job);
+    path = (deps.retryPath ?? retryPath)(await deps.org(), deps.pipeline, pick.build, pick.job);
   } catch (error) {
     // Asked after the claim, so this spends a slot. That is the lesser evil:
     // asking before it would read Buildkite on every poll that had nothing to
     // retry, which is what the eager version did.
     return {
       outcome: "fault",
-      why: `the Buildkite organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+      why: `the CI organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
       retried: null,
       ghCalls: spentGh,
     };
@@ -535,13 +541,13 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
   } catch (error) {
     return none(
       "fault",
-      `the Buildkite organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+      `the CI organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
       spentGh,
     );
   }
   const paths: string[] = [];
   for (const job of target.jobs) {
-    const path = retryPath(org, deps.pipeline, target.build, job);
+    const path = (deps.retryPath ?? retryPath)(org, deps.pipeline, target.build, job);
     try {
       await deps.put(path);
     } catch (error) {
