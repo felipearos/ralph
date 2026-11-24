@@ -258,6 +258,7 @@ const NOT_FORM_EDITED: Record<string, string> = {
   learnings: "where learnings go, edited in the config file",
   tracker: "which tracker the tickets live in; its credentials stay on the host",
   merge: "merge policy, edited in the config file",
+  mergeMethod: "how a PR lands (Mergify, GitHub merge queue, or direct), edited in the config file",
   configChanges: "how a rules save lands (commit or PR), edited in the config file",
   screenshots: "UI screenshot setup, edited in the config file",
   appLabels: "the Slack intake's two app labels, set once beside the clerk in the config file",
