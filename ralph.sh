@@ -588,6 +588,15 @@ case "$RALPH_SECRETS_RUNNER" in
     fi
     RALPH_SECRETS_CMD=(doppler run -p "$RALPH_SECRETS_PROJECT" -c "$RALPH_SECRETS_CONFIG" --)
     ;;
+  dotenv)
+    # No manager to ask: the project names a dotenv file on the host (#49).
+    # `dotenv-run.sh` exports it with the shell builtin and execs the command,
+    # so its values override the inherited environment as `doppler run`'s do
+    # and never sit in a process's argv. The withhold filter below runs after
+    # it, exactly as after `doppler run`. The preflight's `secrets-file` check
+    # has already refused a missing, unreadable, malformed or tracked file.
+    RALPH_SECRETS_CMD=(bash "${RALPH_HOME}/secrets/dotenv-run.sh" "$RALPH_SECRETS_FILE" --)
+    ;;
   none) RALPH_SECRETS_CMD=() ;;
   *)
     echo "${LOOP_DISPLAY}: unsupported secrets runner '${RALPH_SECRETS_RUNNER}'." >&2
@@ -1250,6 +1259,18 @@ await_secrets_scope() {
   local probe_err="${SUPERVISOR_LOG%/*}/secrets-scope-${RALPH_RUN_ID}.err"
   local waited=0 started="" alerted="" why failure
   while ! timeout 45 "${RALPH_SECRETS_CMD[@]}" true >/dev/null 2> "$probe_err"; do
+    if [ "$RALPH_SECRETS_RUNNER" = "dotenv" ]; then
+      # A file that went missing, unreadable or malformed since the preflight
+      # does not come back by waiting: someone has to fix it, so stop the way
+      # the preflight's `secrets-file` refusal does. The wrapper's one stderr
+      # line names the file and which of the three; it never holds a value.
+      why="$(head -n 1 "$probe_err" 2>/dev/null | cut -c 1-200)"
+      rm -f "$probe_err"
+      say "${LOOP_DISPLAY}: the secrets file ${RALPH_SECRETS_FILE} cannot be read (${why:-no error output}); stopping before the turn."
+      record --event secrets-env --stop failed \
+        --why "the secrets file ${RALPH_SECRETS_FILE} cannot be read (${why:-no error output}); no turn was spent"
+      exit 1
+    fi
     failure="$(bun "${RALPH_HOME}/preflight.ts" --doppler-failure < "$probe_err" 2>/dev/null || true)"
     if [ "$failure" = "denied" ]; then
       why="$(head -n 1 "$probe_err" 2>/dev/null | cut -c 1-200)"
@@ -2326,6 +2347,7 @@ for role_secret in "$@"; do
     # rather than going quiet.
     secret_from=" from the secrets manager"
     [ "$RALPH_NAMED_SECRETS_RUNNER" = "doppler" ] && secret_from=" from Doppler"
+    [ "$RALPH_NAMED_SECRETS_RUNNER" = "dotenv" ] && secret_from=" from ${RALPH_SECRETS_FILE}"
     [ "$RALPH_NAMED_SECRETS_RUNNER" = "none" ] && secret_from=""
     say "${LOOP_DISPLAY}: warning — ${role_secret} could not be read${secret_from} (${secret_unread% }); it is read again before the next gate poll or iteration."
     RALPH_ROLE_SECRETS_UNREAD="${RALPH_ROLE_SECRETS_UNREAD:+${RALPH_ROLE_SECRETS_UNREAD} }${role_secret}"
