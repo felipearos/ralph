@@ -94,6 +94,17 @@ export interface ProjectConfig {
    */
   merge: "loop" | "human";
   /**
+   * How a loop's pull request merges, when the loop merges it (#51).
+   * `mergify`: a `@mergifyio queue` comment enqueues it and Mergify's `queued`
+   * label says it is in the queue. `github-queue`: GitHub's native merge queue,
+   * entered with `gh pr merge` and read from the PR's `isInMergeQueue`.
+   * `direct`: no queue; the loop runs `gh pr merge --squash` once the required
+   * checks are green. Absent: today's behaviour, the enqueue command in the
+   * project's prompt fragment and the wait reading Mergify's labels, so a
+   * project that has not opted in runs unchanged.
+   */
+  mergeMethod?: MergeMethod;
+  /**
    * How the dashboard saves a sentinel or verifier rules edit (#787).
    * `commit` (the default, read as absent): the validated config is committed
    * straight onto the base branch as a fast-forward, falling back to a config
@@ -738,7 +749,10 @@ export const EVAL_SUGGESTION_WEIGHT_KEYS = [
 ] as const;
 export type EvalSuggestionWeightKey = (typeof EVAL_SUGGESTION_WEIGHT_KEYS)[number];
 
-export const OPTIONAL_KEYS = ["plugins", "executorGuard", "ciDoctor", "prMedic", "clerk", "verifier", "sentinel", "triage", "learnings", "tracker", "merge", "screenshots", "worktreeSetup", "configChanges", "usageStop", "relayEvalPatches", "appLabels", "evalSuggestionWeights", "evalsNoiseFloor", "evalsSaturation", "evalsGuardrails", "evalsImprover"] as const;
+export const MERGE_METHODS = ["mergify", "github-queue", "direct"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
+
+export const OPTIONAL_KEYS = ["plugins", "executorGuard", "ciDoctor", "prMedic", "clerk", "verifier", "sentinel", "triage", "learnings", "tracker", "merge", "mergeMethod", "screenshots", "worktreeSetup", "configChanges", "usageStop", "relayEvalPatches", "appLabels", "evalSuggestionWeights", "evalsNoiseFloor", "evalsSaturation", "evalsGuardrails", "evalsImprover"] as const;
 
 /**
  * A loop name: one lowercase word. It becomes a label (`<loop>-wip`), a branch
@@ -959,6 +973,10 @@ export function validateProjectConfig(raw: unknown): string[] {
 
   if ("merge" in raw && raw.merge !== "loop" && raw.merge !== "human") {
     problems.push("'merge' must be 'loop' or 'human'");
+  }
+
+  if ("mergeMethod" in raw && !(MERGE_METHODS as readonly unknown[]).includes(raw.mergeMethod)) {
+    problems.push(`'mergeMethod' must be one of ${MERGE_METHODS.map((m) => `'${m}'`).join(", ")}`);
   }
 
   if ("configChanges" in raw && raw.configChanges !== "commit" && raw.configChanges !== "pr") {
@@ -2870,6 +2888,8 @@ export function exportLines(config: ProjectConfig, root: string, id: string = cu
     `export RALPH_ENV_CHECK=${shellQuote(config.envCheck.map(shellQuote).join(" "))}`,
     `export RALPH_REQUIRED_CHECKS=${shellQuote(config.requiredChecks.join("\n"))}`,
     `export RALPH_MERGE=${shellQuote(config.merge)}`,
+    // Empty when the project declares no method: every reader falls back to today's Mergify path.
+    `export RALPH_MERGE_METHOD=${shellQuote(config.mergeMethod ?? "")}`,
     `export RALPH_PROMPT_FRAGMENT=${shellQuote(join(root, config.promptFragment))}`,
     `export RALPH_CODER_FRAGMENT=${shellQuote(join(root, config.coderFragment))}`,
     `export RALPH_PLAN=${shellQuote(config.plan)}`,
