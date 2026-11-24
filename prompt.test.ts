@@ -348,7 +348,7 @@ describe('learnings', () => {
     expect(prompt).toContain('follow that entry\'s\n   workaround and cite its slug in the journal');
     const red = prompt.slice(
       prompt.indexOf('**Check the open learnings from §0 against this failure first.**'),
-      prompt.indexOf("bun \"$RALPH_HOME/bk-log.ts\" --pr <pr>"),
+      prompt.indexOf("bun \"$RALPH_HOME/ci-log.ts\" --pr <pr>"),
     );
     expect(red).toContain('its **Workaround** is the answer');
     // The check comes before the log read, which is before any re-run.

@@ -3051,6 +3051,30 @@ Migration generation is allowed; SQL execution and migration application remain
 human-owned. The executor receives `env -i` plus its explicit allowlist and no
 injected credentials. Permission files deny credential recovery tools.
 
+### CI logs: one command, either provider
+
+```bash
+bun ~/ralph/ci-log.ts --pr 12                        # the failing check's reader, picked for you
+bun ~/ralph/ci-log.ts --pr 12 --job test --grep 'FAIL'
+bun ~/ralph/ci-log.ts --pr 12 --rerun                # GitHub Actions only: re-run the failed jobs once
+bun ~/ralph/gh-actions-log.ts --check-token --repo <owner/name>
+```
+
+`ci-log.ts` is what the prompt names for a red check (#50). It hands its
+arguments, unchanged, to the reader of the check's CI provider:
+`gh-actions-log.ts` when the failing check links a GitHub Actions run,
+`bk-log.ts` when it links a Buildkite build, and otherwise by the project's
+required checks (a `buildkite/…` one means Buildkite). A Buildkite project
+reads exactly what `bk-log.ts` printed before.
+
+`gh-actions-log.ts` prints the same digest as `bk-log.ts` (no `history:` or
+`known:` lines) and reads through gh, so it needs no token of its own: gh's
+must read Actions on the repository, which the `actions-logs` preflight
+warning checks. `--rerun` re-runs the run's failed jobs once and refuses a
+run that is still going, one already on its second attempt, or one of a
+commit that is not the PR's head: one re-run per red, as on the Buildkite path.
+A Buildkite check has no session re-run here; the prompt's retry stands.
+
 ### Buildkite logs
 
 ```bash
