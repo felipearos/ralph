@@ -27,6 +27,13 @@
  * `--timeout` and `--interval` (seconds) and `--grace` (polls) exist so a test
  * can prove the cap without waiting one out. Always exits by itself; nothing
  * here can hang an iteration past the deadline.
+ *
+ * `--method` (default: RALPH_MERGE_METHOD, the project's `mergeMethod`) says
+ * what "in the queue" means. `mergify`, or none declared, is the `queued`
+ * label above. `github-queue` is GitHub's native merge queue, which leaves no
+ * label: there the GraphQL `isInMergeQueue` field decides, read with one extra
+ * `gh api graphql` call per poll (`gh pr view --json` does not offer it).
+ * `direct` has no queue at all: the merge either landed or it did not.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -38,6 +45,7 @@ import { dirname, join } from "node:path";
 // byte-compatible with the supervisor's own results: the dashboard's CI-time
 // medians (#163) read both out of one directory and cannot tell them apart.
 import type { WaitResult } from "./pr-wait";
+import { MERGE_METHODS, type MergeMethod } from "./project-config";
 
 export const EXIT = {
   merged: 0,
@@ -59,6 +67,12 @@ export interface Snapshot {
   state: "OPEN" | "CLOSED" | "MERGED";
   mergedAt: string | null;
   labels: string[];
+  /**
+   * Whether the PR sits in the queue, read from somewhere other than its
+   * labels: GitHub's `isInMergeQueue`, or false where there is no queue. When
+   * set it decides "queued"; when absent the queued label does.
+   */
+  inQueue?: boolean;
 }
 
 export interface Progress {
@@ -75,6 +89,81 @@ export interface Labels {
 
 export type Verdict = "merged" | "closed" | "dequeued" | "wait";
 
+/** Whether this read has the PR in the queue: the method's own signal when it has one, else Mergify's label. */
+export function isQueued(snapshot: Snapshot, labels: Labels): boolean {
+  return snapshot.inQueue ?? snapshot.labels.includes(labels.queued);
+}
+
+/**
+ * The method named by a flag or the environment, or null when it names none
+ * this knows. Empty means the project declared none, which is Mergify — the
+ * behaviour every project had before `mergeMethod` existed.
+ */
+export function parseMethod(value: string | undefined): MergeMethod | null {
+  const trimmed = (value ?? "").trim();
+  if (trimmed === "") return "mergify";
+  return (MERGE_METHODS as readonly string[]).includes(trimmed) ? (trimmed as MergeMethod) : null;
+}
+
+/**
+ * The default method, from RALPH_MERGE_METHOD. A value this does not know
+ * falls back to Mergify rather than refusing: the supervisor exports it from
+ * a config that was already validated, and a wait that refused to start would
+ * cost the iteration over a signal it can do without (house rule 1).
+ */
+export const methodFromEnv = (env: NodeJS.ProcessEnv = process.env): MergeMethod =>
+  parseMethod(env.RALPH_MERGE_METHOD) ?? "mergify";
+
+/**
+ * The `gh api graphql` argv that reads `isInMergeQueue`. Without a repo gh
+ * fills `{owner}` and `{repo}` from the checkout's remote, as `gh pr view` does.
+ */
+export function inQueueArgs(number: string, repo: string | null): string[] {
+  const slash = repo === null ? -1 : repo.indexOf("/");
+  const owner = repo !== null && slash > 0 ? repo.slice(0, slash) : "{owner}";
+  const name = repo !== null && slash > 0 ? repo.slice(slash + 1) : "{repo}";
+  return [
+    "api",
+    "graphql",
+    "-f",
+    "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } }",
+    "-F",
+    `owner=${owner}`,
+    "-F",
+    `name=${name}`,
+    "-F",
+    `number=${number}`,
+  ];
+}
+
+/** `isInMergeQueue` out of the graphql answer, or null for anything that is not one. */
+export function parseInQueue(raw: string): boolean | null {
+  try {
+    const parsed = JSON.parse(raw) as { data?: { repository?: { pullRequest?: { isInMergeQueue?: unknown } } } } | null;
+    const value = parsed?.data?.repository?.pullRequest?.isInMergeQueue;
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a dequeue means in words, per method. Mergify's text is what it always
+ * was; the others name their own mechanism, since "read Mergify's comment"
+ * sends the next session to a comment that will never exist.
+ */
+export function dequeuedDetail(method: MergeMethod, sawQueued: boolean, polls: number, mergify: { left: string; never: string }): string {
+  if (method === "github-queue") {
+    return sawQueued
+      ? "removed from GitHub's merge queue: its build failed or it was removed; read the PR's merge queue events"
+      : `never entered GitHub's merge queue within ${polls} polls; read the PR's merge state`;
+  }
+  if (method === "direct") {
+    return `\`gh pr merge\` did not land within ${polls} polls; read its output and the PR's merge state`;
+  }
+  return sawQueued ? mergify.left : mergify.never;
+}
+
 /**
  * What one read means, given what was seen before. Pure, so the table of
  * cases in merge-wait.test.ts is the whole contract.
@@ -88,7 +177,7 @@ export type Verdict = "merged" | "closed" | "dequeued" | "wait";
 export function judge(snapshot: Snapshot, progress: Progress, labels: Labels, gracePolls: number): Verdict {
   if (snapshot.state === "MERGED") return "merged";
   if (snapshot.state === "CLOSED") return "closed";
-  if (snapshot.labels.includes(labels.queued)) return "wait";
+  if (isQueued(snapshot, labels)) return "wait";
   if (progress.sawQueued) return "dequeued";
   return progress.polls >= gracePolls ? "dequeued" : "wait";
 }
@@ -118,17 +207,40 @@ export function parseSnapshot(raw: string): Snapshot | null {
 
 export type Read = { ok: true; snapshot: Snapshot } | { ok: false; error: string };
 
-export function readSnapshot(pr: string, repo: string | null): Read {
-  const args = ["pr", "view", pr, "--json", "state,mergedAt,labels"];
-  if (repo !== null) args.push("--repo", repo);
+const gh = (args: string[]): { ok: true; stdout: string } | { ok: false; error: string } => {
   const result = spawnSync("gh", args, { encoding: "utf8", timeout: 30_000 });
   if (result.error) return { ok: false, error: result.error.message };
   if (result.status !== 0) {
     return { ok: false, error: (result.stderr || result.stdout || `gh exited ${result.status}`).trim() };
   }
-  const snapshot = parseSnapshot(result.stdout);
-  if (snapshot === null) return { ok: false, error: `unparseable gh output: ${result.stdout.trim().slice(0, 200)}` };
-  return { ok: true, snapshot };
+  return { ok: true, stdout: result.stdout };
+};
+
+export function readSnapshot(pr: string, repo: string | null, method: MergeMethod = "mergify"): Read {
+  // github-queue also asks for the number: the PR may be named by URL or
+  // branch here, and the graphql read takes only a number.
+  const args = ["pr", "view", pr, "--json", method === "github-queue" ? "state,mergedAt,labels,number" : "state,mergedAt,labels"];
+  if (repo !== null) args.push("--repo", repo);
+  const got = gh(args);
+  if (!got.ok) return got;
+  const snapshot = parseSnapshot(got.stdout);
+  if (snapshot === null) return { ok: false, error: `unparseable gh output: ${got.stdout.trim().slice(0, 200)}` };
+  if (method === "direct") return { ok: true, snapshot: { ...snapshot, inQueue: false } };
+  if (method === "mergify") return { ok: true, snapshot };
+  let number = pr;
+  try {
+    const parsed = (JSON.parse(got.stdout) as { number?: unknown }).number;
+    if (typeof parsed === "number") number = String(parsed);
+  } catch {
+    // parseSnapshot already accepted this output, so it is JSON.
+  }
+  // A failed queue read is a failed read, never a guess: judging "not queued"
+  // off it could call a queued PR dequeued.
+  const queue = gh(inQueueArgs(number, repo));
+  if (!queue.ok) return { ok: false, error: `merge queue read: ${queue.error}` };
+  const inQueue = parseInQueue(queue.stdout);
+  if (inQueue === null) return { ok: false, error: `unparseable gh api graphql output: ${queue.stdout.trim().slice(0, 200)}` };
+  return { ok: true, snapshot: { ...snapshot, inQueue } };
 }
 
 export interface Options {
@@ -138,10 +250,11 @@ export interface Options {
   intervalSeconds: number;
   gracePolls: number;
   labels: Labels;
+  method: MergeMethod;
 }
 
 const USAGE =
-  "usage: merge-wait.ts <pr> [--repo owner/name] [--timeout seconds] [--interval seconds] [--grace polls] [--queued-label name] [--dequeued-label name]";
+  "usage: merge-wait.ts <pr> [--repo owner/name] [--timeout seconds] [--interval seconds] [--grace polls] [--queued-label name] [--dequeued-label name] [--method mergify|github-queue|direct]";
 
 /** Parsed options, or the usage error as a string. */
 export function parseArgs(argv: string[]): Options | string {
@@ -152,6 +265,7 @@ export function parseArgs(argv: string[]): Options | string {
     intervalSeconds: DEFAULT_INTERVAL_SECONDS,
     gracePolls: DEFAULT_GRACE_POLLS,
     labels: { queued: DEFAULT_QUEUED_LABEL, dequeued: DEFAULT_DEQUEUED_LABEL },
+    method: methodFromEnv(),
   };
   const number = (flag: string, value: string | undefined): number | string => {
     const parsed = Number(value);
@@ -201,6 +315,13 @@ export function parseArgs(argv: string[]): Options | string {
         options.labels.dequeued = value;
         i += 1;
         break;
+      case "--method": {
+        const method = value === undefined || value.trim() === "" ? null : parseMethod(value);
+        if (method === null) return `--method must be one of ${MERGE_METHODS.join(", ")}, got ${value === undefined ? "nothing" : JSON.stringify(value)}`;
+        options.method = method;
+        i += 1;
+        break;
+      }
       default:
         if (arg.startsWith("-")) return `unknown flag ${arg}`;
         if (options.pr !== "") return `one pull request at a time, got ${options.pr} and ${arg}`;
@@ -320,7 +441,7 @@ export async function main(argv: string[]): Promise<number> {
   };
 
   for (;;) {
-    const read = readSnapshot(options.pr, options.repo);
+    const read = readSnapshot(options.pr, options.repo, options.method);
     if (!read.ok) {
       failures += 1;
       console.error(`merge-wait: #${options.pr} unreadable (${failures}/${MAX_CONSECUTIVE_FAILURES}): ${read.error}`);
@@ -331,9 +452,11 @@ export async function main(argv: string[]): Promise<number> {
       failures = 0;
       const { snapshot } = read;
       progress.polls += 1;
-      if (snapshot.labels.includes(options.labels.queued)) progress.sawQueued = true;
+      if (isQueued(snapshot, options.labels)) progress.sawQueued = true;
       const verdict = judge(snapshot, progress, options.labels, options.gracePolls);
-      const tags = snapshot.labels.length > 0 ? ` [${snapshot.labels.join(", ")}]` : "";
+      const tags =
+        (snapshot.labels.length > 0 ? ` [${snapshot.labels.join(", ")}]` : "") +
+        (options.method === "github-queue" ? (snapshot.inQueue ? " (in merge queue)" : " (not in merge queue)") : "");
       console.error(`merge-wait: #${options.pr} ${snapshot.state}${tags} — poll ${progress.polls}, ${elapsed()} elapsed → ${verdict}`);
 
       if (verdict === "merged") {
@@ -345,9 +468,10 @@ export async function main(argv: string[]): Promise<number> {
       if (verdict === "dequeued") {
         return end(
           "dequeued",
-          progress.sawQueued
-            ? `dequeued: #${options.pr} left the queue — its build failed or it was removed; read Mergify's comment on the PR`
-            : `dequeued: #${options.pr} never entered the queue within ${progress.polls} polls — its queue conditions did not hold; read Mergify's comment on the PR`,
+          `dequeued: #${options.pr} ${dequeuedDetail(options.method, progress.sawQueued, progress.polls, {
+            left: "left the queue — its build failed or it was removed; read Mergify's comment on the PR",
+            never: `never entered the queue within ${progress.polls} polls — its queue conditions did not hold; read Mergify's comment on the PR`,
+          })}`,
           EXIT.dequeued,
         );
       }

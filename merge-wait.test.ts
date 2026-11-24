@@ -34,12 +34,15 @@ writeFileSync(
   join(fakeBinDir, "gh"),
   [
     "#!/bin/sh",
-    "# Fake gh for merge-wait.test.ts: answers call N from $FAKE_DIR/N.json,",
-    "# repeating the last fixture forever; a fixture containing FAIL is a gh",
-    "# failure. Every call's argv is appended to $FAKE_DIR/argv.",
+    "# Fake gh for merge-wait.test.ts: answers `pr view` call N from",
+    "# $FAKE_DIR/N.json and `api graphql` call N from $FAKE_DIR/qN.json, each",
+    "# on its own counter, repeating the last fixture forever; a fixture",
+    "# containing FAIL is a gh failure. Every call's argv is appended to",
+    "# $FAKE_DIR/argv.",
     "printf '%s\\n' \"gh $*\" >> \"$FAKE_DIR/argv\"",
-    'i=$(cat "$FAKE_DIR/count" 2>/dev/null || echo 0); echo $((i+1)) > "$FAKE_DIR/count"',
-    'f="$FAKE_DIR/$i.json"; while [ ! -f "$f" ] && [ "$i" -gt 0 ]; do i=$((i-1)); f="$FAKE_DIR/$i.json"; done',
+    'p=""; [ "$1" = "api" ] && p="q"',
+    'i=$(cat "$FAKE_DIR/${p}count" 2>/dev/null || echo 0); echo $((i+1)) > "$FAKE_DIR/${p}count"',
+    'f="$FAKE_DIR/$p$i.json"; while [ ! -f "$f" ] && [ "$i" -gt 0 ]; do i=$((i-1)); f="$FAKE_DIR/$p$i.json"; done',
     '[ -f "$f" ] || { echo "no fixture" >&2; exit 1; }',
     'if [ "$(cat "$f")" = "FAIL" ]; then echo "gh: boom" >&2; exit 1; fi',
     'cat "$f"',
@@ -68,10 +71,11 @@ interface Run {
   root: string;
 }
 
-/** Run the script against a sequence of `gh pr view` answers, fast. */
-function run(sequence: string[], extra: string[] = [], over: Record<string, string> = {}): Run {
+/** Run the script against a sequence of `gh pr view` answers (and `gh api graphql` ones), fast. */
+function run(sequence: string[], extra: string[] = [], over: Record<string, string> = {}, queue: string[] = []): Run {
   const dir = mkdtempSync(join(fakeBinDir, "case-"));
   sequence.forEach((body, i) => writeFileSync(join(dir, `${i}.json`), body));
+  queue.forEach((body, i) => writeFileSync(join(dir, `q${i}.json`), body));
   const result = spawnSync(
     BUN,
     [SCRIPT, "948", "--repo", "felipearos/loggd", "--interval", "0.005", "--timeout", "10", ...extra],
@@ -169,6 +173,98 @@ describe("the exit code is the outcome", () => {
     const result = spawnSync(BUN, [SCRIPT], { encoding: "utf8" });
     expect(result.status).toBe(EXIT.usage);
     expect(result.stderr).toMatch(/which pull request/);
+  });
+});
+
+const inQueue = (value: boolean): string => JSON.stringify({ data: { repository: { pullRequest: { isInMergeQueue: value } } } });
+const IN = inQueue(true);
+const OUT = inQueue(false);
+const GRAPHQL =
+  "gh api graphql -f query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } } -F owner=felipearos -F name=loggd -F number=948";
+
+describe("the merge method decides what in the queue means", () => {
+  const numbered = (state: string, mergedAt: string | null = null): string =>
+    JSON.stringify({ state, mergedAt, labels: [], number: 948 });
+
+  it("mergify, and no method at all, make exactly today's gh calls", () => {
+    for (const result of [run([QUEUED, MERGED], ["--method", "mergify"]), run([QUEUED, MERGED], [], { RALPH_MERGE_METHOD: "" })]) {
+      expect(result.status).toBe(EXIT.merged);
+      expect(result.argv).toEqual([
+        "gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd",
+        "gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd",
+      ]);
+    }
+  });
+
+  it("github-queue: follows isInMergeQueue, not a label, to the merge", () => {
+    const result = run([numbered("OPEN"), numbered("OPEN"), numbered("MERGED", "2026-11-24T10:00:00Z")], ["--method", "github-queue"], {}, [IN]);
+    expect(result.status).toBe(EXIT.merged);
+    expect(result.stdout).toBe("merged 2026-11-24T10:00:00Z");
+    expect(result.argv[0]).toBe("gh pr view 948 --json state,mergedAt,labels,number --repo felipearos/loggd");
+    expect(result.argv[1]).toBe(GRAPHQL);
+  });
+
+  it("github-queue: a PR taken out of the queue is dequeued", () => {
+    const result = run([numbered("OPEN")], ["--method", "github-queue"], {}, [IN, OUT]);
+    expect(result.status).toBe(EXIT.dequeued);
+    expect(result.stdout).toBe("dequeued: #948 removed from GitHub's merge queue: its build failed or it was removed; read the PR's merge queue events");
+  });
+
+  it("github-queue: a PR that never entered is dequeued after the grace polls", () => {
+    const result = run([numbered("OPEN")], ["--method", "github-queue", "--grace", "2"], {}, [OUT]);
+    expect(result.status).toBe(EXIT.dequeued);
+    expect(result.stdout).toMatch(/never entered GitHub's merge queue within 2 polls/);
+    expect(result.stdout).not.toMatch(/Mergify/);
+  });
+
+  it("github-queue: a failing queue read counts as an unreadable poll", () => {
+    const result = run([numbered("OPEN")], ["--method", "github-queue"], {}, ["FAIL"]);
+    expect(result.status).toBe(EXIT.unreadable);
+    expect(result.stdout).toMatch(/^unreadable after 5 consecutive failures: merge queue read/);
+  });
+
+  it("github-queue: names the current repo by placeholder when none is given", () => {
+    const dir = mkdtempSync(join(fakeBinDir, "norepo-"));
+    writeFileSync(join(dir, "0.json"), numbered("OPEN"));
+    writeFileSync(join(dir, "1.json"), numbered("MERGED", "2026-11-24T10:00:00Z"));
+    writeFileSync(join(dir, "q0.json"), IN);
+    const result = spawnSync(BUN, [SCRIPT, "948", "--method", "github-queue", "--interval", "0.005"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`, FAKE_DIR: dir, RALPH_PROJECT: dir },
+    });
+    expect(result.status).toBe(EXIT.merged);
+    expect(readFileSync(join(dir, "argv"), "utf8")).toContain("-F owner={owner} -F name={repo} -F number=948");
+  });
+
+  it("direct: merged on the first poll returns at once, with no queue read", () => {
+    const result = run([MERGED], ["--method", "direct"]);
+    expect(result.status).toBe(EXIT.merged);
+    expect(result.argv).toEqual(["gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd"]);
+  });
+
+  it("direct: still open past the grace polls is a merge that did not land, not a queue", () => {
+    // A stray `queued` label means nothing without a queue.
+    const result = run([QUEUED], ["--method", "direct", "--grace", "2"]);
+    expect(result.status).toBe(EXIT.dequeued);
+    expect(result.stdout).toBe("dequeued: #948 `gh pr merge` did not land within 2 polls; read its output and the PR's merge state");
+    expect(result.argv).toHaveLength(2);
+  });
+
+  it("direct: closed is closed", () => {
+    expect(run([CLOSED], ["--method", "direct"]).status).toBe(EXIT.closed);
+  });
+
+  it("takes the method from RALPH_MERGE_METHOD when no flag names one", () => {
+    const result = run([OPEN], ["--grace", "1"], { RALPH_MERGE_METHOD: "direct" });
+    expect(result.status).toBe(EXIT.dequeued);
+    expect(result.stdout).toMatch(/did not land/);
+  });
+
+  it("refuses a method it does not know", () => {
+    const result = run([MERGED], ["--method", "bors"]);
+    expect(result.status).toBe(EXIT.usage);
+    expect(result.stderr).toMatch(/--method must be one of mergify, github-queue, direct/);
+    expect(result.argv).toEqual([]);
   });
 });
 
@@ -282,6 +378,8 @@ describe("judge: one read, given what came before", () => {
     ["bare inside the grace window waits", snap("OPEN", []), { polls: DEFAULT_GRACE_POLLS - 1, sawQueued: false }, "wait"],
     ["bare at the end of the grace window never got in", snap("OPEN", []), { polls: DEFAULT_GRACE_POLLS, sawQueued: false }, "dequeued"],
     ["a stale dequeued inside the grace window waits", snap("OPEN", ["dequeued"]), { polls: 1, sawQueued: false }, "wait"],
+    ["isInMergeQueue true waits without a label", { ...snap("OPEN", []), inQueue: true }, { polls: 9, sawQueued: true }, "wait"],
+    ["isInMergeQueue false overrides a queued label", { ...snap("OPEN", ["queued"]), inQueue: false }, { polls: 2, sawQueued: true }, "dequeued"],
   ] as const)("%s", (_name, snapshot, progress, expected) => {
     expect(judge(snapshot, progress, labels, DEFAULT_GRACE_POLLS)).toBe(expected);
   });
