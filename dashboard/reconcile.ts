@@ -15,7 +15,13 @@
  * 1. **Only a death, never an ending and never a doubt.** A loop is restarted
  *    when its record names no `stopReason` AND the process table says its
  *    supervisor is `dead`. `completed`, `blocked`, `failed` and `interrupted`
- *    are endings the loop chose, so they stay stopped; liveness `unknown` is
+ *    are endings the loop chose, so they stay stopped — with one exception
+ *    (#6, reversing #520's rule for shutdowns only): an `interrupted` the
+ *    supervisor's own trap recorded on a SIGTERM BEFORE the host's current
+ *    boot was the shutdown, not a choice, and a dead loop with that ending is
+ *    restarted. A record that does not say who stopped it or with which
+ *    signal, or a boot or stop time that cannot be read, stays stopped as
+ *    before. Liveness `unknown` is
  *    "could not tell", which `classifyLoop` may still call `stale` on an old
  *    heartbeat — a heartbeat nobody could read is not evidence a supervisor is
  *    gone. A worktree with no record at all was never started here, so it is
@@ -64,6 +70,7 @@
  * `push-notification.ts push`; the migration watchdog beside it also reads two
  * things from `gh` (#434).
  */
+import { readFileSync } from "node:fs";
 import { gatedStart, type AgentsDeps } from "./agents";
 import { defaultBunPath } from "./adapter";
 import { rosterNames, type Env, type LoopRetryView, type RosterLoop, type StartResult } from "./contracts";
@@ -522,7 +529,30 @@ export interface ReconcileDeps {
    * projects stayed down after a reboot unnoticed.
    */
   said?: Said;
+  /**
+   * When the host booted, in epoch milliseconds, or null when it cannot be
+   * read. A self-recorded SIGTERM `interrupted` older than this was the host
+   * shutdown and is restarted (#6). Defaults to `readBootTimeMs`; injected so
+   * a test never reads the real host.
+   */
+  bootTime?: () => number | null;
   log?: (line: string) => void;
+}
+
+/**
+ * The host's boot time from `/proc/stat`'s `btime` line, in epoch
+ * milliseconds, or null when it cannot be read. Never throws: a boot time
+ * nobody could read only means a shutdown's stop is not restarted.
+ */
+export function readBootTimeMs(read: () => string = () => readFileSync("/proc/stat", "utf8")): number | null {
+  try {
+    const match = /^btime (\d+)$/m.exec(read());
+    if (match === null) return null;
+    const ms = Number(match[1]) * 1000;
+    return Number.isFinite(ms) ? ms : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -582,7 +612,8 @@ export interface ReconcilePass {
 
 /** Whether this loop is a death to undo, or a state to leave alone. */
 export type Verdict =
-  | { restart: true; reason: string }
+  /** `shutdown` marks a loop the host shutdown stopped before this boot (#6). */
+  | { restart: true; reason: string; shutdown?: true }
   /** `retry` marks a stop the loop chose on a transient fault, and names the event it is retried for. */
   | { restart: false; why: string; retry?: { cause: string } };
 
@@ -608,10 +639,11 @@ const retryCause = (report: LoopStateReport): string | null => {
  * liveness `unknown` with an old heartbeat, and a heartbeat the reconciler
  * could not read says nothing about whether the supervisor is still there.
  */
-export function decide(report: LoopStateReport): Verdict {
+export function decide(report: LoopStateReport, bootMs: number | null = null): Verdict {
   if (!report.recorded) return { restart: false, why: "no durable record: this worktree was never started" };
   if (report.stopReason !== null) {
     const why = `the loop ended: ${report.stopReason.kind} — ${report.stopReason.why}`;
+    if (report.stopReason.kind === "interrupted") return decideInterrupted(report, report.stopReason, why, bootMs);
     const cause = retryCause(report);
     return cause === null ? { restart: false, why } : { restart: false, why, retry: { cause } };
   }
@@ -621,6 +653,36 @@ export function decide(report: LoopStateReport): Verdict {
     restart: true,
     reason: `supervisor ${report.pid === null ? "(pid unrecorded)" : String(report.pid)} gone, no stopReason`,
   };
+}
+
+/**
+ * An `interrupted` ending (#6): restarted only when the supervisor's own trap
+ * recorded a SIGTERM before the host's current boot — the shutdown stopped it,
+ * nobody chose to. A manual kill after boot, an operator's Stop, SIGINT or
+ * SIGHUP, and every record that cannot prove the shutdown stay stopped.
+ */
+function decideInterrupted(
+  report: LoopStateReport,
+  stop: NonNullable<LoopStateReport["stopReason"]>,
+  why: string,
+  bootMs: number | null,
+): Verdict {
+  if (stop.self === undefined || (stop.self === true && stop.signal === undefined)) {
+    return {
+      restart: false,
+      why: `${why}; its record does not say which signal stopped it or who recorded it, so it stays stopped as before`,
+    };
+  }
+  if (stop.self !== true || stop.signal !== "SIGTERM") return { restart: false, why };
+  if (bootMs === null) return { restart: false, why: `${why}; the host's boot time could not be read, so it stays stopped` };
+  const stoppedAt = Date.parse(stop.at);
+  if (Number.isNaN(stoppedAt)) return { restart: false, why: `${why}; its stop time could not be read, so it stays stopped` };
+  if (stoppedAt >= bootMs) return { restart: false, why };
+  // Liveness exactly as the no-stopReason path reads it: a supervisor that is
+  // there, or could not be seen, is never started beside.
+  if (report.liveness === "alive") return { restart: false, why: "supervisor alive" };
+  if (report.liveness !== "dead") return { restart: false, why: `supervisor ${report.liveness}: ${report.why}` };
+  return { restart: true, reason: "stopped by the host shutdown before this boot", shutdown: true };
 }
 
 /** How a `start.sh` answer reads as an attempt's outcome. */
@@ -659,6 +721,15 @@ export async function reconcile(deps: ReconcileDeps): Promise<ReconcilePass> {
   const limit = deps.attempts ?? DEFAULT_ATTEMPTS;
   const windowMs = deps.windowMs ?? WINDOW_MS;
   const log = deps.log ?? ((): void => undefined);
+  // Read once per pass: the boot time does not change within one. A throwing
+  // injected reader is a boot time nobody could read, never a failed pass.
+  const bootMs = ((): number | null => {
+    try {
+      return (deps.bootTime ?? readBootTimeMs)();
+    } catch {
+      return null;
+    }
+  })();
   const pass: ReconcilePass = { at: now().toISOString(), considered: 0, attempts: [], capped: [], skipped: [] };
   let targets: readonly ReconcileTarget[];
   try {
@@ -690,7 +761,7 @@ export async function reconcile(deps: ReconcileDeps): Promise<ReconcilePass> {
       // into `unknown`, which is never a restart, rather than failing the pass
       // for every other loop.
       const report = await target.lifecycle.lifecycle.loopState();
-      const verdict = decide(report);
+      const verdict = decide(report, bootMs);
       const saidKey = `loop:${target.project}/${target.loop}`;
       // Keyed on the run as well as the reason, so a loop restarted by hand
       // that dies again the same way between two passes is said again.
@@ -705,7 +776,9 @@ export async function reconcile(deps: ReconcileDeps): Promise<ReconcilePass> {
           skip(verdict.why);
           // The two skips that leave a loop down with nobody told: an ending
           // on a dead supervisor (a SIGTERM at shutdown records `interrupted`,
-          // which stays stopped by design), and a supervisor that could not be
+          // which stays stopped only when it does not predate this boot or its
+          // record cannot prove the shutdown — #6 restarts the rest, reversing
+          // #520's rule for shutdowns only), and a supervisor that could not be
           // seen. A worktree with no record reads `unknown` too, whether it
           // was never started or its read failed, and the two cannot be told
           // apart here, so it stays silent with live supervisors.
@@ -761,6 +834,9 @@ export async function reconcile(deps: ReconcileDeps): Promise<ReconcilePass> {
         const alerted = await raiseCap(deps, target, dead, past, remembered, limit, windowMs);
         pass.capped.push({ loop: target.loop, project: target.project, attempts: attemptsNow, alerted });
         continue;
+      }
+      if (verdict.shutdown === true) {
+        log(`reconcile: ${target.project}/${target.loop} was stopped by the host shutdown before this boot — restarting`);
       }
       const at = now().toISOString();
       const started = await startTarget(target);

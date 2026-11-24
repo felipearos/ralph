@@ -33,6 +33,7 @@ import {
   DEFAULT_MIGRATION_ALERT_SECONDS,
   DEFAULT_RECONCILE_MS,
   DEFAULT_RETRY_SCHEDULE_MINUTES,
+  readBootTimeMs,
   reconcile,
   reconcileConfigFromEnv,
   RESTART_OUTCOMES,
@@ -62,7 +63,7 @@ afterAll(() => scratchRoots.splice(0).forEach((dir) => rmSync(dir, { recursive: 
 interface Script {
   liveness: Liveness;
   /** Null: mid-iteration. Undefined: no durable record at all. */
-  stop?: { kind: StopKind; why: string } | null;
+  stop?: { kind: StopKind; why: string; signal?: string; self?: boolean } | null;
   heartbeat?: string;
   recorded?: boolean;
   /** The start gate's answer: `false` makes `project-config` omit the loop from `loops`. */
@@ -100,6 +101,9 @@ const STARTED = (pid: number): ExecResult => ({
 });
 
 const FEED = ".ralph/logs/notifications.jsonl";
+
+/** The host's boot time every harness reports: after the default stop at 11:00. */
+const BOOT_MS = Date.parse("2026-10-20T11:30:00.000Z");
 
 function harness(label: string, over: Script = { liveness: "dead", stop: null }): Harness {
   const root = realpathSync(mkdtempSync(join(tmpdir(), `ralph-reconcile-${label}-`)));
@@ -273,6 +277,9 @@ function harness(label: string, over: Script = { liveness: "dead", stop: null })
       records: (path) => createRecordsAdapter({ root: path }),
       adapter: createReconcileAdapter({ cliDir: HARNESS, bunPath: "bun", env: {}, exec }),
       now: () => new Date(clock),
+      // Fixed, after the default stop at 11:00, so no test reads the real
+      // host's `/proc/stat` and a legacy stop reads as one after the boot.
+      bootTime: () => BOOT_MS,
     },
   };
 }
@@ -469,10 +476,15 @@ describe("which stops the loop chose are retried", () => {
   });
 
   it("retries only a failed stop, even when the event names a transient fault", () => {
-    for (const kind of ["completed", "blocked", "interrupted"] as StopKind[]) {
+    for (const kind of ["completed", "blocked"] as StopKind[]) {
       const verdict = decide(stopped(kind, { name: "no-sigil" }));
       expect(verdict, kind).toEqual({ restart: false, why: `the loop ended: ${kind} — its own ending` });
     }
+    // A legacy `interrupted` (no `self`/`signal`) says it cannot tell (#6).
+    expect(decide(stopped("interrupted", { name: "no-sigil" }))).toEqual({
+      restart: false,
+      why: "the loop ended: interrupted — its own ending; its record does not say which signal stopped it or who recorded it, so it stays stopped as before",
+    });
     expect(decide(stopped("failed", { name: "no-sigil" }))).toHaveProperty("retry", { cause: "no-sigil" });
   });
 });
@@ -821,7 +833,7 @@ describe("a loop left down is said once (#765)", () => {
     const { lines } = await passes(h, 2);
     expect(startCalls(h)).toEqual([]);
     expect(lines).toEqual([
-      "reconcile: software-factory/ralph is down and stays stopped: the loop ended: interrupted — SIGTERM at shutdown",
+      "reconcile: software-factory/ralph is down and stays stopped: the loop ended: interrupted — SIGTERM at shutdown; its record does not say which signal stopped it or who recorded it, so it stays stopped as before",
     ]);
   });
 
@@ -855,6 +867,145 @@ describe("a loop left down is said once (#765)", () => {
     const lines: string[] = [];
     await reconcile({ ...h.deps, log: (line) => lines.push(line) });
     expect(lines).toEqual([]);
+  });
+});
+
+describe("a loop the host shutdown stopped before this boot (#6)", () => {
+  const BEFORE = "2026-10-20T11:00:00.000Z";
+  const AFTER = "2026-10-20T11:45:00.000Z";
+  const passes = async (h: Harness, n: number, over: Partial<ReconcileDeps> = {}) => {
+    const lines: string[] = [];
+    const said: Said = new Map();
+    let last: Awaited<ReturnType<typeof reconcile>> | null = null;
+    for (let pass = 0; pass < n; pass += 1) {
+      last = await reconcile({ ...h.deps, said, log: (line) => lines.push(line), ...over });
+      h.advance(GAP_MS);
+    }
+    return { lines, last: last! };
+  };
+  const stop = (signal: string | undefined, self: boolean | undefined) => ({
+    kind: "interrupted" as StopKind,
+    why: "signal received",
+    ...(signal === undefined ? {} : { signal }),
+    ...(self === undefined ? {} : { self }),
+  });
+  const plain = "the loop ended: interrupted — signal received";
+
+  it("restarts a self-recorded SIGTERM stop from before the boot, and says why", async () => {
+    const h = harness("shutdown-restart", { liveness: "dead", stop: stop("SIGTERM", true), stopAt: BEFORE });
+    const { lines, last } = await passes(h, 1);
+    expect(startCalls(h)).toHaveLength(1);
+    expect(last.attempts).toHaveLength(1);
+    expect(last.attempts[0]).toMatchObject({ outcome: "restarted", loop: "ralph" });
+    expect(lines).toContain("reconcile: software-factory/ralph was stopped by the host shutdown before this boot — restarting");
+    expect(restarts(h)[0]?.body).toContain("reason: stopped by the host shutdown before this boot");
+  });
+
+  it("leaves a self-recorded SIGTERM after the boot stopped: a manual kill", async () => {
+    const h = harness("shutdown-after", { liveness: "dead", stop: stop("SIGTERM", true), stopAt: AFTER });
+    const { lines, last } = await passes(h, 1);
+    expect(startCalls(h)).toEqual([]);
+    expect(last.skipped[0]?.why).toBe(plain);
+    expect(lines).toEqual([`reconcile: software-factory/ralph is down and stays stopped: ${plain}`]);
+  });
+
+  it("leaves SIGINT and SIGHUP from before the boot stopped", async () => {
+    for (const signal of ["SIGINT", "SIGHUP"]) {
+      const h = harness(`shutdown-${signal}`, { liveness: "dead", stop: stop(signal, true), stopAt: BEFORE });
+      const { last } = await passes(h, 1);
+      expect(startCalls(h), signal).toEqual([]);
+      expect(last.skipped[0]?.why, signal).toBe(plain);
+    }
+  });
+
+  it("leaves an operator's Stop stopped", async () => {
+    const h = harness("shutdown-operator", { liveness: "dead", stop: stop(undefined, false), stopAt: BEFORE });
+    const { last } = await passes(h, 1);
+    expect(startCalls(h)).toEqual([]);
+    expect(last.skipped[0]?.why).toBe(plain);
+  });
+
+  it("leaves a legacy record stopped, and says so once across two passes", async () => {
+    const legacy = `${plain}; its record does not say which signal stopped it or who recorded it, so it stays stopped as before`;
+    for (const [label, script] of [
+      ["legacy", stop(undefined, undefined)],
+      ["legacy-self", stop(undefined, true)],
+    ] as const) {
+      const h = harness(`shutdown-${label}`, { liveness: "dead", stop: script, stopAt: BEFORE });
+      const { lines } = await passes(h, 2);
+      expect(startCalls(h), label).toEqual([]);
+      expect(lines, label).toEqual([`reconcile: software-factory/ralph is down and stays stopped: ${legacy}`]);
+    }
+  });
+
+  it("leaves it stopped when the boot time cannot be read, and says so once", async () => {
+    const why = `${plain}; the host's boot time could not be read, so it stays stopped`;
+    for (const [label, bootTime] of [
+      ["null", () => null],
+      [
+        "throws",
+        () => {
+          throw new Error("no /proc");
+        },
+      ],
+    ] as const) {
+      const h = harness(`shutdown-boot-${label}`, { liveness: "dead", stop: stop("SIGTERM", true), stopAt: BEFORE });
+      const { lines } = await passes(h, 2, { bootTime });
+      expect(startCalls(h), label).toEqual([]);
+      expect(lines, label).toEqual([`reconcile: software-factory/ralph is down and stays stopped: ${why}`]);
+    }
+  });
+
+  it("leaves it stopped when the stop time cannot be read", async () => {
+    const h = harness("shutdown-bad-at", { liveness: "dead", stop: stop("SIGTERM", true), stopAt: "not a time" });
+    const { last } = await passes(h, 1);
+    expect(startCalls(h)).toEqual([]);
+    expect(last.skipped[0]?.why).toBe(`${plain}; its stop time could not be read, so it stays stopped`);
+  });
+
+  it("keeps today's answers for a supervisor alive or unseen", () => {
+    const report = {
+      liveness: "alive" as Liveness,
+      stopReason: { kind: "interrupted" as StopKind, why: "signal received", at: BEFORE, signal: "SIGTERM", self: true },
+      run: "r",
+      loop: "ralph",
+      pid: 77,
+      recorded: true,
+      why: "could not read the process table",
+    };
+    expect(decide(report, BOOT_MS)).toEqual({ restart: false, why: "supervisor alive" });
+    expect(decide({ ...report, liveness: "unknown" }, BOOT_MS)).toEqual({
+      restart: false,
+      why: "supervisor unknown: could not read the process table",
+    });
+    expect(decide({ ...report, liveness: "dead" }, BOOT_MS)).toEqual({
+      restart: true,
+      reason: "stopped by the host shutdown before this boot",
+      shutdown: true,
+    });
+  });
+
+  it("is still blocked by a pending stop on the control record", async () => {
+    const h = harness("shutdown-pending", {
+      liveness: "dead",
+      stop: stop("SIGTERM", true),
+      stopAt: BEFORE,
+      stop_record: { kind: "interrupted", confirmation: "pending" },
+    });
+    const { last } = await passes(h, 1);
+    expect(startCalls(h)).toEqual([]);
+    expect(last.attempts).toEqual([]);
+    expect(last.skipped[0]?.why).toContain("pending");
+  });
+
+  it("reads the boot time off /proc/stat's btime line, and null otherwise", () => {
+    expect(readBootTimeMs(() => "cpu  1 2 3\nbtime 1795500000\nprocesses 9\n")).toBe(1_795_500_000_000);
+    expect(readBootTimeMs(() => "cpu  1 2 3\nprocesses 9\n")).toBeNull();
+    expect(
+      readBootTimeMs(() => {
+        throw new Error("EACCES");
+      }),
+    ).toBeNull();
   });
 });
 

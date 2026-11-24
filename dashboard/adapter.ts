@@ -424,6 +424,11 @@ function loopState(contract: string, path: string, value: unknown): LoopStateVie
             kind: oneOf<StopKind>(contract, `${path}.stopReason.kind`, stop.kind, STOP_KINDS),
             why: string(contract, `${path}.stopReason.why`, stop.why),
             at: string(contract, `${path}.stopReason.at`, stop.at),
+            // Newer than the record (#6) and only advisory: a malformed value is
+            // left out rather than failing the loop's record, so the reconciler
+            // falls back to keeping the loop stopped (house rule 1).
+            ...(typeof stop.signal === "string" && stop.signal !== "" ? { signal: stop.signal } : {}),
+            ...(typeof stop.self === "boolean" ? { self: stop.self } : {}),
           };
         })();
   return {
