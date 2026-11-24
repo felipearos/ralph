@@ -3209,10 +3209,12 @@ describe("a real ralph.sh iteration inside a trial sandbox", () => {
       `st=${JSON.stringify(state)}`,
       // Names and flags only: a value is never an argument.
       'printf \'%s\\n\' "$*" >> "$st/doppler-argv.log"',
-      // Appended, then counted: the iteration starts several `doppler run`s at
-      // once, and a read-then-rewrite counter let one of them read the file
-      // mid-rewrite, count itself as call 1 and fail "locked" (PR #54's CI).
-      'echo . >> "$st/doppler-calls"; n=$(wc -l < "$st/doppler-calls")',
+      // Each call takes its own ordinal by creating the first free file under
+      // noclobber, an exclusive create: the iteration starts several `doppler
+      // run`s at once, a read-then-rewrite counter let one read the file
+      // mid-rewrite (PR #54's CI), and append-then-count gives a call the
+      // file's length at its read, not its own position.
+      'n=1; until ( set -C; : > "$st/doppler-call.$n" ) 2>/dev/null; do n=$((n + 1)); done',
       `[ "$n" -le 2 ] && { echo ${JSON.stringify(locked)} >&2; exit 1; }`,
       'case "$1 $2" in',
       '  "secrets get")',

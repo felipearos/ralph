@@ -1142,6 +1142,39 @@ describe("a triager's preflight, end to end", () => {
     expect(JSON.stringify(check(coder, "tools"))).toContain("not on PATH: doppler");
   });
 
+  it("still refuses an unignored dotenv file in a triager's checkout, but not a missing one (PR #54)", () => {
+    // The triager reads no secrets, so a missing file is nothing to it; but its
+    // clean-detached repair would copy an unignored file into a patch and
+    // `git clean` it, so git's half of the check runs for it too.
+    const dotenvTriager = (): { project: string; env: Record<string, string> } => {
+      const project = scratchProject({
+        ...LOGGD_CONFIG,
+        loops: ["ralph", { name: "tria", role: "triager" }],
+        secrets: { runner: "dotenv", file: "acme-secrets.env", withhold: [] },
+      });
+      const javFile = join(project, "jav.json");
+      writeFileSync(javFile, `${JSON.stringify({ default: { enabled: false, labels: ["difficulty:easy", "difficulty:hard"], routes: {} } })}\n`);
+      return { project, env: { RALPH_LOOP_NAME: "tria", RALPH_JAV: javFile } };
+    };
+    const labels = everyLabel("tria", [...TRIAGE_LABELS, "difficulty:easy", "difficulty:hard"]);
+
+    const absent = dotenvTriager();
+    const missing = runPreflight(fakes({ omit: ["doppler"] }), { ...absent.env, FAKE_GH_LABELS: labels }, absent.project);
+    expect(missing.status).toBe(0);
+    expect(check(missing, "secrets-file")!.outcome.status).toBe("ok");
+
+    const present = dotenvTriager();
+    writeFileSync(join(present.project, "acme-secrets.env"), "ACME_TOKEN=acme-value\n");
+    // The fake `git` answers every `ls-files` as found, so the file reads as
+    // tracked; what matters is that git was asked, and its answer refuses.
+    // Real git's tracked and unignored answers are pinned by `checkSecretsFile`'s own suite.
+    const fake = fakes({ omit: ["doppler"] });
+    const taken = runPreflight(fake, { ...present.env, FAKE_GH_LABELS: labels }, present.project);
+    expect(taken.status).toBe(1);
+    expect((check(taken, "secrets-file")!.outcome as { why: string }).why).toContain("tracked by git");
+    expect(fake.calls().some((call) => call.includes("ls-files --error-unmatch -- acme-secrets.env"))).toBe(true);
+  });
+
   it("reads the role off the roster, not off RALPH_LOOP_ROLE", () => {
     // The preflight is also run by hand (step 11 of adding an agent), where the
     // operator has exported nothing. A role taken from the environment would

@@ -1031,7 +1031,7 @@ async function refuseIfGitCouldTake(root: string, path: string): Promise<Outcome
  * its values are already in the history. No value from the file ever reaches
  * a `why` or a `remedy`: the parser's own reasons name a line number only.
  */
-export async function checkSecretsFile(root: string, config: ProjectConfig): Promise<CheckResult> {
+export async function checkSecretsFile(root: string, config: ProjectConfig, gitSafetyOnly = false): Promise<CheckResult> {
   const name = "secrets-file";
   if (config.secrets.runner !== "dotenv") return { name, outcome: { status: "ok" } };
   const configured = config.secrets.file;
@@ -1057,6 +1057,11 @@ export async function checkSecretsFile(root: string, config: ProjectConfig): Pro
       if (target !== null) return { name, outcome: target };
     }
   }
+  // A role given no application environment (the triager) never reads the
+  // file, so a missing or broken one is nothing to it. Where git could take
+  // the file is still everyone's business: the triager's own clean-detached
+  // repair copies an unignored file into a patch and `git clean`s it away.
+  if (gitSafetyOnly) return { name, outcome: { status: "ok", detail: `${path} (git safety only)` } };
   switch (read.kind) {
     case "ok":
       return { name, outcome: { status: "ok", detail: path } };
@@ -1703,7 +1708,9 @@ export async function preflight(): Promise<CheckResult[]> {
     ...(runs("clerk-credentials") ? [checkClerkCredentials(config, role)].filter((result): result is CheckResult => result !== null) : []),
     ...(verifierCredentials !== null ? [verifierCredentials] : []),
     // Local and ahead of every child: the file is what their environment is.
-    ...(runs("secrets-file") && config?.secrets.runner === "dotenv" ? [await checkSecretsFile(process.cwd(), config)] : []),
+    // A role that drops the check still has the git-safety half run, since
+    // its worktree repair would log and delete an unignored file (PR #54).
+    ...(config?.secrets.runner === "dotenv" ? [await checkSecretsFile(process.cwd(), config, !runs("secrets-file"))] : []),
   ];
   // A missing CLI would make its probe fail as "denied" for the wrong reason —
   // "not authenticated" when the truth is "no gh at all". The tools check has
