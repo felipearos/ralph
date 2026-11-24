@@ -143,6 +143,7 @@ export const PREFLIGHT_CHECKS = [
   "clerk-intake-board",
   "actions-logs",
   "doppler-scope",
+  "secrets-file",
 ] as const;
 
 export type PreflightCheck = (typeof PREFLIGHT_CHECKS)[number];
@@ -595,7 +596,7 @@ export const ROLE_DESCRIPTORS: Readonly<Record<Role, RoleDescriptor>> = {
     // `-wip` is. `javLabels` because the difficulty labels a triager applies are
     // configured per project, and they are what every coder's intake is routed by.
     preflight: {
-      checks: without("executor-tools", "buildkite-logs", "actions-logs", "doppler-scope"),
+      checks: without("executor-tools", "buildkite-logs", "actions-logs", "doppler-scope", "secrets-file"),
       verdicts: {},
       labels: [...TRIAGE_LABELS],
       requiresDifficultyLabels: true,

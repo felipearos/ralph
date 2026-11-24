@@ -78,7 +78,7 @@ that commits `.ralph/` never commits a pending operator command.)
 | `repo`, `owner` | GitHub repository and the login claims are assigned to |
 | `baseBranch` | every freshness check and base read is against `origin/<baseBranch>` |
 | `displayName` | used in journal commit subjects |
-| `secrets.runner` | `doppler` (explicit `project`/`config` scope) or `none` |
+| `secrets.runner` | `doppler` (explicit `project`/`config` scope), `dotenv` (a `file` on the host; see "Environment") or `none` |
 | `secrets.withhold` | names stripped from every child after injection — a deny list |
 | `refuseFiles` | files whose presence refuses startup (they would shadow the env) |
 | `envCheck` | argv run inside the project, under the injected env, before every child; `[]` for none |
@@ -2825,13 +2825,17 @@ pr-medic), while a warning stays a warning (`buildkite-logs` for a coder,
 turn whose secrets scope cannot be read
 (`doppler run` fails) waits and asks again on the preflight's interval rather
 than running and being recorded as a failure; a failure that names auth or
-setup (the preflight's "denied") stops the loop with the remedy instead.
+setup (the preflight's "denied") stops the loop with the remedy instead. A
+dotenv project's file that is missing, unreadable or malformed at refusals
+spanning at least one retry interval (`RALPH_PREFLIGHT_RETRY_SECONDS`) stops the
+loop too; a shorter run of refusals is waited on, as a file mid-save.
 
 **Which checks run is the loop's role's answer** (`roles.ts`, `preflight`), read
 off the project's roster and never off `RALPH_LOOP_ROLE`, so a hand-run
 preflight asks the same list the supervisor does. A triager drops
-`executor-tools`, `buildkite-logs`, `actions-logs` and `doppler-scope` — it
-delegates no code, reads no CI logs, and is given no application environment, so the secrets CLI is
+`executor-tools`, `buildkite-logs`, `actions-logs`, `doppler-scope` and
+`secrets-file` — it delegates no code, reads no CI logs, and is given no
+application environment, so the secrets CLI is
 not required of it either — and a ci-doctor drops `frontier-prerequisites`,
 taking no work off the frontier. A dropped check is not run at all, not merely
 left out of the report. A role also adds to the labels `loop-labels` requires:
@@ -3045,6 +3049,39 @@ every role's prompt states the rule — the only fence a codex orchestrator has,
 since no settings file can be handed to one. Refusing `refuseFiles` (Loggd:
 `.env.local`) prevents an accidental local override; do not work around it by
 fabricating env files.
+
+#### A dotenv file instead of a secrets manager
+
+A project with no secrets manager can hand the loops a dotenv file:
+
+```json
+"secrets": { "runner": "dotenv", "file": "/etc/ralph/acme-app.env", "withhold": ["ACME_ADMIN_TOKEN"] }
+```
+
+`file` is absolute, or relative to the project root; the dashboard's setup
+form offers it beside `none`. Every child runs under
+`secrets/dotenv-run.sh <file> --`, which exports the file's `KEY=value` lines
+with the shell builtin (no value ever sits in a process's argv) and execs the
+command, so a file variable overrides an inherited one exactly as under
+`doppler run`; `withhold` is then stripped and `envCheck` runs, the same as for
+Doppler. Named secrets a role reads (`secrets/read.ts`) come from the same file.
+The parser takes blank and `#` lines, an optional `export `, single-quoted
+literals and double-quoted values with `\n`/`\t`/`\"`/`\\` escapes, which may
+span lines.
+
+The preflight's `secrets-file` check refuses to start when the file is
+missing, unreadable, malformed (it names the line number, never the text),
+tracked by git in the project, or inside the project and not git-ignored (a
+coder's `git add -A` would publish it), and says which. A file that cannot be
+read at per-turn probes whose refusals span at least one retry interval
+(`RALPH_PREFLIGHT_RETRY_SECONDS`) stops the loop before the turn; a shorter run
+is waited on, since an operator saving it clears by the next probe.
+
+The supervisor keeps `RALPH_SECRETS_FILE` out of every child's environment,
+but the file stays readable by the loop's user, and `.ralph/config.json` names
+it: like Doppler's own fence, that is a tripwire, not a boundary. So do not
+put a name you would `withhold` in the file at all; `withhold` strips the
+environment, not the file. Keep the file outside the worktree.
 
 Migration generation is allowed; SQL execution and migration application remain
 human-owned. The executor receives `env -i` plus its explicit allowlist and no

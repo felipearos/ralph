@@ -34,7 +34,7 @@
  * spawns a model, reads Doppler, or touches GitHub.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -224,6 +224,11 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // for real so the fake doppler on PATH answers it.
     'secrets/read.ts',
     'secrets/source.ts',
+    // The dotenv runner's source and its command wrapper (#49), real: the
+    // wrapper is what `ralph.sh` runs every child under for a dotenv project,
+    // and it parses the file through `dotenv.ts` beside it.
+    'secrets/dotenv.ts',
+    'secrets/dotenv-run.sh',
     // The record a holding role's gate holds on (#771), run for real: what it
     // writes and clears is what the hold tests read back.
     'gate-verdict-store.ts',
@@ -383,6 +388,11 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // Whether the ci-doctor's gate-only retry token reached the session —
     // set or unset, never the value.
     `if [ -n "\${RALPH_BUILDKITE_RETRY_TOKEN:-}" ]; then t=set; else t=unset; fi; printf 'claude retry-token=%s\\n' "$t" >> ${JSON.stringify(argvFile)}`,
+    // Whether a dotenv project's file variable reached the session (#49) —
+    // set or unset, never the value, so this file never carries it.
+    `if [ -n "\${DOTENV_APP_URL:-}" ]; then t=set; else t=unset; fi; printf 'claude dotenv-app-url=%s\\n' "$t" >> ${JSON.stringify(argvFile)}`,
+    // And whether the file's path did: the supervisor keeps it from children.
+    `if [ -n "\${RALPH_SECRETS_FILE:-}" ]; then t=set; else t=unset; fi; printf 'claude secrets-file=%s\\n' "$t" >> ${JSON.stringify(argvFile)}`,
     // The first turn unlocks the fake keyring, after this turn's environment
     // was recorded above.
     `[ -n "\${FAKE_DOPPLER_LOCKED_UNTIL_TURN:-}" ] && : > ${JSON.stringify(dopplerUnlockedFile)}`,
@@ -685,6 +695,10 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // one never reaches the loop. Without this branch it would fall through to
     // the gate stub below and answer bookkeeping with gate text.
     '  *loop-state.ts)',
+    // FAKE_SCOPE_WAIT_RESTORES=<copy> puts the removed dotenv file back when
+    // the supervisor records its secrets-scope wait: a file caught mid-save,
+    // back before the next probe (#49).
+    '    if [ -n "${FAKE_SCOPE_WAIT_RESTORES:-}" ]; then case " $* " in *" secrets-scope-wait "*) cp "$FAKE_SCOPE_WAIT_RESTORES" "$FAKE_GATE_REMOVES" ;; esac; fi',
     '    exit ${FAKE_RECORD_STATUS:-0} ;;',
     // Likewise: `runner-failure.test.ts` pins what an observation contains,
     // and `delegate.test.ts` pins that a denied runner produces one. What
@@ -999,6 +1013,10 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     '    exit 2',
     '  fi',
     'fi',
+    // FAKE_GATE_REMOVES=<path> deletes that file when the coder gate is asked:
+    // a dotenv secrets file that goes away after the startup checks read it
+    // and before the turn's own probe does (#49).
+    'if [ -n "${FAKE_GATE_REMOVES:-}" ] && [ "${1##*/}" = frontier-gate.ts ]; then rm -f "$FAKE_GATE_REMOVES"; fi',
     // FAKE_GATE_SEES_HELD: each coder gate call logs the verdict record as it
     // stood when the gate was asked (#771), so a test can tell what the
     // supervisor cleared or kept BEFORE the next answer, not only at the end.
@@ -6510,6 +6528,145 @@ describe('the project seam', () => {
     expect(run.supervisorLogs).toHaveLength(1);
     expect(existsSync(join(work.home, '.ralph'))).toBe(false);
     expect(existsSync(join(work.home, 'logs'))).toBe(false);
+  });
+});
+
+/**
+ * The dotenv secrets runner at the supervisor (#49). A project with no secrets
+ * manager names a dotenv file on the host, and `ralph.sh` runs every child
+ * under the real `secrets/dotenv-run.sh` in place of `doppler run`. These pin
+ * what the swap must keep: the file's variables reach the session, a withheld
+ * one does not, no value lands in a log, no `doppler` is ever called, and a
+ * file that went away stops the loop rather than parking it in the wait the
+ * Doppler path takes for an outage that may clear on its own.
+ */
+describe('the dotenv secrets runner', () => {
+  const INJECTED = 'withheld-value-0123456789';
+  const APP_URL = 'https://app.example.test';
+
+  /**
+   * A worktree configured for the dotenv runner, its file OUTSIDE the
+   * worktree as on a host. No envCheck: the fixture's check asks for the
+   * Doppler fixture's database variables, which a dotenv project need not
+   * have, and what is under test here is the injection, not that check.
+   */
+  const dotenvWorktree = (withhold: string[]): { work: ReturnType<typeof scratchWorktree>; file: string } => {
+    const work = scratchWorktree();
+    const file = join(work.root, '..', 'host-secrets', 'loop.env');
+    mkdirSync(join(work.root, '..', 'host-secrets'), { recursive: true });
+    writeFileSync(file, `DOTENV_APP_URL=${APP_URL}\nINJECTED_API_TOKEN=${INJECTED}\n`);
+    writeFileSync(
+      join(work.root, '.ralph', 'config.json'),
+      JSON.stringify({ ...FIXTURE_CONFIG, secrets: { runner: 'dotenv', file, withhold }, envCheck: [] }),
+    );
+    return { work, file };
+  };
+
+  /** Every `doppler` call the fake recorded: `run …` or `secrets …`. */
+  const dopplerCalls = (argv: string[]): string[] => argv.filter((l) => l.startsWith('run ') || l.startsWith('secrets '));
+
+  /** Every file under the scratch worktree's `.ralph/logs`, with its text. */
+  const logTexts = (work: ReturnType<typeof scratchWorktree>): Array<[string, string]> => {
+    const logs = join(work.root, '.ralph', 'logs');
+    return readdirSync(logs, { recursive: true })
+      .map((name) => join(logs, String(name)))
+      .filter((path) => statSync(path).isFile())
+      .map((path) => [path, readFileSync(path, 'utf8')]);
+  };
+
+  it('hands the session the file variables, strips a withheld one, and logs neither value', () => {
+    // Control first: without the withhold, the file's token DOES reach the
+    // orchestrator, so the assertion below cannot pass merely because the
+    // wrapper never injected anything.
+    const control = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
+    const shown = runSupervisor(control.work, ['1']);
+    expect(shown.status).toBe(0);
+    expect(shown.argv).toContain('claude injected=set');
+    expect(shown.argv).toContain('claude dotenv-app-url=set');
+
+    const { work } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold, 'INJECTED_API_TOKEN']);
+    const run = runSupervisor(work, ['1']);
+    expect(run.status).toBe(0);
+    expect(run.argv).toContain('claude dotenv-app-url=set');
+    expect(run.argv).toContain('claude injected=');
+    expect(run.argv).not.toContain('claude injected=set');
+    // The file's path is the supervisor's: a session handed it could read the
+    // withheld names back out of the file.
+    expect(run.argv).toContain('claude secrets-file=unset');
+    // The children ran under the real wrapper, which parsed the file.
+    expect(run.argv.some((l) => l.includes('ralph/secrets/dotenv.ts export'))).toBe(true);
+    // A dotenv project never asks Doppler for anything.
+    expect(dopplerCalls(run.argv)).toEqual([]);
+
+    // Neither value reaches the supervisor's output or any of the run's logs —
+    // the session's transcript and the supervisor log included. Asserted
+    // against logs that exist, so an empty directory cannot pass it.
+    const texts = logTexts(work);
+    expect(texts.some(([path]) => path.includes('supervisor-'))).toBe(true);
+    for (const value of [INJECTED, APP_URL]) {
+      expect(run.stdout).not.toContain(value);
+      expect(run.stderr).not.toContain(value);
+      for (const [path, text] of texts) expect(text, path).not.toContain(value);
+    }
+  });
+
+  it('waits once, then stops before the turn, when the file is gone at the per-turn probe', () => {
+    // The fixture's `preflight.ts` is a stub that answers ready, so its
+    // `secrets-file` check never runs here: what refuses is the per-turn
+    // probe (`await_secrets_scope`), which runs the real wrapper against a
+    // file that no longer exists. The file is there for the startup checks
+    // (the environment verification runs under the wrapper too) and the fake
+    // gate deletes it, which is the shape of a file removed while the loop
+    // runs. Refusals are waited on — an operator mid-save clears by a later
+    // probe — until they span at least one retry interval of real time
+    // (RALPH_PREFLIGHT_RETRY_SECONDS), and then the loop stops.
+    const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
+    const run = runSupervisor(work, ['1'], { FAKE_GATE_REMOVES: file, RALPH_PREFLIGHT_RETRY_SECONDS: '1' });
+
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain(`the secrets file ${file} cannot be read`);
+    expect(run.stdout).toContain('stopping before the turn');
+    const records = run.argv.filter((l) => l.includes('loop-state.ts record'));
+    expect(records.filter((l) => l.includes('--event secrets-scope-wait'))).toHaveLength(1);
+    expect(records.some((l) => l.includes('--event secrets-env --stop failed'))).toBe(true);
+    // No turn was spent, and Doppler was never the fallback.
+    expect(run.argv.some((l) => l.startsWith('claude '))).toBe(false);
+    expect(dopplerCalls(run.argv)).toEqual([]);
+  });
+
+  it('keeps the file path from a manager-less role too', () => {
+    // A triager's runner reads `none` once the supervisor drops the manager
+    // for its role, but the path read off the config is still exported: a
+    // filter keyed on the runner would hand the triager's session the path.
+    const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
+    writeFileSync(
+      join(work.root, '.ralph', 'config.json'),
+      JSON.stringify({
+        ...FIXTURE_CONFIG,
+        loops: ['nova', { name: 'tria', role: 'triager' }],
+        secrets: { runner: 'dotenv', file, withhold: [...FIXTURE_CONFIG.secrets.withhold] },
+        envCheck: [],
+      }),
+    );
+    const run = runSupervisor(work, ['1'], { RALPH_LOOP_NAME: 'tria', FAKE_SIGIL: '<ralph>DONE</ralph>' });
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('is given no application environment');
+    expect(run.argv.filter((l) => l.startsWith('claude run-id='))).toHaveLength(1);
+    expect(run.argv).toContain('claude secrets-file=unset');
+  });
+
+  it('keeps waiting, never stops, while a refusal clears before the second probe', () => {
+    // A file caught mid-save: gone at one probe, back by the next. The loop
+    // must take the turn, not stop.
+    const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
+    writeFileSync(`${file}.saved`, readFileSync(file, 'utf8'));
+    const run = runSupervisor(work, ['1'], {
+      FAKE_GATE_REMOVES: file,
+      FAKE_SCOPE_WAIT_RESTORES: `${file}.saved`,
+      RALPH_PREFLIGHT_RETRY_SECONDS: '1',
+    });
+    expect(run.status).toBe(0);
+    expect(run.argv.some((l) => l.startsWith('claude '))).toBe(true);
   });
 });
 

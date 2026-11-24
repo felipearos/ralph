@@ -588,6 +588,15 @@ case "$RALPH_SECRETS_RUNNER" in
     fi
     RALPH_SECRETS_CMD=(doppler run -p "$RALPH_SECRETS_PROJECT" -c "$RALPH_SECRETS_CONFIG" --)
     ;;
+  dotenv)
+    # No manager to ask: the project names a dotenv file on the host (#49).
+    # `dotenv-run.sh` exports it with the shell builtin and execs the command,
+    # so its values override the inherited environment as `doppler run`'s do
+    # and never sit in a process's argv. The withhold filter below runs after
+    # it, exactly as after `doppler run`. The preflight's `secrets-file` check
+    # has already refused a missing, unreadable, malformed or tracked file.
+    RALPH_SECRETS_CMD=(bash "${RALPH_HOME}/secrets/dotenv-run.sh" "$RALPH_SECRETS_FILE" --)
+    ;;
   none) RALPH_SECRETS_CMD=() ;;
   *)
     echo "${LOOP_DISPLAY}: unsupported secrets runner '${RALPH_SECRETS_RUNNER}'." >&2
@@ -600,6 +609,12 @@ esac
 # `env -u NAME …` applied to the injected environment for every child, then the
 # project's own environment check (`envCheck`), run by development-env.sh.
 RALPH_ENV_FILTER=(env)
+# The dotenv file's path is the supervisor's, not the children's: it holds the
+# withheld names too, so a session handed the path could read them back (#49).
+# Unset for every role, not only when the runner reads `dotenv` here: a
+# manager-less role (triager, clerk) has its runner set to `none` above while
+# the path is still exported, and unsetting an unset name is harmless.
+RALPH_ENV_FILTER+=(-u RALPH_SECRETS_FILE)
 for secret in "${RALPH_WITHHELD_SECRET_NAMES[@]}"; do
   RALPH_ENV_FILTER+=(-u "$secret")
 done
@@ -1245,12 +1260,44 @@ start_budget_guard() { # <session> <cap> [--only-session]
 # must fix stops the loop as the startup check does, with the remedy; anything
 # else, or a classifier that could not answer, is a wait.
 # Never fatal otherwise, and a project with no secrets manager is never asked.
+#
+# A dotenv file (#49) has no classifier: the wrapper's own exit says what is
+# wrong (3 missing, 4 unreadable, 5 malformed). Such a refusal is waited on —
+# an operator saving the file, or a mount coming up late, clears by a later
+# probe — and stops the loop only when refusals in a row span at least one
+# retry interval (`RALPH_PREFLIGHT_RETRY_SECONDS`) of real time: two probes at
+# the least, and never two seconds apart because `control_sleep` returned
+# early. Any other failure (a timeout on a loaded host, bun killed) is an
+# ordinary wait, and like a success it starts the count again.
 await_secrets_scope() {
   [ "${#RALPH_SECRETS_CMD[@]}" -gt 0 ] || return 0
   local probe_err="${SUPERVISOR_LOG%/*}/secrets-scope-${RALPH_RUN_ID}.err"
-  local waited=0 started="" alerted="" why failure
-  while ! timeout 45 "${RALPH_SECRETS_CMD[@]}" true >/dev/null 2> "$probe_err"; do
-    failure="$(bun "${RALPH_HOME}/preflight.ts" --doppler-failure < "$probe_err" 2>/dev/null || true)"
+  local waited=0 started="" alerted="" why failure probe_status dotenv_refused_at=""
+  while true; do
+    probe_status=0
+    timeout 45 "${RALPH_SECRETS_CMD[@]}" true >/dev/null 2> "$probe_err" || probe_status=$?
+    [ "$probe_status" = 0 ] && break
+    if [ "$RALPH_SECRETS_RUNNER" = "dotenv" ]; then
+      case "$probe_status" in
+        3 | 4 | 5)
+          # The wrapper's one stderr line names the file and which of the
+          # three; it never holds a value.
+          if [ -n "$dotenv_refused_at" ] && [ $(($(date +%s) - dotenv_refused_at)) -ge "$PREFLIGHT_RETRY" ]; then
+            why="$(head -n 1 "$probe_err" 2>/dev/null | cut -c 1-200)"
+            rm -f "$probe_err"
+            say "${LOOP_DISPLAY}: the secrets file ${RALPH_SECRETS_FILE} cannot be read (${why:-no error output}); stopping before the turn."
+            record --event secrets-env --stop failed \
+              --why "the secrets file ${RALPH_SECRETS_FILE} cannot be read (${why:-no error output}); no turn was spent"
+            exit 1
+          fi
+          [ -n "$dotenv_refused_at" ] || dotenv_refused_at="$(date +%s)"
+          ;;
+        *) dotenv_refused_at="" ;;
+      esac
+      failure="unavailable"
+    else
+      failure="$(bun "${RALPH_HOME}/preflight.ts" --doppler-failure < "$probe_err" 2>/dev/null || true)"
+    fi
     if [ "$failure" = "denied" ]; then
       why="$(head -n 1 "$probe_err" 2>/dev/null | cut -c 1-200)"
       rm -f "$probe_err"
@@ -2326,6 +2373,7 @@ for role_secret in "$@"; do
     # rather than going quiet.
     secret_from=" from the secrets manager"
     [ "$RALPH_NAMED_SECRETS_RUNNER" = "doppler" ] && secret_from=" from Doppler"
+    [ "$RALPH_NAMED_SECRETS_RUNNER" = "dotenv" ] && secret_from=" from ${RALPH_SECRETS_FILE}"
     [ "$RALPH_NAMED_SECRETS_RUNNER" = "none" ] && secret_from=""
     say "${LOOP_DISPLAY}: warning — ${role_secret} could not be read${secret_from} (${secret_unread% }); it is read again before the next gate poll or iteration."
     RALPH_ROLE_SECRETS_UNREAD="${RALPH_ROLE_SECRETS_UNREAD:+${RALPH_ROLE_SECRETS_UNREAD} }${role_secret}"

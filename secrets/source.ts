@@ -1,7 +1,8 @@
 /**
  * The one seam every named secret a loop reads goes through
- * (felipearos/ralph#759): Doppler today, the plain environment when the
- * project runs no secrets manager, and whatever manager comes next
+ * (felipearos/ralph#759): Doppler, a dotenv file on the host (`dotenv.ts`,
+ * felipearos/software-factory#49), the plain environment when the project
+ * runs no secrets manager, and whatever manager comes next
  * (Infisical, 1Password, a host file) as one more `SecretSource`. The
  * supervisor's re-read of an unread secret is written against this interface,
  * so a new source gets it without touching `ralph.sh`.
@@ -11,6 +12,8 @@
  * every source's test file runs.
  */
 import { spawn } from "node:child_process";
+
+import { dotenvSource } from "./dotenv";
 
 /**
  * What one read of a named secret came back with.
@@ -29,13 +32,16 @@ export type SecretRead =
   | { kind: "unread"; why: string };
 
 export interface SecretSource {
-  /** Which manager answers: "doppler", "environment", "fake". */
+  /** Which manager answers: "doppler", "dotenv", "environment", "fake". */
   readonly kind: string;
   read(name: string): Promise<SecretRead>;
 }
 
-/** The two runners `ralph.sh` knows; anything but Doppler reads the environment. */
-export type SecretsRunner = "doppler" | "none";
+/**
+ * The runners `ralph.sh` knows: Doppler, a dotenv file (its path in
+ * `RALPH_SECRETS_FILE`), and none, which reads the environment.
+ */
+export type SecretsRunner = "doppler" | "dotenv" | "none";
 
 /** What a finished (or abandoned) child process left behind. */
 export interface RunResult {
@@ -191,5 +197,8 @@ export function secretSourceFor(
   if (runner === "doppler") {
     return dopplerSource({ project: env.RALPH_SECRETS_PROJECT ?? "", config: env.RALPH_SECRETS_CONFIG ?? "" });
   }
+  // An unset path reads as a missing file, so every read answers unread and
+  // the supervisor waits, rather than quietly finding nothing.
+  if (runner === "dotenv") return dotenvSource(env.RALPH_SECRETS_FILE ?? "");
   return environmentSource(env);
 }

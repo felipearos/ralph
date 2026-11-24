@@ -117,6 +117,42 @@ export interface SetupForm {
   loops: string;
   /** Comma-separated check names; a name may hold spaces (`Vercel – app`). */
   requiredChecks: string;
+  /**
+   * Where the loops' secrets come from: none, or a dotenv file on the host.
+   * Any other runner the defaults name (doppler) is held as its raw string,
+   * so leaving the choice alone passes the defaults' block through untouched.
+   */
+  secretsRunner: SecretsChoice | (string & {});
+  /** The dotenv file's path, relative to the project root or absolute; only sent for `dotenv`. */
+  secretsFile: string;
+}
+
+/** The secrets runners the form offers; a doppler scope is set up by hand, not here. */
+export type SecretsChoice = "none" | "dotenv";
+
+export const SECRETS_CHOICES: readonly { runner: SecretsChoice; label: string }[] = [
+  { runner: "none", label: "None" },
+  { runner: "dotenv", label: "Dotenv file" },
+];
+
+const secretsOf = (config: Record<string, unknown>): Record<string, unknown> | null =>
+  typeof config.secrets === "object" && config.secrets !== null && !Array.isArray(config.secrets)
+    ? (config.secrets as Record<string, unknown>)
+    : null;
+
+/**
+ * The `secrets` block the candidate config carries. The withhold list is the
+ * defaults' own, since the form does not edit it. A blank dotenv path is still
+ * sent: the server names the problem rather than the form quietly falling
+ * back to none. A runner the form does not offer, left as the defaults had
+ * it, keeps the defaults' block whole (a doppler scope and all).
+ */
+function secretsFromForm(defaults: Record<string, unknown>, form: SetupForm): Record<string, unknown> {
+  const base = secretsOf(defaults);
+  const withhold = Array.isArray(base?.withhold) ? base.withhold : [];
+  if (form.secretsRunner === "dotenv") return { runner: "dotenv", file: form.secretsFile.trim(), withhold };
+  if (form.secretsRunner !== "none" && base !== null && base.runner === form.secretsRunner) return base;
+  return { runner: form.secretsRunner, withhold };
 }
 
 const checkNames = (text: string): string[] =>
@@ -194,6 +230,9 @@ export function formFromConfig(config: Record<string, unknown>): SetupForm {
       .join("\n"),
     loops: Array.isArray(config.loops) ? config.loops.map(String).join(", ") : "",
     requiredChecks: Array.isArray(config.requiredChecks) ? config.requiredChecks.map(String).join(", ") : "",
+    // No block, or one without a runner, is today's default: none.
+    secretsRunner: text(secretsOf(config)?.runner) || "none",
+    secretsFile: text(secretsOf(config)?.file),
   };
 }
 
@@ -237,6 +276,7 @@ export function configFromForm(
     gates,
     loops: loopNames(form.loops),
     requiredChecks: checkNames(form.requiredChecks),
+    secrets: secretsFromForm(defaults, form),
     ...(tracker === null ? {} : { tracker }),
   };
 }

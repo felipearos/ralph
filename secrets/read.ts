@@ -3,8 +3,9 @@
  * configured `SecretSource`, for `ralph.sh` (felipearos/ralph#759).
  *
  * The runner is `RALPH_NAMED_SECRETS_RUNNER`, falling back to
- * `RALPH_SECRETS_RUNNER`, then to none. As in `ralph.sh`, any runner but
- * Doppler reads the environment.
+ * `RALPH_SECRETS_RUNNER`, then to none. `doppler` reads Doppler, `dotenv`
+ * reads the file named by `RALPH_SECRETS_FILE`, and any other runner reads
+ * the environment.
  *
  * Exit codes, which bash branches on:
  *   0  the value on stdout, with NO trailing newline (`$(...)` would strip
@@ -35,7 +36,7 @@ export async function main(
     return EXIT_USAGE;
   }
   const configured = env.RALPH_NAMED_SECRETS_RUNNER || env.RALPH_SECRETS_RUNNER || "none";
-  const runner: SecretsRunner = configured === "doppler" ? "doppler" : "none";
+  const runner: SecretsRunner = configured === "doppler" || configured === "dotenv" ? configured : "none";
   const read = await secretSourceFor(runner, env).read(name);
   if (read.kind === "value") {
     out.stdout(read.value);
