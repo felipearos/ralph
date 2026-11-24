@@ -468,6 +468,11 @@ describe("setting a project up", () => {
       "gate name 'Test' must be lowercase kebab-case",
       "'loops' must name at least one loop",
     ]);
+    // The form sends a blank dotenv path as it is, so the server names it.
+    const noFile = await m.request("POST", "/api/p/widget/setup/validate", {
+      config: candidate({ secrets: { runner: "dotenv", file: "", withhold: [] } }),
+    });
+    expect(noFile.body).toEqual({ valid: false, problems: ["'secrets.file' must be the path of the dotenv file"] });
   }, 30_000);
 
   it("opens a setup PR, goes pending, and turns ready by itself once it merges; start waits for ready", async () => {

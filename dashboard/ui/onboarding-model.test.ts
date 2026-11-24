@@ -20,6 +20,7 @@ import {
   setupStamp,
   trackerBlock,
   trackerHold,
+  type SetupForm,
   type TrackerDraft,
 } from "./onboarding-model";
 
@@ -119,6 +120,33 @@ describe("the setup form", () => {
       gates: { test: "bun test", lint: "bun x eslint .", broken: "" },
       loops: ["ralph", "rafa", "remo"],
     });
+  });
+
+  it("round-trips a dotenv secrets block", () => {
+    const dotenv = { ...defaults, secrets: { runner: "dotenv", file: ".env.ralph", withhold: ["DB_URL"] } };
+    const form = formFromConfig(dotenv);
+    expect(form).toMatchObject({ secretsRunner: "dotenv", secretsFile: ".env.ralph" });
+    expect(configFromForm(dotenv, form)).toEqual(dotenv);
+  });
+
+  it("writes a dotenv block from none defaults, keeping their withhold, and sends a blank path for the server to name", () => {
+    const form: SetupForm = { ...formFromConfig(defaults), secretsRunner: "dotenv", secretsFile: "  /srv/acme/.env  " };
+    expect(configFromForm(defaults, form)).toEqual({ ...defaults, secrets: { runner: "dotenv", file: "/srv/acme/.env", withhold: [] } });
+    expect(configFromForm(defaults, { ...form, secretsFile: " " }).secrets).toEqual({ runner: "dotenv", file: "", withhold: [] });
+  });
+
+  it("drops the file when the choice goes back to none", () => {
+    const dotenv = { ...defaults, secrets: { runner: "dotenv", file: ".env.ralph", withhold: ["DB_URL"] } };
+    const form: SetupForm = { ...formFromConfig(dotenv), secretsRunner: "none" };
+    expect(configFromForm(dotenv, form).secrets).toEqual({ runner: "none", withhold: ["DB_URL"] });
+  });
+
+  it("passes a doppler block through unchanged when the choice is left alone", () => {
+    const doppler = { ...defaults, secrets: { runner: "doppler", project: "acme", config: "dev", withhold: ["X"] } };
+    const form = formFromConfig(doppler);
+    expect(form.secretsRunner).toBe("doppler");
+    expect(configFromForm(doppler, form)).toEqual(doppler);
+    expect(configFromForm(doppler, { ...form, secretsRunner: "none" }).secrets).toEqual({ runner: "none", withhold: ["X"] });
   });
 
   it("lists the files the setup PR writes where they really go, project-relative", () => {

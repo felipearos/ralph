@@ -4,7 +4,7 @@
  * logic is in `onboarding-model.ts`; validation is `project-config`'s, run by
  * the server.
  */
-import { CheckCircle2, ExternalLink, File, FolderGit2, GitBranch, GitPullRequest, Loader2, Repeat2, type LucideIcon } from "lucide-react";
+import { CheckCircle2, ExternalLink, File, FolderGit2, GitBranch, GitPullRequest, KeyRound, Loader2, Repeat2, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -14,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { ProjectSetupView, SetupSubmitResult, SetupValidation } from "../contracts";
 import { CommandNotice, LocalOnlyNote, send, useCommandAvailability } from "./command";
 import { EMPTY_ANSWER, type CommandError } from "./command-model";
@@ -24,6 +25,7 @@ import {
   gateChips,
   listChips,
   mergesWithoutCi,
+  SECRETS_CHOICES,
   setupFiles,
   setupPanel,
   trackerBlock,
@@ -66,7 +68,7 @@ export function SetupPanel({ setup, onSubmitted }: { setup: ProjectSetupView; on
   return <SetupFormCard baseBranch={panel.baseBranch} onSubmitted={onSubmitted} />;
 }
 
-type FieldKey = Exclude<keyof SetupForm, "gates">;
+type FieldKey = Exclude<keyof SetupForm, "gates" | "secretsRunner" | "secretsFile">;
 
 /**
  * The form's fields in two sections, each pair a row: where the config lands
@@ -263,7 +265,7 @@ function SetupFormCard({ baseBranch, onSubmitted }: { baseBranch: string; onSubm
             </span>
             <span className="px-1">→ PR into {baseBranch}</span>
           </div>
-          <p className="text-xs">Secrets default to none.</p>
+          <p className="text-xs">Secrets: none, unless the Secrets section below points the loops at a dotenv file.</p>
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -332,6 +334,48 @@ function SetupFormCard({ baseBranch, onSubmitted }: { baseBranch: string; onSubm
               saved={trackerSaved}
               onSaved={setTrackerSaved}
             />
+
+            <FormSection title="Secrets" blurb="Where the loops' commands read their credentials from." icon={KeyRound}>
+              <div className="grid content-start gap-3">
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  aria-label="Where the loops' secrets come from"
+                  value={form.secretsRunner}
+                  // Radix reports "" when the active item is clicked again; a runner is always picked, so ignore it.
+                  onValueChange={(runner) => runner && edit("secretsRunner", runner)}
+                >
+                  {SECRETS_CHOICES.map(({ runner, label }) => (
+                    <ToggleGroupItem key={runner} value={runner} className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+                      {label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+                {form.secretsRunner === "dotenv" ? (
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-secretsFile">Dotenv file</Label>
+                    <Input
+                      id="setup-secretsFile"
+                      className="font-mono"
+                      placeholder="/etc/ralph/project.env"
+                      value={form.secretsFile}
+                      onChange={(event) => edit("secretsFile", event.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      absolute path on this host, outside the worktree, so no agent can read it · relative paths start at the project root
+                    </p>
+                  </div>
+                ) : form.secretsRunner === "none" ? (
+                  <p className="text-xs text-muted-foreground">The loops' commands run with no secrets added.</p>
+                ) : (
+                  // A runner the defaults name but the form does not offer (doppler) goes on the PR as it is.
+                  <p className="text-xs text-muted-foreground">
+                    Keeps the defaults' <code className="font-mono">{form.secretsRunner}</code> runner unless you pick one above.
+                  </p>
+                )}
+              </div>
+            </FormSection>
 
             {withoutCi && (
               <Alert variant="destructive">
