@@ -1067,6 +1067,51 @@ export function checkBuildkiteLogs(
 }
 
 /**
+ * Whether gh can read the project's GitHub Actions runs, the GitHub Actions
+ * counterpart of {@link checkBuildkiteLogs}: `gh-actions-log.ts` and
+ * `ci-log.ts` read a red Actions check's logs through gh, so a token without
+ * Actions access leaves an iteration unable to say why CI is red.
+ *
+ * Always a warning, never a denial, whatever the probe says: a loop that
+ * cannot read CI logs still works, it only explains red CI worse, and a probe
+ * that could refuse a start would turn a GitHub blip into a stuck loop.
+ *
+ * Fenced to a project with a required check that could be an Actions job. The
+ * provider is inferred from the check name alone, and a `buildkite/` check is
+ * `bk-log.ts`'s, so a project requiring only those (or nothing) asks gh nothing.
+ * The repo comes from the config, as {@link checkVerifierDeploySource}'s does.
+ */
+export async function checkActionsLogs(
+  config: ProjectConfig | null,
+  read: (args: string[]) => Promise<Ran> = (args) => run("gh", args),
+): Promise<CheckResult | null> {
+  if (!config?.requiredChecks.some((name) => !name.startsWith("buildkite/"))) return null;
+  const ran = await read(["api", `repos/${config.repo}/actions/runs?per_page=1`]);
+  if (ran.ok) return { name: "actions-logs", outcome: { status: "ok" } };
+  // gh prints the response body on stdout before its own `gh: … (HTTP 403)` line, so prefer that line.
+  const lines = ran.output.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const first = lines.find((line) => line.startsWith("gh:")) ?? lines[0] ?? "gh printed nothing";
+  if (ran.timedOut || !/HTTP 40[34]|resource not accessible/i.test(ran.output)) {
+    return {
+      name: "actions-logs",
+      outcome: {
+        status: "warn",
+        why: `GitHub could not be reached to check that gh can read ${config.repo}'s Actions logs: ${first}`,
+        remedy: "nothing to do if GitHub is down; otherwise check gh auth status, and restart",
+      },
+    };
+  }
+  return {
+    name: "actions-logs",
+    outcome: {
+      status: "warn",
+      why: `gh cannot read ${config.repo}'s GitHub Actions runs, so iterations cannot read why a CI check is red: ${first}`,
+      remedy: `give gh's token read access to Actions on ${config.repo} (classic: repo; fine-grained: Actions read), and restart`,
+    },
+  };
+}
+
+/**
  * Whether this loop's gate can retry a candidate flake's failed job itself.
  *
  * A warning, never a denial: without the token the loop still watches CI,
@@ -1549,6 +1594,7 @@ export async function preflight(): Promise<CheckResult[]> {
     ...(verifierCredentials !== null ? [checkVerifierDeploySource(config, role)] : []),
     ...(runs("loop-labels") ? [checkLoopLabels(loop, role, rosterRoles, config?.appLabels ?? null)] : []),
     ...(runs("clerk-intake-board") ? [checkClerkIntakeBoard(config, role)] : []),
+    ...(runs("actions-logs") ? [checkActionsLogs(config)] : []),
     ...(runs("doppler-scope") && config?.secrets.runner === "doppler"
       ? [checkDopplerScope({ project: config.secrets.project, config: config.secrets.config })]
       : []),

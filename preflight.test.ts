@@ -39,6 +39,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   applyVerdicts,
+  checkActionsLogs,
   checkBuildkiteLogs,
   checkBuildkiteRetry,
   checkClerkCredentials,
@@ -471,7 +472,7 @@ describe("the preflight end to end", () => {
     // allowlist admits is exercised rather than merely permitted.
     const { color, description } = CREATED_LABELS["migration-applied"]!;
     const create = `gh label create migration-applied --color ${color} --description ${description}`;
-    const reads = /^(gh auth status|gh label list --limit \d+ --json name|doppler secrets --only-names --json -p loggd-web -c dev|git rev-parse( --verify --quiet origin\/main| --git-dir))$/;
+    const reads = /^(gh auth status|gh label list --limit \d+ --json name|gh api repos\/felipearos\/loggd\/actions\/runs\?per_page=1|doppler secrets --only-names --json -p loggd-web -c dev|git rev-parse( --verify --quiet origin\/main| --git-dir))$/;
 
     const ready = fakes();
     runPreflight(ready);
@@ -1938,5 +1939,58 @@ describe("--doppler-failure, the classifier ralph.sh's per-turn scope probe asks
     // A locked keyring or a network blip is a wait, never a stopped loop.
     expect(classify("Doppler Error: failed to unlock correct collection\n")).toEqual({ status: 0, stdout: "unavailable" });
     expect(classify("")).toEqual({ status: 0, stdout: "unavailable" });
+  });
+});
+
+describe("whether gh can read a project's GitHub Actions logs (#50)", () => {
+  const config = (requiredChecks: string[]) =>
+    parseProjectConfig(JSON.stringify({ ...LOGGD_CONFIG, repo: "acme-org/acme-app", requiredChecks }));
+  const reader = (answer: { ok: boolean; output?: string; timedOut?: boolean }) => {
+    const calls: string[][] = [];
+    const read = async (args: string[]) => {
+      calls.push(args);
+      return { ok: answer.ok, stdout: answer.ok ? "{}" : "", output: answer.output ?? "", timedOut: answer.timedOut ?? false };
+    };
+    return { calls, read };
+  };
+
+  it("is ok when gh reads the project's Actions runs, named by the config's repo", async () => {
+    const { calls, read } = reader({ ok: true });
+    expect(await checkActionsLogs(config(["buildkite/acme-app", "test"]), read)).toEqual({ name: "actions-logs", outcome: { status: "ok" } });
+    expect(calls).toEqual([["api", "repos/acme-org/acme-app/actions/runs?per_page=1"]]);
+  });
+
+  it("warns, never denies, a gh that cannot read Actions, with the remedy", async () => {
+    const { read } = reader({ ok: false, output: "{\"message\":\"Resource not accessible by personal access token\"}\ngh: Resource not accessible by personal access token (HTTP 403)\n" });
+    expect((await checkActionsLogs(config(["test"]), read))!).toEqual({
+      name: "actions-logs",
+      outcome: {
+        status: "warn",
+        why: "gh cannot read acme-org/acme-app's GitHub Actions runs, so iterations cannot read why a CI check is red: gh: Resource not accessible by personal access token (HTTP 403)",
+        remedy: "give gh's token read access to Actions on acme-org/acme-app (classic: repo; fine-grained: Actions read), and restart",
+      },
+    });
+  });
+
+  it("warns, never waits, when GitHub cannot be reached", async () => {
+    const { read } = reader({ ok: false, timedOut: true });
+    expect((await checkActionsLogs(config(["test"]), read))!).toEqual({
+      name: "actions-logs",
+      outcome: {
+        status: "warn",
+        why: "GitHub could not be reached to check that gh can read acme-org/acme-app's Actions logs: gh printed nothing",
+        remedy: "nothing to do if GitHub is down; otherwise check gh auth status, and restart",
+      },
+    });
+    const { read: down } = reader({ ok: false, output: "gh: Bad Gateway (HTTP 502)\n" });
+    expect((await checkActionsLogs(config(["test"]), down))!.outcome).toMatchObject({ status: "warn", why: expect.stringContaining("could not be reached") });
+  });
+
+  it("asks gh nothing of a project with no required check that could be an Actions job", async () => {
+    const { calls, read } = reader({ ok: true });
+    expect(await checkActionsLogs(config(["buildkite/acme-app"]), read)).toBeNull();
+    expect(await checkActionsLogs(config([]), read)).toBeNull();
+    expect(await checkActionsLogs(null, read)).toBeNull();
+    expect(calls).toEqual([]);
   });
 });

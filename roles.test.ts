@@ -314,10 +314,10 @@ describe("the preflight each role is held to", () => {
   });
 
   it("drops from a triager exactly what a triager cannot reach, and nothing else", () => {
-    // Exactly: a fourth drop would be a probe silently skipped. `logs-writable`
+    // Exactly: a fifth drop would be a probe silently skipped. `logs-writable`
     // is the one that makes an iteration's own output recoverable, and a
     // `not.toContain` trio would not have noticed it going.
-    expect(checksOf("triager")).toEqual(without("executor-tools", "buildkite-logs", "doppler-scope"));
+    expect(checksOf("triager")).toEqual(without("executor-tools", "buildkite-logs", "actions-logs", "doppler-scope"));
     // Which is to say: it still claims with labels, reads GitHub, and takes its
     // work off the frontier's triage bucket.
     for (const check of ["loop-labels", "github-credentials", "frontier-prerequisites", "logs-writable"] as const) {
@@ -447,7 +447,7 @@ describe("the preflight each role is held to", () => {
     expect(readOnlyCheckout("verifier")).toBe(true);
     // The frontier and Buildkite-log checks drop; its verdict labels are the spec's
     // loop-labels requirement (felipearos/ralph#560).
-    expect(verifier.preflight.checks).toEqual(without("frontier-prerequisites", "buildkite-logs"));
+    expect(verifier.preflight.checks).toEqual(without("frontier-prerequisites", "buildkite-logs", "actions-logs"));
     expect(verifier.preflight.verdicts).toEqual({});
     expect(verifier.preflight.labels).toEqual(["following", "verified", "unexercised", "inconclusive", "needs-human"]);
     expect(verifier.preflight.requiresDifficultyLabels).toBe(false);
@@ -487,7 +487,7 @@ describe("the preflight each role is held to", () => {
     expect(readOnlyCheckout("sentinel")).toBe(true);
     // The verifier's checks drop; its tickets carry `ready-for-human`
     // (spec felipearos/ralph#678), which preflight creates.
-    expect(sentinel.preflight.checks).toEqual(without("frontier-prerequisites", "buildkite-logs"));
+    expect(sentinel.preflight.checks).toEqual(without("frontier-prerequisites", "buildkite-logs", "actions-logs"));
     expect(sentinel.preflight.verdicts).toEqual({});
     expect(sentinel.preflight.labels).toEqual(["ready-for-human"]);
     expect(CREATED_LABELS["ready-for-human"]).toEqual({ color: "d4c5f9", description: "A person decides whether a loop should take this ticket" });
