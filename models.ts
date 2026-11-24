@@ -1273,9 +1273,9 @@ export function mergeRoute(method: MergeMethod | undefined): string {
     return [
       "   The base branch merges only through GitHub's merge queue, and that",
       "   changes what \"merge\" means here. `gh pr merge <pr>` with no strategy",
-      "   flag is how the PR enters the queue; **never pass `--admin`, and never a",
-      "   strategy flag** (`--squash`, `--merge`, `--rebase`) that merges around the",
-      "   queue. The queue builds base-plus-your-PR before the merge lands. The",
+      "   flag is how the PR enters the queue (the queue's own settings pick the",
+      "   strategy); **never pass `--admin`**, which merges around the queue. The",
+      "   queue builds base-plus-your-PR before the merge lands. The",
       "   queue is what proves the combination, so being behind",
       "   `origin/$RALPH_BASE_BRANCH` is no longer a reason to rebase — a rebase",
       "   re-runs CI on the PR for nothing. Rebase only for a real textual",

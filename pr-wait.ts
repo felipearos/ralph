@@ -441,16 +441,40 @@ export function graphqlResetAt(gh: Gh = runGh): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().replace(/\.000Z$/, "Z");
 }
 
-export function readSnapshot(pr: string, repo: string | null, gh: Gh = runGh, method: MergeMethod = "mergify"): Read {
-  const got = readPrSnapshot(pr, repo, gh);
-  if (!got.ok || method !== "github-queue") return got;
-  // A failed queue read is a failed read, never a guess: judging "not queued"
-  // off it could call a queued PR dequeued.
+export function readSnapshot(
+  pr: string,
+  repo: string | null,
+  gh: Gh = runGh,
+  method: MergeMethod = "mergify",
+  mode: Mode = "merge",
+): Read {
+  if (method !== "github-queue") return readPrSnapshot(pr, repo, gh);
+  // The queue is read BEFORE the state, so the state is the later of the two
+  // reads: a PR the queue merges between them reads MERGED, never "open and
+  // out of the queue", which `judge` would call dequeued.
   const queue = call(gh, inQueueArgs(pr, repo));
-  if (!queue.ok) return { ok: false, error: `merge queue read: ${queue.error}`, ...(got.via ? { via: got.via } : {}) };
-  const inQueue = parseInQueue(queue.stdout);
-  if (inQueue === null) return { ok: false, error: `unparseable gh api graphql output: ${queue.stdout.trim().slice(0, 200)}` };
-  return { ...got, snapshot: { ...got.snapshot, inQueue } };
+  const got = readPrSnapshot(pr, repo, gh);
+  if (!got.ok) return got;
+  // A merged or closed PR is judged on its state; the queue read adds nothing.
+  if (got.snapshot.state !== "OPEN") return got;
+  const inQueue = queue.ok ? parseInQueue(queue.stdout) : null;
+  if (inQueue !== null) return { ...got, snapshot: { ...got.snapshot, inQueue } };
+  const error = queue.ok
+    ? `unparseable gh api graphql output: ${queue.stdout.trim().slice(0, 200)}`
+    : `merge queue read: ${queue.error}`;
+  // While CI runs the queue flag only decides when to switch to the merge
+  // wait, so an unread one is "not yet": the CI wait goes on over REST when
+  // GraphQL is rate limited, as it does for every other method.
+  if (mode === "ci") return { ...got, snapshot: { ...got.snapshot, inQueue: false } };
+  // In the merge wait a guess could call a queued PR dequeued, so it is a
+  // failed read, carrying when the GraphQL quota resets when that is why.
+  const resetAt = !queue.ok && isRateLimited(queue.error) ? graphqlResetAt(gh) : null;
+  return {
+    ok: false,
+    error,
+    ...(got.via ? { via: got.via } : {}),
+    ...(resetAt !== null ? { resetAt } : {}),
+  };
 }
 
 function readPrSnapshot(pr: string, repo: string | null, gh: Gh): Read {
@@ -494,7 +518,7 @@ export async function wait(options: Options, read: typeof readSnapshot = readSna
   });
 
   for (;;) {
-    const got = read(options.pr, options.repo, undefined, method);
+    const got = read(options.pr, options.repo, undefined, method, mode);
     if (got.via === "rest") {
       console.error(`pr-wait: #${options.pr} GraphQL is rate limited — ${got.ok ? "read over REST" : "REST failed too"}`);
     }

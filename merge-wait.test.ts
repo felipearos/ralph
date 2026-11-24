@@ -78,7 +78,7 @@ function run(sequence: string[], extra: string[] = [], over: Record<string, stri
   queue.forEach((body, i) => writeFileSync(join(dir, `q${i}.json`), body));
   const result = spawnSync(
     BUN,
-    [SCRIPT, "948", "--repo", "felipearos/loggd", "--interval", "0.005", "--timeout", "10", ...extra],
+    [SCRIPT, "948", "--repo", "example-org/acme-app", "--interval", "0.005", "--timeout", "10", ...extra],
     {
       encoding: "utf8",
       env: {
@@ -108,7 +108,7 @@ describe("the exit code is the outcome", () => {
 
   it("asks gh for exactly the PR it was given, in the repo it was given", () => {
     const result = run([MERGED]);
-    expect(result.argv[0]).toBe("gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd");
+    expect(result.argv[0]).toBe("gh pr view 948 --json state,mergedAt,labels --repo example-org/acme-app");
   });
 
   it("returns at once when the merge was immediate (no queue in the way)", () => {
@@ -180,7 +180,7 @@ const inQueue = (value: boolean): string => JSON.stringify({ data: { repository:
 const IN = inQueue(true);
 const OUT = inQueue(false);
 const GRAPHQL =
-  "gh api graphql -f query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } } -F owner=felipearos -F name=loggd -F number=948";
+  "gh api graphql -f query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } } -F owner=example-org -F name=acme-app -F number=948";
 
 describe("the merge method decides what in the queue means", () => {
   const numbered = (state: string, mergedAt: string | null = null): string =>
@@ -190,8 +190,8 @@ describe("the merge method decides what in the queue means", () => {
     for (const result of [run([QUEUED, MERGED], ["--method", "mergify"]), run([QUEUED, MERGED], [], { RALPH_MERGE_METHOD: "" })]) {
       expect(result.status).toBe(EXIT.merged);
       expect(result.argv).toEqual([
-        "gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd",
-        "gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd",
+        "gh pr view 948 --json state,mergedAt,labels --repo example-org/acme-app",
+        "gh pr view 948 --json state,mergedAt,labels --repo example-org/acme-app",
       ]);
     }
   });
@@ -200,8 +200,15 @@ describe("the merge method decides what in the queue means", () => {
     const result = run([numbered("OPEN"), numbered("OPEN"), numbered("MERGED", "2026-11-24T10:00:00Z")], ["--method", "github-queue"], {}, [IN]);
     expect(result.status).toBe(EXIT.merged);
     expect(result.stdout).toBe("merged 2026-11-24T10:00:00Z");
-    expect(result.argv[0]).toBe("gh pr view 948 --json state,mergedAt,labels,number --repo felipearos/loggd");
-    expect(result.argv[1]).toBe(GRAPHQL);
+    // The queue is read first, so the state read is the later of the two.
+    expect(result.argv[0]).toBe(GRAPHQL);
+    expect(result.argv[1]).toBe("gh pr view 948 --json state,mergedAt,labels --repo example-org/acme-app");
+  });
+
+  it("github-queue: a PR merged between the queue read and the state read is merged, not dequeued", () => {
+    // The queue already let it go when asked; the later state read sees the merge.
+    const result = run([numbered("OPEN"), numbered("MERGED", "2026-11-24T10:00:00Z")], ["--method", "github-queue"], {}, [IN, OUT]);
+    expect(result.status).toBe(EXIT.merged);
   });
 
   it("github-queue: a PR taken out of the queue is dequeued", () => {
@@ -239,7 +246,7 @@ describe("the merge method decides what in the queue means", () => {
   it("direct: merged on the first poll returns at once, with no queue read", () => {
     const result = run([MERGED], ["--method", "direct"]);
     expect(result.status).toBe(EXIT.merged);
-    expect(result.argv).toEqual(["gh pr view 948 --json state,mergedAt,labels --repo felipearos/loggd"]);
+    expect(result.argv).toEqual(["gh pr view 948 --json state,mergedAt,labels --repo example-org/acme-app"]);
   });
 
   it("direct: still open past the grace polls is a merge that did not land, not a queue", () => {

@@ -142,6 +142,14 @@ export function nextStep(
           `\`<ralph>AWAIT_PR ${pr} merge</ralph>\` so the supervisor sees the merge land.`,
         ].join("\n");
       }
+      // GitHub's queue puts no label on the PR; §5.6's enqueue note names the read.
+      if (method === "github-queue") {
+        return [
+          `CI is green on the PR's head. Continue at §5.5, then §5.6: check mergeability and enqueue`,
+          `(\`gh pr merge ${pr}\`). Once enqueued — or if \`isInMergeQueue\` already reads true — end with`,
+          `\`<ralph>AWAIT_PR ${pr} merge</ralph>\` instead of running the merge wait yourself.`,
+        ].join("\n");
+      }
       return [
         `CI is green on the PR's head. Continue at §5.5, then §5.6: check mergeability and enqueue.`,
         `Once enqueued — or if the PR already carries the queue's label — end with`,

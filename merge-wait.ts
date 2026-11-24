@@ -217,30 +217,51 @@ const gh = (args: string[]): { ok: true; stdout: string } | { ok: false; error: 
 };
 
 export function readSnapshot(pr: string, repo: string | null, method: MergeMethod = "mergify"): Read {
-  // github-queue also asks for the number: the PR may be named by URL or
-  // branch here, and the graphql read takes only a number.
-  const args = ["pr", "view", pr, "--json", method === "github-queue" ? "state,mergedAt,labels,number" : "state,mergedAt,labels"];
-  if (repo !== null) args.push("--repo", repo);
-  const got = gh(args);
-  if (!got.ok) return got;
-  const snapshot = parseSnapshot(got.stdout);
-  if (snapshot === null) return { ok: false, error: `unparseable gh output: ${got.stdout.trim().slice(0, 200)}` };
-  if (method === "direct") return { ok: true, snapshot: { ...snapshot, inQueue: false } };
-  if (method === "mergify") return { ok: true, snapshot };
-  let number = pr;
-  try {
-    const parsed = (JSON.parse(got.stdout) as { number?: unknown }).number;
-    if (typeof parsed === "number") number = String(parsed);
-  } catch {
-    // parseSnapshot already accepted this output, so it is JSON.
+  const readState = (): Read => {
+    const args = ["pr", "view", pr, "--json", "state,mergedAt,labels"];
+    if (repo !== null) args.push("--repo", repo);
+    const got = gh(args);
+    if (!got.ok) return got;
+    const snapshot = parseSnapshot(got.stdout);
+    if (snapshot === null) return { ok: false, error: `unparseable gh output: ${got.stdout.trim().slice(0, 200)}` };
+    return { ok: true, snapshot };
+  };
+  if (method === "mergify") return readState();
+  if (method === "direct") {
+    const got = readState();
+    return got.ok ? { ok: true, snapshot: { ...got.snapshot, inQueue: false } } : got;
   }
-  // A failed queue read is a failed read, never a guess: judging "not queued"
-  // off it could call a queued PR dequeued.
+  // The graphql read takes only a number, and the PR may be named here by URL
+  // or branch: resolve it first when it is not one already.
+  let number = pr;
+  if (!/^\d+$/.test(pr)) {
+    const args = ["pr", "view", pr, "--json", "number"];
+    if (repo !== null) args.push("--repo", repo);
+    const got = gh(args);
+    if (!got.ok) return got;
+    let parsed: unknown;
+    try {
+      parsed = (JSON.parse(got.stdout) as { number?: unknown }).number;
+    } catch {
+      parsed = undefined;
+    }
+    if (typeof parsed !== "number") return { ok: false, error: `unparseable gh output: ${got.stdout.trim().slice(0, 200)}` };
+    number = String(parsed);
+  }
+  // The queue is read BEFORE the state, so the state is the later of the two
+  // reads: a PR the queue merges between them reads MERGED, never "open and
+  // out of the queue", which `judge` would call dequeued.
   const queue = gh(inQueueArgs(number, repo));
+  const got = readState();
+  if (!got.ok) return got;
+  // A merged or closed PR is judged on its state; the queue read adds nothing.
+  if (got.snapshot.state !== "OPEN") return got;
+  // A failed queue read on an open PR is a failed read, never a guess:
+  // judging "not queued" off it could call a queued PR dequeued.
   if (!queue.ok) return { ok: false, error: `merge queue read: ${queue.error}` };
   const inQueue = parseInQueue(queue.stdout);
   if (inQueue === null) return { ok: false, error: `unparseable gh api graphql output: ${queue.stdout.trim().slice(0, 200)}` };
-  return { ok: true, snapshot: { ...snapshot, inQueue } };
+  return { ok: true, snapshot: { ...got.snapshot, inQueue } };
 }
 
 export interface Options {

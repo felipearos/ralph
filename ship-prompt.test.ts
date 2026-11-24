@@ -149,12 +149,19 @@ describe("a pr-medic's recovery turns", () => {
     expect(dequeued).toContain("§5.6");
     expect(dequeued).toContain("Never re-queue");
     expect(dequeued).not.toContain("<ralph>AWAIT_PR 41 merge</ralph>");
-    // Any other method, or none, reads as it did.
-    for (const method of ["", "mergify", "github-queue"]) {
-      for (const outcome of ["green", "dequeued"]) {
-        expect(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", method)).toBe(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", ""));
-      }
+    // Mergify, or no method, reads as it did.
+    for (const outcome of ["green", "dequeued"]) {
+      expect(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", "mergify")).toBe(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", ""));
     }
+    // GitHub's queue puts no label on the PR, so green names the queue read instead.
+    const queueGreen = nextStep({ outcome: "green", pr: "41" }, 1, 4, "coder", "loop", "github-queue");
+    expect(queueGreen).toContain("`gh pr merge 41`");
+    expect(queueGreen).toContain("`isInMergeQueue`");
+    expect(queueGreen).not.toContain("queue's label");
+    expect(queueGreen).toContain("`<ralph>AWAIT_PR 41 merge</ralph>`");
+    expect(nextStep({ outcome: "dequeued", pr: "41" }, 1, 4, "coder", "loop", "github-queue")).toBe(
+      nextStep({ outcome: "dequeued", pr: "41" }, 1, 4, "coder", "loop", ""),
+    );
   });
 
   it("never sends a coder to merge at green when a person merges (merge: human)", () => {
