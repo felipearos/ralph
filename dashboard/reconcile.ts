@@ -21,10 +21,9 @@
  *    boot was the shutdown, not a choice, and a dead loop with that ending is
  *    restarted. A record that does not say who stopped it or with which
  *    signal, or a boot or stop time that cannot be read, stays stopped as
- *    before. Liveness `unknown` is
- *    "could not tell", which `classifyLoop` may still call `stale` on an old
- *    heartbeat — a heartbeat nobody could read is not evidence a supervisor is
- *    gone. A worktree with no record at all was never started here, so it is
+ *    before. Liveness `unknown` is "could not tell", which `classifyLoop` may
+ *    still call `stale` on an old heartbeat — a heartbeat nobody could read
+ *    is not evidence a supervisor is gone. A worktree with no record at all was never started here, so it is
  *    not restarted either.
  * 2. **The restart is the Start button's own path.** `gatedStart` into
  *    `start()`, exactly as `POST /api/p/<project>/start` calls it, so a
@@ -70,7 +69,6 @@
  * `push-notification.ts push`; the migration watchdog beside it also reads two
  * things from `gh` (#434).
  */
-import { readFileSync } from "node:fs";
 import { gatedStart, type AgentsDeps } from "./agents";
 import { defaultBunPath } from "./adapter";
 import { rosterNames, type Env, type LoopRetryView, type RosterLoop, type StartResult } from "./contracts";
@@ -532,27 +530,12 @@ export interface ReconcileDeps {
   /**
    * When the host booted, in epoch milliseconds, or null when it cannot be
    * read. A self-recorded SIGTERM `interrupted` older than this was the host
-   * shutdown and is restarted (#6). Defaults to `readBootTimeMs`; injected so
-   * a test never reads the real host.
+   * shutdown and is restarted (#6). The server injects `readBootTimeMs`
+   * (`lifecycle-adapter.ts`), so this module touches no file; absent, it is a
+   * boot time nobody could read, and such a stop stays stopped.
    */
   bootTime?: () => number | null;
   log?: (line: string) => void;
-}
-
-/**
- * The host's boot time from `/proc/stat`'s `btime` line, in epoch
- * milliseconds, or null when it cannot be read. Never throws: a boot time
- * nobody could read only means a shutdown's stop is not restarted.
- */
-export function readBootTimeMs(read: () => string = () => readFileSync("/proc/stat", "utf8")): number | null {
-  try {
-    const match = /^btime (\d+)$/m.exec(read());
-    if (match === null) return null;
-    const ms = Number(match[1]) * 1000;
-    return Number.isFinite(ms) ? ms : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -725,7 +708,7 @@ export async function reconcile(deps: ReconcileDeps): Promise<ReconcilePass> {
   // injected reader is a boot time nobody could read, never a failed pass.
   const bootMs = ((): number | null => {
     try {
-      return (deps.bootTime ?? readBootTimeMs)();
+      return deps.bootTime?.() ?? null;
     } catch {
       return null;
     }

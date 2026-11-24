@@ -2000,6 +2000,10 @@ function runInterrupted(root: string, argv: string[]): number {
     throw new Error(`the loop state belongs to run ${loop.run}, not ${identity.run}; nothing was recorded`);
   }
   const self = flagValue(argv, "self");
+  const signal = flagValue(argv, "signal");
+  // A signal is the trap's to name: an operator's record carrying one would
+  // read like the trap's, and the reconciler restarts those after a reboot.
+  if (signal !== null && self === null) throw new Error("interrupted --signal needs --self <pid>; nothing was recorded");
   if (self !== null) {
     if (String(loop.owner.pid) !== self) {
       throw new Error(`the loop state's owner is pid ${String(loop.owner.pid)}, not ${self}; nothing was recorded`);
@@ -2048,7 +2052,6 @@ function runInterrupted(root: string, argv: string[]): number {
   // there is the trap's, and the operator's reason is the one worth keeping.
   // A replay under a key already applied changes neither record.
   const replaces = loop.stopReason?.kind === "interrupted" && self === null && !replay;
-  const signal = flagValue(argv, "signal");
   if (loop.stopReason === null || replaces) {
     const detail = self === null ? `stopped now by an operator (${key})` : `stopped by a signal (${key})`;
     writeState(
@@ -2062,7 +2065,7 @@ function runInterrupted(root: string, argv: string[]): number {
             kind: "interrupted",
             why,
             self: self !== null,
-            ...(signal !== null && self !== null ? { signal } : {}),
+            ...(signal !== null ? { signal } : {}),
           },
         },
         { run: loop.run, loop: loop.owner.loop, pid: loop.owner.pid, host: loop.owner.host, worktree: loop.worktree },

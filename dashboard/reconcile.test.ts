@@ -20,7 +20,7 @@ import { createAgentsAdapter } from "./agents-adapter";
 import type { AgentsDeps } from "./agents";
 import type { Liveness, StopKind } from "./contracts";
 import { createRalphControlAdapter, type ExecResult, type Executor, type Invocation } from "./control-adapter";
-import { createRalphLifecycleAdapter } from "./lifecycle-adapter";
+import { createRalphLifecycleAdapter, readBootTimeMs } from "./lifecycle-adapter";
 import { classifyLoop } from "../loop-state";
 import type { LifecycleDeps } from "./lifecycle";
 import { createRecordsAdapter } from "./records-adapter";
@@ -33,7 +33,6 @@ import {
   DEFAULT_MIGRATION_ALERT_SECONDS,
   DEFAULT_RECONCILE_MS,
   DEFAULT_RETRY_SCHEDULE_MINUTES,
-  readBootTimeMs,
   reconcile,
   reconcileConfigFromEnv,
   RESTART_OUTCOMES,

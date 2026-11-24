@@ -287,10 +287,8 @@ const ALLOWED: Record<string, string[]> = {
   // `defaultBunPath` alone. It names `push-notification.ts push` and, for the
   // migration watchdog (#434), two read-only `gh` reads, all through an
   // injected executor, so it needs no
-  // `node:child_process` and touches no file itself — save one read of
-  // `/proc/stat`'s boot time (#6), which the command-surface test pins.
+  // `node:child_process` and touches no file itself.
   "reconcile.ts": [
-    "node:fs",
     "./adapter",
     "./agents",
     "./contracts",
@@ -1018,11 +1016,7 @@ describe("the loop reconciler's command surface", () => {
     // The restart is `start.sh` through the start route's own path; the
     // reconciler itself may not reach a process or the disk.
     expect(code).not.toMatch(/child_process|spawn|execFile|(?<![.\w])exec\(|process\.kill/);
-    // One read, of the host's boot time (#6): a `readFileSync` of anything
-    // but `/proc/stat`, or any write, is still the disk.
-    expect(code).not.toMatch(/writeFileSync|appendFileSync|mkdirSync|rmSync|unlinkSync|renameSync|openSync/);
-    expect(code.match(/import \{ readFileSync \} from "node:fs";/g)).toHaveLength(1);
-    expect(code.replace(/import \{ readFileSync \} from "node:fs";/, "").match(/readFileSync\([^)]*/g)).toEqual(['readFileSync("/proc/stat", "utf8"']);
+    expect(code).not.toMatch(/node:fs|readFileSync|writeFileSync|appendFileSync|mkdirSync|rmSync|unlinkSync/);
     // And it names no start of its own: `start.sh` is the lifecycle adapter's,
     // and `gatedStart` is the ONE way in. `./lifecycle` is allow-listed for
     // `readRecord`, so without these a later edit could call `start`,

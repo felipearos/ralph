@@ -1825,6 +1825,18 @@ describe("recording a stop an operator carried out with a signal", () => {
     expect(loop.stopReason).not.toHaveProperty("signal");
   });
 
+  it("refuses --signal without --self, and records nothing", () => {
+    // An operator's record carrying a signal would read like the trap's, which
+    // the reconciler restarts after a reboot.
+    const f = fixture("interrupted-signal-without-self");
+    f.loopState({});
+    const before = readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8");
+    const ran = f.run(["interrupted", "--signal", "SIGTERM", "--key", "now-1", "--why", "stopped now"]);
+    expect(ran.status).not.toBe(0);
+    expect(ran.stderr).toContain("--signal needs --self");
+    expect(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8")).toBe(before);
+  });
+
   it("is never a kind an inbox stop can ask for", () => {
     // Only a signal the dashboard verified and sent may be recorded as one.
     expect(commandFromInbox({ stem: "s", value: { command: "stop", stop: "interrupted" } })?.stopKind).toBe("blocked");

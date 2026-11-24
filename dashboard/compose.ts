@@ -31,7 +31,7 @@ import { createIntakeAdapter } from "./intake-adapter";
 import { createInterruptAdapter } from "./interrupt-adapter";
 import { createRedactor, followIterationOutput, type Emit, type Follower } from "./iteration-output";
 import { createJavAdapter } from "./jav-adapter";
-import { createRalphLifecycleAdapter } from "./lifecycle-adapter";
+import { createRalphLifecycleAdapter, readBootTimeMs } from "./lifecycle-adapter";
 import type { InterruptFactory, LifecycleFactory } from "./lifecycle-routes";
 import { createOnboarding } from "./onboarding";
 import { createOnboardingAdapter } from "./onboarding-adapter";
@@ -459,6 +459,7 @@ export function composeServer(deps: ServerDeps): ComposedServer {
           seen: reconcileSeen,
           retrySeen: reconcileRetrySeen,
           said: reconcileSaid,
+          bootTime: readBootTimeMs,
           log: (line) => log.out(line),
         }),
       ),
