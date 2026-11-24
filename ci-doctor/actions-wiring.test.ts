@@ -17,7 +17,8 @@ import type { ActionsJob, ActionsRun } from "../gh-actions-log";
 import { subprocessSuite } from "../test-timeouts";
 import { fakeActions } from "./actions-fake";
 import { actionsSource, isActionsProject } from "./actions-source";
-import { retryDepsFrom } from "./gate";
+import { checkIncidents } from "./classify";
+import { retryDepsFrom, scannedJobNames } from "./gate";
 import { retryOnce, type RetryDeps } from "./retry";
 import { defaultScanOptions, scan } from "./scan";
 import { readStore } from "./store";
@@ -95,7 +96,7 @@ async function scannedStore(files: string[]): Promise<string> {
   const fake = fakeActions(runs, jobs, logs);
   fake.setNow(NOW);
   const path = join(tempDir(), "ci-health.json");
-  await scan(actionsSource(fake.gh, REPO), null, path, defaultScanOptions("acme-org", "acme-app", { baseBranch: "main" }), NOW);
+  await scan(actionsSource(fake.gh, REPO, { now: () => NOW }), null, path, defaultScanOptions("acme-org", "acme-app", { baseBranch: "main" }), NOW);
   return path;
 }
 
@@ -179,5 +180,47 @@ describe("isActionsProject", () => {
   it("keeps a project that names a Buildkite pipeline on Buildkite, whatever its checks say", () => {
     expect(isActionsProject([], { RALPH_BUILDKITE_PIPELINE: "acme-app" })).toBe(false);
     expect(isActionsProject(["test"], { RALPH_BUILDKITE_PIPELINE: "acme-app" })).toBe(false);
+  });
+});
+
+describe("the gh calls an Actions retry spends", () => {
+  it("charges the re-run POST to the gate's allowance, on success and on fault", async () => {
+    const path = await scannedStore(["src/a.test.ts", "src/b.test.ts"]);
+    const wired = { ...actionsDeps(path), putGhCalls: 1 };
+    const done = await retryOnce(wired);
+    expect(done.outcome).toBe("retried");
+    expect(done.ghCalls).toBe(wired.ciReadCalls + 1);
+
+    const failing = {
+      ...actionsDeps(path),
+      putGhCalls: 1,
+      put: async () => {
+        throw new Error("HTTP 403");
+      },
+    };
+    const fault = await retryOnce(failing);
+    expect(fault.outcome).toBe("fault");
+    expect(fault.ghCalls).toBe(failing.ciReadCalls + 1);
+  });
+
+  it("is wired at one call per re-run by retryDepsFrom", () => {
+    const deps = retryDepsFrom(tempDir(), { RALPH_REQUIRED_CHECKS: "test", RALPH_PROJECT_REPO: REPO, RALPH_BASE_BRANCH: "main" });
+    expect(deps!.putGhCalls).toBe(1);
+  });
+});
+
+describe("check incidents on an Actions project", () => {
+  const red = (pr: number, name: string) => ({ pr, name, state: "failure", description: "Process completed with exit code 1." });
+
+  it("does not count a required check the scan already reads as a job", async () => {
+    const path = await scannedStore(["src/a.test.ts"]);
+    const scanned = scannedJobNames(readStore(path));
+    expect([...scanned]).toEqual(["test"]);
+    const readings = [red(1, "test"), red(2, "test"), red(3, "test")];
+    expect(Object.keys(checkIncidents(readings, 3, scanned))).toEqual([]);
+    // Without the scan's names it is the incident it used to be.
+    expect(Object.keys(checkIncidents(readings))).toHaveLength(1);
+    // Another check, red on three PRs, still is one.
+    expect(Object.keys(checkIncidents([red(1, "Vercel"), red(2, "Vercel"), red(3, "Vercel")], 3, scanned))).toHaveLength(1);
   });
 });

@@ -102,6 +102,8 @@ export interface ActionsJob {
   steps?: Step[];
   /** The attempt this job belongs to; with `filter=all` a re-run run lists every attempt's jobs. */
   run_attempt?: number;
+  /** When this attempt's job started; the earliest across attempts is when the run first started. */
+  started_at?: string | null;
 }
 
 export interface ActionsRun {

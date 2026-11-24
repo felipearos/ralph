@@ -619,7 +619,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       console.error("ci-doctor/scan: no repository to read GitHub Actions from — set RALPH_PROJECT_REPO");
       return 1;
     }
-    source = actionsSource(runGhForLogs, repo, { workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null });
+    source = actionsSource(runGhForLogs, repo, { workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null, required });
   } else {
     const token = tokenFrom(env);
     if (token === null) {

@@ -25,8 +25,11 @@
  *    the spec gives it none. Those are pushed once per signature as
  *    `ci-incident` and recorded in the store, and the gate keeps waiting.
  *
- * READ-ONLY of GitHub and of the repository, like the coder's gate. It does
- * write the store — the lease, the scan and the budget are all store writes —
+ * READ-ONLY of GitHub and of the repository, like the coder's gate, with one
+ * exception: the retry (`retry.ts`) re-runs one flaky failed job — on
+ * Buildkite with the retry token, on a GitHub Actions project (#52) through
+ * gh's own auth (`repos/<repo>/actions/jobs/<id>/rerun`), under the same
+ * `ciDoctor.retry` ceilings either way. It does write the store — the lease, the scan and the budget are all store writes —
  * because the store is the doctor's own scratch record, not the project.
  *
  * Usage:
@@ -61,6 +64,7 @@ import {
   tokenFrom,
 } from "../bk-log";
 import { classifyRateLimit } from "../frontier/github-rate-limit";
+import { runGhForLogs } from "../gh-actions-log";
 import { roleDescriptor } from "../roles";
 import { hasPendingControl } from "../control-inbox";
 import { projectRoot } from "../paths";
@@ -75,10 +79,9 @@ import {
 import { loadProjectConfig } from "../project-config";
 import { push } from "../push-notification";
 import { loopsWithRole } from "../roster";
+import { actionsSource, isActionsProject } from "./actions-source";
 import { retryOnce, type RetryDeps, type RetryResult } from "./retry";
 import { GitFacts, defaultScanOptions, gitIn, scan } from "./scan";
-import { actionsSource, isActionsProject } from "./actions-source";
-import { runGhForLogs } from "../gh-actions-log";
 import {
   controlSliceSeconds,
   formatDuration,
@@ -778,6 +781,22 @@ export const searchLabels = (coders: readonly string[]): string =>
   `label:${coders.map((loop) => `${loop}-blocked`).join(",")}`;
 
 /**
+ * The check names the scan already reads as jobs: an Actions build's step keys
+ * are `<workflow>/<job>`, and GitHub names the job's check `<job>`. Their reds
+ * are the scan's evidence, so `checkIncidents` must not count them again.
+ */
+export function scannedJobNames(store: CiHealthStore): Set<string> {
+  const names = new Set<string>();
+  for (const build of store.builds) {
+    for (const key of Object.keys(build.steps)) {
+      const slash = key.indexOf("/");
+      if (slash >= 0) names.add(key.slice(slash + 1));
+    }
+  }
+  return names;
+}
+
+/**
  * Read, decide, and — when there is a case — take its lease before handing it
  * over.
  *
@@ -793,7 +812,8 @@ export async function poll(deps: PollDeps, cached: Cached): Promise<Polled> {
     return { verdict: { work: false, why: scanned.why, key: null }, cached, calls: 0, retried: null };
   }
 
-  const reads = await readGithub(deps.gh, cached, readStore(deps.storePath), {
+  const snapshot = readStore(deps.storePath);
+  const reads = await readGithub(deps.gh, cached, snapshot, {
     now,
     loop: deps.loop,
     coders: deps.coders,
@@ -814,7 +834,7 @@ export async function poll(deps: PollDeps, cached: Cached): Promise<Polled> {
 
   // One write for everything this poll learned: the budget it spent, the block
   // records it read, and the infrastructure incidents the PR checks showed.
-  const checks = reads.prs === null ? {} : checkIncidents(checkReadings(reads.prs));
+  const checks = reads.prs === null ? {} : checkIncidents(checkReadings(reads.prs), undefined, scannedJobNames(snapshot));
   const store = await withStore(deps.storePath, (open) => {
     open.gh = { ...open.gh, [deps.loop]: spend(reads.ledger, retried?.ghCalls ?? 0, now) };
     for (const { ticket } of reads.read)
@@ -998,7 +1018,10 @@ async function scanOnce(storePath: string, root: string, env: NodeJS.ProcessEnv)
     if (repo === null) return { ok: false, why: "no repository to read GitHub Actions from" };
     const [owner = repo, name = repo] = repo.split("/");
     try {
-      const source = actionsSource(runGhForLogs, repo, { workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null });
+      const source = actionsSource(runGhForLogs, repo, {
+        workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null,
+        required: project.required,
+      });
       await scan(source, new GitFacts(gitIn(root), baseBranch), storePath, defaultScanOptions(owner, name, { baseBranch }));
       return { ok: true, why: "" };
     } catch (error) {
@@ -1111,6 +1134,8 @@ function actionsRetryDeps(root: string, project: ReturnType<typeof projectCi>): 
     org: async () => repo,
     pipeline: repo,
     retryPath: (_org, _pipeline, _build, job) => `repos/${repo}/actions/jobs/${job}/rerun`,
+    // The re-run is itself a `gh api` POST, charged to the gate's allowance.
+    putGhCalls: 1,
     baseBranch,
     config,
     now: () => Date.now(),

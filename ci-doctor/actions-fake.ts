@@ -19,7 +19,9 @@ const notFound = (path: string): GhResult => ({ status: 1, stdout: "", stderr: `
 
 /**
  * A GitHub that knows `runs`, each run's jobs (every attempt's) in
- * `jobsByRun`, and each job's raw log in `logsByJob`.
+ * `jobsByRun`, and each job's raw log in `logsByJob`. A partial re-run is
+ * expressed by listing only the re-run job at the new attempt: the others
+ * stay at the attempt they ran in, as GitHub lists them.
  */
 export function fakeActions(
   runs: readonly ActionsRun[],
@@ -43,7 +45,7 @@ export function fakeActions(
       const visible = runs
         .filter((run) => run.updated_at && Date.parse(run.updated_at) <= now)
         .filter((run) => (status === null ? true : run.status === status))
-        .filter((run) => (run.created_at ?? "") >= created)
+        .filter((run) => created === "" || Date.parse(run.created_at ?? "") >= Date.parse(created))
         .filter((run) => (list[1] ? String(run.workflow_id) === list[1] || run.name === list[1] : true))
         .sort((a, b) => b.id - a.id);
       const slice = visible.slice((page - 1) * perPage, page * perPage);
@@ -57,8 +59,12 @@ export function fakeActions(
       const run = runs.find((candidate) => candidate.id === id);
       if (run === undefined) return notFound(path);
       const all = jobsByRun[id] ?? [];
-      // GitHub's default (`latest`) hides what a re-run replaced.
-      const listed = query.get("filter") === "all" ? all : all.filter((job) => (job.run_attempt ?? 1) === (run.run_attempt ?? 1));
+      // GitHub's default (`latest`) hides what a re-run replaced. A partial
+      // re-run replaces only the jobs it re-ran: the others keep their old
+      // attempt number and are still the run's latest.
+      const latest = (job: ActionsJob): boolean =>
+        !all.some((other) => other.name === job.name && (other.run_attempt ?? 1) > (job.run_attempt ?? 1));
+      const listed = query.get("filter") === "all" ? all : all.filter(latest);
       const perPage = Number(query.get("per_page") ?? 30);
       const page = Number(query.get("page") ?? 1);
       return ok({ total_count: listed.length, jobs: listed.slice((page - 1) * perPage, page * perPage) });

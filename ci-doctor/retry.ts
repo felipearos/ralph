@@ -284,6 +284,12 @@ export interface RetryDeps {
    * Unset, the module's Buildkite `retryPath`.
    */
   retryPath?: (org: string, pipeline: string, build: number, job: string) => string;
+  /**
+   * GitHub calls one `put` costs, charged whether it succeeds or faults: an
+   * Actions re-run is a `gh api` POST on the gate's allowance. Buildkite's
+   * write costs none; unset is 0.
+   */
+  putGhCalls?: number;
 }
 
 export const retryPath = (org: string, pipeline: string, build: number, job: string): string =>
@@ -401,6 +407,7 @@ export async function retryOnce(deps: RetryDeps): Promise<RetryResult> {
       ghCalls: spentGh,
     };
   }
+  const putGh = deps.putGhCalls ?? 0;
   try {
     await deps.put(path);
   } catch (error) {
@@ -410,14 +417,14 @@ export async function retryOnce(deps: RetryDeps): Promise<RetryResult> {
       outcome: "fault",
       why: `retrying ${pick.testId} failed: ${error instanceof Error ? error.message : String(error)}`,
       retried: null,
-      ghCalls: spentGh,
+      ghCalls: spentGh + putGh,
     };
   }
   return {
     outcome: "retried",
     why: `retried ${pick.job} of build #${pick.build} (${pick.branch}) for ${pick.testId}; ${room.why}`,
     retried: { ...pick, path },
-    ghCalls: spentGh,
+    ghCalls: spentGh + putGh,
   };
 }
 
@@ -546,8 +553,10 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
     );
   }
   const paths: string[] = [];
+  let putGh = 0;
   for (const job of target.jobs) {
     const path = (deps.retryPath ?? retryPath)(org, deps.pipeline, target.build, job);
+    putGh += deps.putGhCalls ?? 0;
     try {
       await deps.put(path);
     } catch (error) {
@@ -556,7 +565,7 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
       return none(
         "fault",
         `retrying job ${job} of build #${target.build} failed: ${error instanceof Error ? error.message : String(error)}`,
-        spentGh,
+        spentGh + putGh,
       );
     }
     paths.push(path);
@@ -565,6 +574,6 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
     outcome: "retried",
     why: `retried ${target.jobs.length} failed job(s) of build #${target.build} (PR #${target.pr}, ${target.branch} @ ${target.sha.slice(0, 10)}); ${room.why}`,
     retried: { ...target, paths },
-    ghCalls: spentGh,
+    ghCalls: spentGh + putGh,
   };
 }
