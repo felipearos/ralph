@@ -103,6 +103,7 @@ split.
 - **Fix:** https://github.com/felipearos/loggd/issues/3451 — (the host runs three agent slots for five loops, so concurrent pushes self-starve; either fewer concurrent loops, more slots, or a supervisor wait that scales with the agent queue depth). Mergify's `checks_timeout` for the `main` queue being shorter than a starved build's wall clock is part of the same fix, and so is the pipeline-wide `concurrency: 1` on `loggd/quality` and `loggd/e2e`, which serialises every loop's build behind every other loop's regardless of how many slots are free.
 - **Change:** have the supervisor's CI wait distinguish "pending, build not yet started or queued behind N other builds" from "pending, running": when the build has no running job after the wait budget, report `queued` rather than `timeout` so the iteration does not have to re-derive the host state from `docker logs` each round. The same signal should gate the enqueue: do not enqueue while builds are already waiting for a slot **or for a pipeline concurrency group**, since the queue's `checks_timeout` cannot be met.
 - **Verify:** with three builds already occupying the agent slots, push a fourth PR head and run the supervisor's CI wait: it reports `queued` naming the builds ahead of it, and the resumed session takes the hand-off branch without reading `docker logs`.
+- **Seen again:** 2026-11-24
 
 
 
