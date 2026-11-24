@@ -340,6 +340,12 @@ export interface Job {
   soft_failed?: boolean;
   retried?: boolean;
   web_url?: string | null;
+  /**
+   * Did the job's own commands run? Only a source whose log lacks Buildkite's
+   * `~~~ Running commands` marker (GitHub Actions) sets it; unset, the
+   * ci-doctor reads the marker as before.
+   */
+  ran?: boolean;
 }
 
 export interface Build {

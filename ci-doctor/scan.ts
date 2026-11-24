@@ -90,7 +90,8 @@ const HOOK_TIMEOUT = /Hook timed out in \d+ ?ms/i;
  * agent lost mid-run (exit -1) with no test failure in the log is infra too.
  */
 export function bootstrapReason(job: Job, log: string): { reason: string; line: string } | null {
-  const ran = RAN_COMMANDS.test(log);
+  // A source without the marker (GitHub Actions) says whether the commands ran.
+  const ran = typeof job.ran === "boolean" ? job.ran : RAN_COMMANDS.test(log);
   if (ran && !(job.exit_status === -1 && digestLog(log).failures.length === 0)) return null;
   const lines = log.split("\n").map((line) => line.trim()).filter((line) => line !== "");
   const errorLine =
@@ -268,6 +269,33 @@ export function buildsPath(options: ScanOptions, cursor: string, page: number): 
   return `/organizations/${options.org}/pipelines/${options.pipeline}/builds?${query}`;
 }
 
+/**
+ * Where a poll reads builds from: Buildkite (`buildkiteSource`) or GitHub
+ * Actions (`actions-source.ts`). The store and the rules never know which.
+ */
+export interface BuildSource {
+  /** One page of FINISHED builds whose finish is at or after `cursor` (ISO), newest first or any order. Throws HelperError when unreadable. */
+  list(cursor: string, page: number, perPage: number): Promise<ApiBuild[]>;
+  /** A failed job's CLEANED log (what `cleanLog` returns for Buildkite). Throws when unreadable. */
+  log(build: ApiBuild, job: Job): Promise<string>;
+}
+
+export function buildkiteSource(api: Buildkite, options: ScanOptions): BuildSource {
+  const base = `/organizations/${options.org}/pipelines/${options.pipeline}/builds`;
+  return {
+    async list(cursor, page, perPage) {
+      const listed = await api.json<ApiBuild[]>(buildsPath({ ...options, perPage }, cursor, page));
+      return Array.isArray(listed) ? listed : [];
+    },
+    async log(build, job) {
+      return cleanLog(await api.text(`${base}/${build.number}/jobs/${job.id}/log`));
+    },
+  };
+}
+
+const sourceOf = (api: Buildkite | BuildSource, options: ScanOptions): BuildSource =>
+  api instanceof Buildkite ? buildkiteSource(api, options) : api;
+
 function recordOf(build: ApiBuild, baseBranch: string): BuildRecord {
   const steps: Record<string, string> = {};
   for (const job of build.jobs ?? []) {
@@ -303,7 +331,7 @@ const isPrBranch = (branch: string, baseBranch: string): boolean =>
  * `HelperError` when the builds list cannot be read.
  */
 export async function readBatch(
-  api: Buildkite,
+  api: Buildkite | BuildSource,
   git: GitFacts | null,
   snapshot: CiHealthStore,
   options: ScanOptions,
@@ -311,13 +339,13 @@ export async function readBatch(
 ): Promise<Batch> {
   const page = snapshot.backfill?.page ?? 1;
   const cursor = snapshot.cursor || windowStart(now, options);
-  const listed = await api.json<ApiBuild[]>(buildsPath(options, cursor, page));
+  const source = sourceOf(api, options);
+  const listed = await source.list(cursor, page, options.perPage);
   const finished = (Array.isArray(listed) ? listed : [])
     .filter((build) => FINISHED.has(build.state) && build.finished_at)
     .sort((a, b) => a.number - b.number);
 
   const batch: Batch = { builds: [], rows: [], seen: {}, retriedJobs: [], listed: Array.isArray(listed) ? listed.length : 0, page, logsRead: 0 };
-  const base = `/organizations/${options.org}/pipelines/${options.pipeline}/builds`;
   for (const build of finished) {
     batch.builds.push(recordOf(build, options.baseBranch));
     const jobs = [
@@ -335,7 +363,7 @@ export async function readBatch(
       let log: string;
       try {
         batch.logsRead += 1;
-        log = cleanLog(await api.text(`${base}/${build.number}/jobs/${job.id}/log`));
+        log = await source.log(build, job);
       } catch (error) {
         // Read once, as promised: an unreadable log is a row that says so, not a retry every poll.
         const why = error instanceof Error ? error.message : String(error);
@@ -531,7 +559,7 @@ export interface ScanResult {
 
 /** One poll: read outside the lock, merge under it. */
 export async function scan(
-  api: Buildkite,
+  api: Buildkite | BuildSource,
   git: GitFacts | null,
   path: string,
   options: ScanOptions,
