@@ -3252,9 +3252,14 @@ auth, and so does the retry, which re-runs one failed job
 ceilings, idle check and one-per-candidate guard as the Buildkite one, and
 charges its POST to the gate's allowance. A host whose `gh` cannot write
 Actions gets a `fault` per attempt, inside the same six-a-day ceiling; set
-`ciDoctor.retry.perDay` to 0 to turn the retry off. The scan's own reads are
-not on that allowance, as the Buildkite scan's are not: on an idle repository
-they are one list call and one jobs call a poll.
+`ciDoctor.retry.perDay` to 0 to turn the retry off. Unlike the Buildkite
+scan's reads, which are no GitHub calls, the Actions scan's are charged to the
+gate's allowance too — every list page, jobs read and log read, also on a poll
+whose scan failed part-way: on an idle repository they are one list call and
+one jobs call a poll. A project with neither required checks nor
+`RALPH_ACTIONS_WORKFLOW` is not scanned (nothing tells its CI from a side
+workflow), and a look-back holding more than ten full pages of runs fails the
+poll rather than skip the oldest; narrow it with `RALPH_ACTIONS_WORKFLOW`.
 
 ### Watch it
 

@@ -18,7 +18,8 @@
  * Routing: an Actions run/job URL → Actions; a Buildkite URL → Buildkite;
  * `--pr` → the provider of the PR's failing checks (both, Buildkite first, when
  * both are red); a bare number, `--branch`, or a PR with nothing failing → the
- * project's: Buildkite when a required check is `buildkite/…`, else Actions.
+ * project's: Buildkite when `RALPH_BUILDKITE_PIPELINE` is set or a required
+ * check is `buildkite/…`, else Actions.
  *
  * Exit: the reader's (on a two-reader route, the first non-zero — except that
  * with `--job` one reader's 1, "no job by that name", yields to the other's
@@ -43,8 +44,15 @@ export const BUILDKITE_RERUN_REFUSAL =
   "ci-log: no re-run from a session for a Buildkite check; re-run CI the way the prompt says " +
   "(the project's retry, else an empty commit)";
 
-/** The project's CI: a required `buildkite/…` check means Buildkite runs it. */
-export function projectProvider(requiredChecks: readonly string[]): Provider {
+/**
+ * The project's CI: a named Buildkite pipeline (`RALPH_BUILDKITE_PIPELINE`) or
+ * a required `buildkite/…` check means Buildkite runs it. The pipeline wins
+ * because a Buildkite project whose required checks are unreadable or name no
+ * `buildkite/` check must keep its Buildkite reader; the ci-doctor's scan
+ * (`isActionsProject`) asks this same function, so the two never disagree.
+ */
+export function projectProvider(requiredChecks: readonly string[], env: NodeJS.ProcessEnv = {}): Provider {
+  if (env.RALPH_BUILDKITE_PIPELINE?.trim()) return "buildkite";
   return requiredChecks.some((name) => name.startsWith("buildkite/")) ? "buildkite" : "actions";
 }
 
@@ -58,11 +66,13 @@ export interface RouteInput {
   /** The PR's `statusCheckRollup` with `--pr`; undefined when there is no PR or it could not be read. */
   rollup?: unknown;
   requiredChecks: readonly string[];
+  /** The named Buildkite pipeline (`RALPH_BUILDKITE_PIPELINE`), if any: it makes the project Buildkite's. */
+  buildkitePipeline?: string | null;
 }
 
 /** Which reader(s) a red check goes to. Pure. */
 export function routeFor(input: RouteInput): Route {
-  const byProject: Route = [projectProvider(input.requiredChecks)];
+  const byProject: Route = [projectProvider(input.requiredChecks, { RALPH_BUILDKITE_PIPELINE: input.buildkitePipeline ?? undefined })];
   if (input.target !== null) {
     if (parseActionsUrl(input.target) !== null) return ["actions"];
     if (isBuildkiteUrl(input.target)) return ["buildkite"];
@@ -176,7 +186,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
     if (args.checkRetryToken) route = ["buildkite"];
     else {
       const rollup = args.target === null && args.pr !== null ? readRollup(gh, args.pr, args.repo ?? facts.repo) : undefined;
-      route = routeFor({ target: args.target, rollup, requiredChecks: facts.checks });
+      route = routeFor({ target: args.target, rollup, requiredChecks: facts.checks, buildkitePipeline: env.RALPH_BUILDKITE_PIPELINE ?? null });
     }
     // A re-run with an Actions run on the route is that run's re-run: printing
     // the Buildkite refusal beside it would read as "nothing was re-run" and

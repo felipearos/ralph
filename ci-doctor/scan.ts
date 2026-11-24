@@ -48,6 +48,7 @@ import {
 import { runGhForLogs } from "../gh-actions-log";
 import { requiredChecksFrom } from "../host-lease";
 import { projectRoot } from "../paths";
+import type { Gh } from "../pr-wait";
 import { loadProjectConfig } from "../project-config";
 import { DEFAULT_CLASSIFY, QUEUE_BRANCH, classify, mergeCases, type ClassifyOptions } from "./classify";
 import { actionsSource, isActionsProject } from "./actions-source";
@@ -70,6 +71,15 @@ import {
 export const PER_PAGE = 100;
 export const WINDOW_HOURS = 72;
 export { METRICS_DAYS } from "./store";
+
+/**
+ * Why an Actions project with neither required checks nor a named workflow is
+ * not scanned: nothing would tell its CI from a side workflow (CodeQL, Pages),
+ * and a green side run would call a red main green. The gate and this CLI
+ * decline with the same words.
+ */
+export const NO_ACTIONS_CHECKS =
+  "no required checks to tell the project's CI from side workflows (set requiredChecks, or RALPH_ACTIONS_WORKFLOW)";
 
 export interface ApiBuild extends Build {
   source?: string | null;
@@ -309,11 +319,18 @@ const sourceOf = (api: Buildkite | BuildSource, options: ScanOptions): BuildSour
 
 function recordOf(build: ApiBuild, baseBranch: string): BuildRecord {
   const steps: Record<string, string> = {};
+  // The plain job names, for a source that says whether commands ran (GitHub
+  // Actions): GitHub names a job's check after the job, and a step key's
+  // `<workflow>/<job>` cannot be cut back into it when either holds a `/`.
+  // Buildkite records stay as they were.
+  const jobNames: string[] = [];
   for (const job of build.jobs ?? []) {
     if (job.type !== "script" || !job.step_key || job.retried || job.state === "broken") continue;
     steps[job.step_key] = job.state;
+    if (typeof job.ran === "boolean" && job.name) jobNames.push(job.name);
   }
   return {
+    ...(jobNames.length > 0 ? { jobNames } : {}),
     number: build.number,
     branch: build.branch ?? "",
     commit: build.commit ?? "",
@@ -601,7 +618,7 @@ export async function scan(
  * CLI.
  * ----------------------------------------------------------------------- */
 
-export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env, gh: Gh = runGhForLogs): Promise<number> {
   const unknown = argv.filter((arg) => arg !== "--json");
   if (unknown.length > 0) {
     console.error(`ci-doctor/scan: unknown argument ${unknown[0]}\nusage: ci-doctor/scan.ts [--json]`);
@@ -630,7 +647,12 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       console.error("ci-doctor/scan: no repository to read GitHub Actions from — set RALPH_PROJECT_REPO");
       return 1;
     }
-    source = actionsSource(runGhForLogs, repo, { workflow: env.RALPH_ACTIONS_WORKFLOW?.trim() || null, required });
+    const workflow = env.RALPH_ACTIONS_WORKFLOW?.trim() || null;
+    if (required.length === 0 && workflow === null) {
+      console.error(`ci-doctor/scan: ${NO_ACTIONS_CHECKS}`);
+      return 1;
+    }
+    source = actionsSource(gh, repo, { workflow, required });
   } else {
     const token = tokenFrom(env);
     if (token === null) {

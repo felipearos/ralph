@@ -26,7 +26,7 @@ import {
   type PollDeps,
   type Ran,
 } from "./gate";
-import { GH_CALLS_PER_HOUR, readStore, withStore, type Case, type CiHealthStore } from "./store";
+import { GH_CALLS_PER_HOUR, readStore, withStore, type BuildRecord, type Case, type CiHealthStore } from "./store";
 import { DEFAULT_CLASSIFY, classify, mergeCases } from "./classify";
 
 process.env.RALPH_PROJECT = join(__dirname, "..", "fixtures", "loggd");
@@ -450,6 +450,66 @@ describe("Buildkite", () => {
     expect(verdict).toEqual({ work: false, why: "Buildkite could not be read (503)", key: null });
     // And it costs no GitHub call: there is nothing fresh to decide from.
     expect(calls).toBe(0);
+  });
+});
+
+describe("a GitHub Actions scan in the poll (#52)", () => {
+  const actionsBuild = (jobNames?: string[]): BuildRecord => ({
+    number: 9001,
+    branch: "main",
+    commit: "a".repeat(40),
+    state: "failed",
+    source: "push",
+    createdAt: "2026-09-30T09:00:00Z",
+    startedAt: "2026-09-30T09:01:00Z",
+    finishedAt: "2026-09-30T09:10:00Z",
+    pr: null,
+    prs: [],
+    steps: { "CI/CD/test": "failed" },
+    ...(jobNames ? { jobNames } : {}),
+    tree: null,
+    parent: null,
+    sincePrevious: null,
+    changedFiles: null,
+    branchPaths: null,
+  });
+  const redTest = [1, 2, 3].map((number) => ({
+    number,
+    isDraft: false,
+    body: null,
+    statusCheckRollup: [{ name: "test", state: "FAILURE", description: "Process completed with exit code 1." }],
+  }));
+
+  it("charges the scan's gh calls to the gate's ledger, beside its own reads", async () => {
+    const path = storeFile();
+    const deps: PollDeps = { ...wire(path, fakeGh()), scan: async () => ({ ok: true, why: "", ghCalls: 4 }) };
+    const polled = await poll(deps, noCache());
+    expect(readStore(path).gh!.ralph!.count).toBe(polled.calls + 4);
+  });
+
+  it("charges a failed scan's gh calls too, and hands nothing over", async () => {
+    const path = storeFile();
+    const deps: PollDeps = {
+      ...wire(path, fakeGh()),
+      scan: async () => ({ ok: false, why: "GitHub Actions could not be read (HTTP 502)", ghCalls: 2 }),
+    };
+    const polled = await poll(deps, noCache());
+    expect(polled.verdict).toEqual({ work: false, why: "GitHub Actions could not be read (HTTP 502)", key: null });
+    expect(readStore(path).gh!.ralph!.count).toBe(2);
+  });
+
+  it("does not raise a check incident for a job the scan already reads, whatever its workflow is called", async () => {
+    const scanned = storeFile();
+    const deps = wire(scanned, fakeGh({ prs: redTest }), { seed: (store) => { store.builds = [actionsBuild(["test"])]; } });
+    await poll(deps, noCache());
+    expect(Object.keys(readStore(scanned).cases).filter((key) => key.startsWith("infra:check:"))).toEqual([]);
+
+    // A Buildkite-shaped record (no job names) excludes nothing: the same
+    // reds are the incident they always were.
+    const unscanned = storeFile();
+    const control = wire(unscanned, fakeGh({ prs: redTest }), { seed: (store) => { store.builds = [actionsBuild()]; } });
+    await poll(control, noCache());
+    expect(Object.keys(readStore(unscanned).cases).filter((key) => key.startsWith("infra:check:"))).toHaveLength(1);
   });
 });
 

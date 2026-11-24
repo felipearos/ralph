@@ -25,11 +25,15 @@ const LOOKBACK_HOURS = 72;
 
 // Pages of runs one list reads: a thousand runs in the look-back is far past
 // any project the doctor watches, and the cap keeps a misbehaving API from
-// paging forever. Past it, the oldest-created runs go unread this poll.
+// paging forever. A look-back that fills every page fails the poll rather
+// than declaring itself read: the source is exhaustive, so the scan would move
+// the cursor past the oldest-created runs it never listed, losing them.
 const MAX_RUN_PAGES = 10;
 
 /** Steps that run before the job's own commands: a red here is infrastructure, not a test. */
-const SETUP_STEP = /^Set up job$|^Initialize containers$|^(Post )?Run actions\/checkout@/;
+// `Post Run actions/checkout@…` is NOT one: it runs after the job's commands,
+// so a red there leaves a job whose commands ran.
+const SETUP_STEP = /^Set up job$|^Initialize containers$|^Run actions\/checkout@/;
 
 /** A conclusion in Buildkite's words, or null when the run is not finished in the ci-doctor's sense. */
 function stateOf(conclusion: string | null | undefined): string | null {
@@ -167,6 +171,12 @@ export function actionsSource(gh: Gh, repo: string, options: ActionsSourceOption
         }
         runs.push(...batch);
         if (batch.length < perPage) break;
+        if (listPage === MAX_RUN_PAGES) {
+          throw new HelperError(
+            `the look-back holds more than ${MAX_RUN_PAGES * perPage} runs; narrow it to the project's CI with RALPH_ACTIONS_WORKFLOW`,
+            2,
+          );
+        }
       }
       const builds: ApiBuild[] = [];
       for (const run of runs) {
@@ -190,12 +200,9 @@ export function actionsSource(gh: Gh, repo: string, options: ActionsSourceOption
 }
 
 /**
- * Is this project's CI GitHub Actions? `ci-log.ts`'s rule (no required
- * `buildkite/…` check), except that a named Buildkite pipeline always wins: a
- * Buildkite project that sets `RALPH_BUILDKITE_PIPELINE` but whose required
- * checks are unreadable must keep its Buildkite doctor, not lose it to gh.
+ * Is this project's CI GitHub Actions? `ci-log.ts`'s rule, so the scan and
+ * the doctor's log reads never disagree about a project's provider.
  */
 export function isActionsProject(required: readonly string[], env: NodeJS.ProcessEnv): boolean {
-  if (env.RALPH_BUILDKITE_PIPELINE?.trim()) return false;
-  return projectProvider(required) === "actions";
+  return projectProvider(required, env) === "actions";
 }

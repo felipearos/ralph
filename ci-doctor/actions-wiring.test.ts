@@ -11,16 +11,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ActionsJob, ActionsRun } from "../gh-actions-log";
 import { subprocessSuite } from "../test-timeouts";
 import { fakeActions } from "./actions-fake";
 import { actionsSource, isActionsProject } from "./actions-source";
 import { checkIncidents } from "./classify";
-import { retryDepsFrom, scannedJobNames } from "./gate";
+import { retryDepsFrom, scanOnce, scannedJobNames } from "./gate";
 import { retryOnce, type RetryDeps } from "./retry";
-import { defaultScanOptions, scan } from "./scan";
+import type { Gh } from "../pr-wait";
+import { NO_ACTIONS_CHECKS, defaultScanOptions, main as scanMain, scan } from "./scan";
 import { readStore } from "./store";
 
 subprocessSuite("git");
@@ -30,6 +31,7 @@ const NOW = Date.parse("2026-09-28T12:00:00Z");
 
 const dirs: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -229,5 +231,83 @@ describe("check incidents on an Actions project", () => {
     expect(Object.keys(checkIncidents(readings))).toHaveLength(1);
     // Another check, red on three PRs, still is one.
     expect(Object.keys(checkIncidents([red(1, "Vercel"), red(2, "Vercel"), red(3, "Vercel")], 3, scanned))).toHaveLength(1);
+  });
+});
+
+describe("Qodo findings on the Actions wiring (#52)", () => {
+  it("wires the retry for an env-only project with no base branch, on main as the scan is", () => {
+    const deps = retryDepsFrom(tempDir(), { RALPH_REQUIRED_CHECKS: "test", RALPH_PROJECT_REPO: REPO });
+    expect(deps).toBeDefined();
+    expect(deps!.baseBranch).toBe("main");
+  });
+
+  it("reads a job's check name from the record, not by cutting a step key whose workflow holds a slash", async () => {
+    const cicd = { ...run(1002, "failure", "2026-09-28T11:00:00Z"), name: "CI/CD" };
+    const fake = fakeActions([cicd], { 1002: [job(2002, "failure")] }, { 2002: failingLog("src/a.test.ts") });
+    fake.setNow(NOW);
+    const path = join(tempDir(), "ci-health.json");
+    await scan(actionsSource(fake.gh, REPO, { now: () => NOW }), null, path, defaultScanOptions("acme-org", "acme-app", { baseBranch: "main" }), NOW);
+    const store = readStore(path);
+    expect(store.builds[0]!.steps).toEqual({ "CI/CD/test": "failed" });
+    expect(store.builds[0]!.jobNames).toEqual(["test"]);
+    expect([...scannedJobNames(store)]).toEqual(["test"]);
+  });
+
+  it("declines an Actions project with no required checks and no workflow, reading nothing", async () => {
+    const fake = fakeActions([run(1001, "success", "2026-09-28T09:00:00Z")]);
+    const path = join(tempDir(), "ci-health.json");
+    const declined = await scanOnce(path, tempDir(), { RALPH_PROJECT_REPO: REPO }, fake.gh);
+    expect(declined).toEqual({ ok: false, why: NO_ACTIONS_CHECKS, ghCalls: 0 });
+    expect(fake.calls).toEqual([]);
+    // A named workflow narrows the listing on its own: that project is scanned.
+    const narrowed = await scanOnce(path, tempDir(), { RALPH_PROJECT_REPO: REPO, RALPH_ACTIONS_WORKFLOW: "ci.yml" }, fake.gh);
+    expect(narrowed.ok).toBe(true);
+  });
+
+  it("counts every gh call the Actions scan makes, on success and on failure", async () => {
+    const fake = fakeActions([run(1001, "success", "2026-09-28T09:00:00Z")]);
+    const env = { RALPH_PROJECT_REPO: REPO, RALPH_REQUIRED_CHECKS: "test" };
+    const done = await scanOnce(join(tempDir(), "ci-health.json"), tempDir(), env, fake.gh);
+    expect(done.ok).toBe(true);
+    expect(done.ghCalls).toBeGreaterThanOrEqual(1);
+    expect(done.ghCalls).toBe(fake.calls.length);
+
+    const failing: Gh = () => ({ status: 1, stdout: "", stderr: "gh: Server Error (HTTP 502)" });
+    const failed = await scanOnce(join(tempDir(), "ci-health.json"), tempDir(), env, failing);
+    expect(failed.ok).toBe(false);
+    expect(failed.why).toMatch(/^GitHub Actions could not be read/);
+    expect(failed.ghCalls).toBe(1);
+  });
+});
+
+describe("ci-doctor/scan.ts main on an Actions project (#52)", () => {
+  const errors = (): string[] => {
+    const out: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void out.push(args.join(" ")));
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    return out;
+  };
+
+  it("exits 1 when there is no repository to read", async () => {
+    const out = errors();
+    expect(await scanMain([], { RALPH_PROJECT: tempDir(), RALPH_REQUIRED_CHECKS: "test" })).toBe(1);
+    expect(out.join("\n")).toContain("no repository to read GitHub Actions from");
+  });
+
+  it("exits 1 when nothing tells the project's CI from a side workflow", async () => {
+    const out = errors();
+    const gh: Gh = () => {
+      throw new Error("must not be called");
+    };
+    expect(await scanMain([], { RALPH_PROJECT: tempDir(), RALPH_PROJECT_REPO: REPO }, gh)).toBe(1);
+    expect(out.join("\n")).toContain(NO_ACTIONS_CHECKS);
+  });
+
+  it("exits 2 with the Actions prefix when gh cannot read the runs", async () => {
+    const out = errors();
+    const gh: Gh = () => ({ status: 1, stdout: "", stderr: "gh: Server Error (HTTP 502)" });
+    const env = { RALPH_PROJECT: tempDir(), RALPH_PROJECT_REPO: REPO, RALPH_REQUIRED_CHECKS: "test" };
+    expect(await scanMain([], env, gh)).toBe(2);
+    expect(out.join("\n")).toMatch(/^ci-doctor\/scan: GitHub Actions could not be read: /);
   });
 });

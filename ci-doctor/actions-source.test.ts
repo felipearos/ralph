@@ -14,7 +14,7 @@ import { HelperError } from "../bk-log";
 import type { ActionsJob, ActionsRun } from "../gh-actions-log";
 import type { Gh } from "../pr-wait";
 import { fakeActions, type FakeActions } from "./actions-fake";
-import { actionsSource } from "./actions-source";
+import { actionsSource, buildOf } from "./actions-source";
 import { eligibility } from "./revert";
 import { GitFacts, defaultScanOptions, scan, type GitRun, type ScanOptions } from "./scan";
 import { readStore } from "./store";
@@ -410,5 +410,56 @@ describe("review fixes (#52)", () => {
     const fenced = eligibility({ ...args, config: { ciDoctor: { neverTouch: ["src/server/**"] } } });
     expect(fenced.revert).toBe(false);
     expect(eligibility({ ...args, config: { ciDoctor: { autoRevert: false } } })).toMatchObject({ revert: false });
+  });
+});
+
+describe("Qodo findings (#52)", () => {
+  it("fails the poll, cursor unmoved, when the look-back fills every page it may read", async () => {
+    // Ten pages is the cap: an eleventh full page holds the oldest-created
+    // runs, and a red one there would be skipped for good if the source still
+    // called itself exhaustive and the scan moved the cursor past it.
+    const options: ScanOptions = { ...OPTIONS, perPage: 5 };
+    const now = at("2026-09-28T12:00:00Z");
+    const runs = Array.from({ length: 55 }, (_, i) =>
+      run({ id: 1001 + i, commit: sha(i + 1), conclusion: i === 0 ? "failure" : "success", finished: new Date(now - (60 - i) * MINUTE).toISOString() }),
+    );
+    const jobs = Object.fromEntries(runs.map((r, i) => [r.id, [job(5001 + i, i === 0 ? "failure" : "success")]]));
+    const fake = fakeActions(runs, jobs, { 5001: testLog });
+    const path = storeFile();
+    // A first poll, before any of those runs, sets the cursor.
+    const before = now - 2 * HOUR;
+    fake.setNow(before);
+    await scan(actionsSource(fake.gh, REPO, { now: () => before }), null, path, options, before);
+    const cursor = readStore(path).cursor;
+
+    fake.setNow(now);
+    const listing = scan(actionsSource(fake.gh, REPO, { now: () => now }), null, path, options, now);
+    await expect(listing).rejects.toThrow(/more than 50 runs.*RALPH_ACTIONS_WORKFLOW/);
+    await expect(listing).rejects.toBeInstanceOf(HelperError);
+    const store = readStore(path);
+    expect(store.cursor).toBe(cursor);
+    expect(store.builds).toEqual([]);
+  });
+
+  it("reads a failed Post Run actions/checkout step after the commands as a job whose commands ran", async () => {
+    const steps = [
+      { name: "Set up job", number: 1, status: "completed", conclusion: "success" },
+      { name: "Run actions/checkout@v4", number: 2, status: "completed", conclusion: "success" },
+      { name: "Run tests", number: 3, status: "completed", conclusion: "success" },
+      { name: "Post Run actions/checkout@v4", number: 4, status: "completed", conclusion: "failure" },
+    ];
+    const red = run({ id: 1002, commit: sha(2), conclusion: "failure", finished: "2026-09-28T11:00:00Z" });
+    const postJob = { ...job(2002, "failure"), steps };
+    expect(buildOf(red, [postJob], "failed").jobs![0]!.ran).toBe(true);
+
+    const postLog = ["##[error]The process '/usr/bin/git' failed with exit code 128"]
+      .map((line) => `2026-09-28T11:00:00.0000000Z ${line}`)
+      .join("\n");
+    const fake = fakeActions([red], { 1002: [postJob] }, { 2002: postLog });
+    const path = storeFile();
+    await poll(fake, null, path, at("2026-09-28T12:00:00Z"));
+    const rows = readStore(path).failures.filter((row) => row.job === "2002");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some((row) => row.testId.startsWith("bootstrap:"))).toBe(false);
   });
 });

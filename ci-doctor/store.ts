@@ -70,6 +70,11 @@ export interface BuildRecord {
   prs: number[];
   /** Effective state per step key: the job that was not superseded by a retry. */
   steps: Record<string, string>;
+  /**
+   * GitHub Actions builds only: the plain names of the jobs in `steps`, which
+   * are GitHub's check names. Absent on Buildkite records.
+   */
+  jobNames?: string[];
   /** The commit's tree, so an empty-commit rerun is the same tree. Null when git could not say. */
   tree: string | null;
   /** The commit's first parent, for a regression's culprit. */

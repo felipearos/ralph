@@ -169,11 +169,12 @@ const sameDayAs = (store: CiHealthStore, day: string): boolean => store.retries.
  * It is keyed on the job id, and a record is dropped as soon as the store stops
  * holding that job's row AT ALL — not only once the row is marked. Dropping
  * only on the marking read well and was wrong in both directions: a retry whose
- * PUT faulted, or whose job Buildkite never reports as retried, is never marked
- * by anything, so its record was carried across every rollover for ever. That
- * barred the candidate permanently and grew `byCase` without bound, while the
- * SUCCESSFUL path's guard — the marked row — expires with the store's 72-hour
- * window. The failed retry was the stricter of the two, which is backwards.
+ * write (Buildkite's PUT, the Actions re-run POST) faulted, or whose job the
+ * CI provider never reports as retried, is never marked by anything, so its
+ * record was carried across every rollover for ever. That barred the candidate
+ * permanently and grew `byCase` without bound, while the SUCCESSFUL path's
+ * guard — the marked row — expires with the store's 72-hour window. The failed
+ * retry was the stricter of the two, which is backwards.
  */
 export function unscannedOrToday(store: CiHealthStore, day: string): Record<string, string> {
   // Copied on both paths: this is exported, and returning the live object on
@@ -413,8 +414,9 @@ export async function retryOnce(deps: RetryDeps): Promise<RetryResult> {
   try {
     await deps.put(path);
   } catch (error) {
-    // The slot stays spent. A non-2xx does not say whether Buildkite started
-    // the job, so rolling the claim back here could retry it twice.
+    // The slot stays spent. A non-2xx (Buildkite's PUT or the Actions re-run
+    // POST) does not say whether the CI provider started the job, so rolling
+    // the claim back here could retry it twice.
     return {
       outcome: "fault",
       why: `retrying ${pick.testId} failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -563,7 +565,7 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
       await deps.put(path);
     } catch (error) {
       // The slots and the head's one retry stay spent: a non-2xx does not say
-      // whether Buildkite started the job (see `retryOnce`).
+      // whether the CI provider started the job (see `retryOnce`).
       return none(
         "fault",
         `retrying job ${job} of build #${target.build} failed: ${error instanceof Error ? error.message : String(error)}`,
