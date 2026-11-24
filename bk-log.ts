@@ -538,6 +538,66 @@ export function formatKnownInfra(known: KnownNotes): string[] {
   return ["", "known infra:", ...known.incidents.map((line) => `   ${line}`)];
 }
 
+/**
+ * One job's digest, as the lines under its `== name` header: the command, the
+ * failing files and tests (with the ci-doctor's `known:` verdicts), the
+ * summary, the tail and the exit line. Shared with `gh-actions-log.ts`, so a
+ * session reads a Buildkite job and a GitHub Actions job the same way.
+ */
+export function formatDigest(digest: Digest, known: KnownNotes | null = null): string[] {
+  const out: string[] = [];
+  if (digest.command) out.push(`   command: $ ${digest.command}`);
+  if (digest.files.length > 0) out.push(`   failing files: ${digest.files.join(" ")}`);
+  if (digest.failures.length > 0) {
+    out.push(
+      digest.timeoutsOnly
+        ? "   kind: timeout only — a flake candidate if the test is unrelated to the diff"
+        : "   kind: error, not a timeout — reproduce it with the command above, on the failing file",
+    );
+    out.push("   failures:");
+    // Resolved through `identify`, not looked up by title: that is what makes
+    // a verdict belong to the test it was recorded against (see `byTestId`).
+    const verdicts = (failure: Failure): string[] =>
+      known?.byTestId[identify(failure.title, digest.files, failure.file).testId] ?? [];
+    for (const failure of digest.failures.slice(0, LIMITS.failures)) {
+      // The file only when the title does not already name it: a jest block
+      // says `● Suite › test` and nothing else, and a doctor that has to
+      // search for the file before it can fix anything is #237's complaint.
+      //
+      // A SUFFIX, not the `FAIL <file> > <test>` shape `gate.ts`'s `testIdOf`
+      // parses, which is a known limit rather than an oversight: a blocked
+      // loop quoting this line gives `testIdOf` the file alone, so
+      // `actionable` looks up `flake:<file>` and misses the `flake:<file> >
+      // <test>` case key. That missed the same way before #237 (it resolved
+      // to null), so nothing regresses; closing it means changing the line a
+      // human reads, which is its own ticket.
+      out.push(`   - ${failure.title}${failure.file ? ` — ${failure.file}` : ""}`);
+      // The doctor's verdict first, then the error text that is its evidence.
+      for (const line of verdicts(failure)) out.push(`       known: ${line}`);
+      for (const line of failure.detail) out.push(`       ${line}`);
+    }
+    const hidden = digest.failures.slice(LIMITS.failures);
+    if (hidden.length > 0) {
+      // Say how many of the hidden ones the doctor knows. §5.4 asks a coder
+      // whether EVERY failure is a flake, and without this a store-known
+      // flake past the cap is answerable only from `--json`.
+      const knownHidden = hidden.filter((failure) => verdicts(failure).length > 0).length;
+      const judged = knownHidden > 0 ? `${knownHidden} known to the ci-doctor; ` : "";
+      out.push(`   … ${hidden.length} more (${judged}--full for the whole log)`);
+    }
+  }
+  if (digest.summary.length > 0) {
+    out.push("   summary:");
+    for (const line of digest.summary) out.push(`     ${line}`);
+  }
+  if (digest.tail.length > 0) {
+    out.push("   no known failure marker; the last lines before the job ended:");
+    for (const line of digest.tail) out.push(`     ${line}`);
+  }
+  for (const line of digest.exit) out.push(`   exit: ${line}`);
+  return out;
+}
+
 export function formatReport(
   build: Build,
   reports: JobReport[],
@@ -572,55 +632,7 @@ export function formatReport(
       continue;
     }
     if (digest === null) continue;
-    if (digest.command) out.push(`   command: $ ${digest.command}`);
-    if (digest.files.length > 0) out.push(`   failing files: ${digest.files.join(" ")}`);
-    if (digest.failures.length > 0) {
-      out.push(
-        digest.timeoutsOnly
-          ? "   kind: timeout only — a flake candidate if the test is unrelated to the diff"
-          : "   kind: error, not a timeout — reproduce it with the command above, on the failing file",
-      );
-      out.push("   failures:");
-      // Resolved through `identify`, not looked up by title: that is what makes
-      // a verdict belong to the test it was recorded against (see `byTestId`).
-      const verdicts = (failure: Failure): string[] =>
-        known?.byTestId[identify(failure.title, digest.files, failure.file).testId] ?? [];
-      for (const failure of digest.failures.slice(0, LIMITS.failures)) {
-        // The file only when the title does not already name it: a jest block
-        // says `● Suite › test` and nothing else, and a doctor that has to
-        // search for the file before it can fix anything is #237's complaint.
-        //
-        // A SUFFIX, not the `FAIL <file> > <test>` shape `gate.ts`'s `testIdOf`
-        // parses, which is a known limit rather than an oversight: a blocked
-        // loop quoting this line gives `testIdOf` the file alone, so
-        // `actionable` looks up `flake:<file>` and misses the `flake:<file> >
-        // <test>` case key. That missed the same way before #237 (it resolved
-        // to null), so nothing regresses; closing it means changing the line a
-        // human reads, which is its own ticket.
-        out.push(`   - ${failure.title}${failure.file ? ` — ${failure.file}` : ""}`);
-        // The doctor's verdict first, then the error text that is its evidence.
-        for (const line of verdicts(failure)) out.push(`       known: ${line}`);
-        for (const line of failure.detail) out.push(`       ${line}`);
-      }
-      const hidden = digest.failures.slice(LIMITS.failures);
-      if (hidden.length > 0) {
-        // Say how many of the hidden ones the doctor knows. §5.4 asks a coder
-        // whether EVERY failure is a flake, and without this a store-known
-        // flake past the cap is answerable only from `--json`.
-        const knownHidden = hidden.filter((failure) => verdicts(failure).length > 0).length;
-        const judged = knownHidden > 0 ? `${knownHidden} known to the ci-doctor; ` : "";
-        out.push(`   … ${hidden.length} more (${judged}--full for the whole log)`);
-      }
-    }
-    if (digest.summary.length > 0) {
-      out.push("   summary:");
-      for (const line of digest.summary) out.push(`     ${line}`);
-    }
-    if (digest.tail.length > 0) {
-      out.push("   no known failure marker; the last lines before the job ended:");
-      for (const line of digest.tail) out.push(`     ${line}`);
-    }
-    for (const line of digest.exit) out.push(`   exit: ${line}`);
+    out.push(...formatDigest(digest, known));
   }
   // Before the history: a recorded verdict outranks a count of red builds.
   if (known !== null) out.push(...formatKnownInfra(known));
