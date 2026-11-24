@@ -37,12 +37,64 @@ Here: the adult-title gate, `~/` vs `@/`, solid colour
   generate the migration file, but NEVER apply a migration (no db:migrate,
   no SQL against the database). The injected database is non-production, but
   branch identity is not a mechanical capability fence and production apply
-  remains a human release step. If
-  the ticket needs one: finish the code, open the PR as DRAFT, comment
-  `needs-migration`, clear the claim and mark the issue blocked exactly as
-  the stuck path in §6 does — removing the `-wip` the issue carries, which is
-  not always your own — journal it, and stop (this counts as completing a
-  task).
+  is never the loop's: either the merge queue's apply step or a person
+  applies it, and which one is the classifier's call, not yours.
+
+  **Expand, then contract.** Prefer the shape the classifier can call safe:
+  a nullable column (or one with a constant default) with no foreign key
+  onto an existing table, or a new enum value no statement in the same batch
+  uses. Do any backfill, `NOT NULL`, new constraint, type change, rename or
+  drop in a separate later change. When the ticket needs a backfill, split it
+  out so the schema part stands alone: ship the schema part here, say in the
+  PR body what was split out and why, and file the rest as a follow-up ticket
+  (`bun "$RALPH_HOME/tracker.ts" create … --label needs-triage`) linked from
+  the PR, so the ticket's remaining criterion is not lost when this PR closes
+  it.
+  **Never leave a statement out, or weaken one, to change the verdict.** A
+  new table's `lock_*` migration (the `REVOKE` on its table and id sequence,
+  `docs/development-workflow.md`), a foreign key onto an existing table, a
+  policy or a grant is unsafe and goes to a person as it is; a migration
+  stripped of its lock to read safe ships a table the client roles can reach.
+
+  Write the migration's SQL first (for `bun run db:generate --custom`, fill
+  the file it creates), then classify every migration the branch adds, in
+  order:
+
+  ```bash
+  bun run db:classify-migrations drizzle/00NN_name.sql [drizzle/00NN_next.sql …]
+  ```
+
+  It needs no credentials. Its `OVERALL` line is the verdict; paste the
+  verdict-pin row it reports for each file into
+  `scripts/migration-verdict-pins.ts` (a row printed for an empty `--custom`
+  file is wrong once the SQL is written). Run
+  `scripts/migration-classifier.test.ts`,
+  `scripts/declared-security-state.test.ts` and
+  `scripts/migration-rls-walk.test.ts` with your targeted tests, and add the
+  matching `supabase/migrations/` file the development workflow requires.
+  Then:
+
+  - **safe** → an ordinary PR, not a draft: no `needs-migration` comment, no
+    block, the claim stays yours. CI's `production-migrations` gives it the
+    *pending safe apply* verdict and the merge queue applies the migration
+    (`docs/development-workflow.md`). Put the classifier's `OVERALL` verdict
+    and what the migration adds in the PR body. If `production-migrations`
+    is red on it, read its `Pending safe apply withheld:` line and act on the
+    reason: out of sequence, or a journal entry older than production's
+    ledger, means a sibling's migration landed first — rebase on
+    `origin/main`, delete and regenerate the migration (new number, journal
+    entry and pin row), re-classify, and push; main's copy could not be read
+    is a CI read failure, re-run once. Auto-apply switched off, an unsafe
+    verdict from main's classifier, or a reason you cannot clear yourself
+    takes the unsafe path below, first turning the PR back into a draft
+    (`gh pr ready --undo <pr>`). So does a queue build whose `migration-apply`
+    step refuses: never requeue it.
+  - **unsafe** → finish the code, open the PR as DRAFT, comment
+    `needs-migration`, clear the claim and mark the issue blocked exactly as
+    the stuck path in §6 does — removing the `-wip` the issue carries, which
+    is not always your own — journal it, and stop (this counts as completing
+    a task). Quote the classifier's per-statement output in the comment,
+    under the plain-words explanation below.
 
   The `needs-migration` comment is read by a person who has not seen the
   branch, so it must **explain the migration in plain words before showing
@@ -327,7 +379,7 @@ The failing Buildkite job maps to one local command, and only this map:
 | quality — mobile typecheck | `bun run --cwd mobile typecheck` |
 | typecheck | `bun run typecheck` |
 | build | `bun run build` |
-| production-migrations | nothing: it reads the production ledger, which is the operator's |
+| production-migrations | nothing: it reads the production ledger, which is the operator's. A `Pending safe apply withheld:` line on a PR adding a migration is the coder rail's (migrations HARD RAIL), not yours |
 | e2e | nothing: you never run Playwright. A screenshot diff is placed above; any other E2E red is placed by the diff and `known:`, and CI re-runs it after your push |
 
 <!-- ralph:section PR_MEDIC_HOST_FENCE -->
@@ -373,7 +425,7 @@ acceptance criterion testable by a unit or component test, and — ideally — a
 merged sibling whose pattern the coder can copy.
 
 A migration, a Doppler secret, or anything needing Playwright is not an easy
-ticket; it is usually `ready-for-human`.
+ticket; an unsafe migration is usually `ready-for-human`.
 
 <!-- ralph:section TRIAGER_SPLIT -->
 On Loggd a ticket is oversize when EITHER the body has more than 8 acceptance-
@@ -388,8 +440,15 @@ has not been split.
 On Loggd, `ready-for-human` rather than `ready-for-agent` when the ticket needs
 any of these, and say which in the comment:
 
-- a database migration, or any change to `src/server/db/schema.ts` — the loops
-  cannot apply migrations (the coder prompt's migrations HARD RAIL);
+- a migration the classifier (`bun run db:classify-migrations`) would call
+  unsafe — anything but a nullable or constant-default column with no foreign
+  key onto an existing table, or a new enum value. That includes a new table,
+  whose `lock_*` migration revokes its id sequence; a drop, rename, type
+  change or backfill; a `NOT NULL`, foreign key or other constraint on an
+  existing table; an index on one; a policy, grant, function, trigger or
+  extension. Only a person may apply those (the coder prompt's migrations
+  HARD RAIL). A classifier-safe migration is not by itself a reason: the
+  merge queue applies it;
 - a new Doppler secret or any credential;
 - a Vercel, Buildkite or host configuration change;
 - an end-to-end or Playwright check as its only verification, since no loop may
