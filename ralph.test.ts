@@ -391,6 +391,8 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // Whether a dotenv project's file variable reached the session (#49) —
     // set or unset, never the value, so this file never carries it.
     `if [ -n "\${DOTENV_APP_URL:-}" ]; then t=set; else t=unset; fi; printf 'claude dotenv-app-url=%s\\n' "$t" >> ${JSON.stringify(argvFile)}`,
+    // And whether the file's path did: the supervisor keeps it from children.
+    `if [ -n "\${RALPH_SECRETS_FILE:-}" ]; then t=set; else t=unset; fi; printf 'claude secrets-file=%s\\n' "$t" >> ${JSON.stringify(argvFile)}`,
     // The first turn unlocks the fake keyring, after this turn's environment
     // was recorded above.
     `[ -n "\${FAKE_DOPPLER_LOCKED_UNTIL_TURN:-}" ] && : > ${JSON.stringify(dopplerUnlockedFile)}`,
@@ -693,6 +695,10 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // one never reaches the loop. Without this branch it would fall through to
     // the gate stub below and answer bookkeeping with gate text.
     '  *loop-state.ts)',
+    // FAKE_SCOPE_WAIT_RESTORES=<copy> puts the removed dotenv file back when
+    // the supervisor records its secrets-scope wait: a file caught mid-save,
+    // back before the next probe (#49).
+    '    if [ -n "${FAKE_SCOPE_WAIT_RESTORES:-}" ]; then case " $* " in *" secrets-scope-wait "*) cp "$FAKE_SCOPE_WAIT_RESTORES" "$FAKE_GATE_REMOVES" ;; esac; fi',
     '    exit ${FAKE_RECORD_STATUS:-0} ;;',
     // Likewise: `runner-failure.test.ts` pins what an observation contains,
     // and `delegate.test.ts` pins that a denied runner produces one. What
@@ -6584,6 +6590,9 @@ describe('the dotenv secrets runner', () => {
     expect(run.argv).toContain('claude dotenv-app-url=set');
     expect(run.argv).toContain('claude injected=');
     expect(run.argv).not.toContain('claude injected=set');
+    // The file's path is the supervisor's: a session handed it could read the
+    // withheld names back out of the file.
+    expect(run.argv).toContain('claude secrets-file=unset');
     // The children ran under the real wrapper, which parsed the file.
     expect(run.argv.some((l) => l.includes('ralph/secrets/dotenv.ts export'))).toBe(true);
     // A dotenv project never asks Doppler for anything.
@@ -6601,29 +6610,41 @@ describe('the dotenv secrets runner', () => {
     }
   });
 
-  it('stops before the turn, never waits, when the file is gone at the per-turn probe', () => {
+  it('waits once, then stops before the turn, when the file is gone at the per-turn probe', () => {
     // The fixture's `preflight.ts` is a stub that answers ready, so its
     // `secrets-file` check never runs here: what refuses is the per-turn
     // probe (`await_secrets_scope`), which runs the real wrapper against a
     // file that no longer exists. The file is there for the startup checks
     // (the environment verification runs under the wrapper too) and the fake
     // gate deletes it, which is the shape of a file removed while the loop
-    // runs. A retry interval far beyond the run's own timeout means a probe
-    // that entered the wait loop would be killed rather than exit 1 — so the
-    // status alone tells a stop from a wait.
+    // runs. The first refusal is waited on — an operator mid-save clears by
+    // the next probe — and the second, saying the same, stops the loop.
     const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
-    const run = runSupervisor(work, ['1'], { FAKE_GATE_REMOVES: file, RALPH_PREFLIGHT_RETRY_SECONDS: '600' });
+    const run = runSupervisor(work, ['1'], { FAKE_GATE_REMOVES: file, RALPH_PREFLIGHT_RETRY_SECONDS: '1' });
 
     expect(run.status).toBe(1);
     expect(run.stdout).toContain(`the secrets file ${file} cannot be read`);
     expect(run.stdout).toContain('stopping before the turn');
-    expect(run.stdout).not.toContain('the secrets scope could not be read');
     const records = run.argv.filter((l) => l.includes('loop-state.ts record'));
+    expect(records.filter((l) => l.includes('--event secrets-scope-wait'))).toHaveLength(1);
     expect(records.some((l) => l.includes('--event secrets-env --stop failed'))).toBe(true);
-    expect(records.some((l) => l.includes('--event secrets-scope-wait'))).toBe(false);
     // No turn was spent, and Doppler was never the fallback.
     expect(run.argv.some((l) => l.startsWith('claude '))).toBe(false);
     expect(dopplerCalls(run.argv)).toEqual([]);
+  });
+
+  it('keeps waiting, never stops, while a refusal clears before the second probe', () => {
+    // A file caught mid-save: gone at one probe, back by the next. The loop
+    // must take the turn, not stop.
+    const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
+    writeFileSync(`${file}.saved`, readFileSync(file, 'utf8'));
+    const run = runSupervisor(work, ['1'], {
+      FAKE_GATE_REMOVES: file,
+      FAKE_SCOPE_WAIT_RESTORES: `${file}.saved`,
+      RALPH_PREFLIGHT_RETRY_SECONDS: '1',
+    });
+    expect(run.status).toBe(0);
+    expect(run.argv.some((l) => l.startsWith('claude '))).toBe(true);
   });
 });
 

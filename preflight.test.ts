@@ -2048,9 +2048,17 @@ describe("the dotenv file a dotenv project runs under (#49)", () => {
     else process.env.PATH = saved;
   });
 
-  const dotenvProject = (contents: string | null, file = "acme-secrets.env"): { root: string; config: ProjectConfig } => {
+  // A project is a git checkout, and one whose secrets file sits inside it
+  // ignores that file, as the check now requires; `ignored: false` leaves it out.
+  const dotenvProject = (
+    contents: string | null,
+    file = "acme-secrets.env",
+    { ignored = true }: { ignored?: boolean } = {},
+  ): { root: string; config: ProjectConfig } => {
     const root = mkdtempSync(join(tmpdir(), "acme-preflight-dotenv-"));
     scratchRoots.push(root);
+    execFileSync("git", ["init", "-q"], { cwd: root, stdio: "pipe" });
+    if (ignored) writeFileSync(join(root, ".gitignore"), `/${file}\n`);
     if (contents !== null) writeFileSync(join(root, file), contents);
     const config = parseProjectConfig(JSON.stringify({ ...LOGGD_CONFIG, secrets: { runner: "dotenv", file, withhold: [] } }));
     return { root, config };
@@ -2083,7 +2091,7 @@ describe("the dotenv file a dotenv project runs under (#49)", () => {
     const { why, remedy } = denial(await checkSecretsFile(root, config));
     expect(why).toContain("unreadable");
     expect(why).toContain("EACCES");
-    expect(remedy).toContain("permissions");
+    expect(remedy).toContain("can read");
   });
 
   it("names the line of a malformed file, never its text", async () => {
@@ -2098,8 +2106,7 @@ describe("the dotenv file a dotenv project runs under (#49)", () => {
     const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`);
     const git = (...args: string[]) =>
       execFileSync("git", ["-c", "user.name=acme", "-c", "user.email=acme@example.org", ...args], { cwd: root, stdio: "pipe" });
-    git("init", "-q");
-    git("add", "acme-secrets.env");
+    git("add", "-f", "acme-secrets.env");
     git("commit", "-q", "-m", "a secrets file committed by mistake");
     const { why, remedy } = denial(await checkSecretsFile(root, config));
     expect(why).toContain("tracked by git");
@@ -2108,9 +2115,32 @@ describe("the dotenv file a dotenv project runs under (#49)", () => {
     expect(remedy).toContain("rotate");
   });
 
-  it("does not take an untracked file in a repository for a tracked one", async () => {
+  it("does not take an untracked, ignored file in a repository for a tracked one", async () => {
     const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`);
-    execFileSync("git", ["init", "-q"], { cwd: root, stdio: "pipe" });
+    expect((await checkSecretsFile(root, config)).outcome.status).toBe("ok");
+  });
+
+  it("refuses an untracked file inside the project that git does not ignore", async () => {
+    // A coder's `git add -A` would commit it; the supervisor's role-violation
+    // `git clean` would delete it.
+    const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`, "acme-secrets.env", { ignored: false });
+    const { why, remedy } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("not ignored by git");
+    expect(remedy).toContain(".gitignore");
+  });
+
+  it("counts a name that starts with two dots as inside the project", async () => {
+    const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`, "..acme.env");
+    execFileSync("git", ["-c", "user.name=acme", "-c", "user.email=acme@example.org", "add", "-f", "..acme.env"], { cwd: root, stdio: "pipe" });
+    const { why } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("tracked by git");
+  });
+
+  it("asks git nothing about a file outside the project", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "acme-host-secrets-"));
+    scratchRoots.push(outside);
+    writeFileSync(join(outside, "acme.env"), `ACME_TOKEN=${SECRET}\n`);
+    const { root, config } = dotenvProject(null, join(outside, "acme.env"), { ignored: false });
     expect((await checkSecretsFile(root, config)).outcome.status).toBe("ok");
   });
 });

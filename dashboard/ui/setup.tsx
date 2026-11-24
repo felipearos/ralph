@@ -363,7 +363,7 @@ function SetupFormCard({ baseBranch, onSubmitted }: { baseBranch: string; onSubm
                       onChange={(event) => edit("secretsFile", event.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      absolute path on this host, outside the worktree, so no agent can read it · relative paths start at the project root
+                      absolute path on this host, outside the worktree · relative paths start at the project root and must be git-ignored
                     </p>
                   </div>
                 ) : form.secretsRunner === "none" ? (

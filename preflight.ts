@@ -68,7 +68,7 @@
 
 import { execFile } from "node:child_process";
 import { access, constants, stat, writeFile } from "node:fs/promises";
-import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { loadConfig, resolveLineup, type Runner } from "./models";
 import { loopRoster, type LoopName } from "./frontier/next-tasks";
@@ -1003,9 +1003,11 @@ export async function checkSecretsFile(root: string, config: ProjectConfig): Pro
   const read = readDotenvFile(path);
   if (read.kind !== "missing") {
     // Only a path inside the project can be tracked by it; asking git about one
-    // outside would fail as "outside repository", which is not an answer.
+    // outside would fail as "outside repository", which is not an answer. A
+    // name that merely starts with two dots (`..env`) is still inside.
     const inside = relative(resolve(root), path);
-    if (inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) {
+    const outside = inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+    if (inside !== "" && !outside) {
       const tracked = await run("git", ["-C", root, "ls-files", "--error-unmatch", "--", inside]);
       if (tracked.ok) {
         return {
@@ -1014,6 +1016,21 @@ export async function checkSecretsFile(root: string, config: ProjectConfig): Pro
             status: "denied",
             why: `the secrets file ${path} is tracked by git in the project, so its values are in the repository's history`,
             remedy: `git rm --cached ${inside}, add it to .gitignore, and rotate every value it holds — they are in the history`,
+          },
+        };
+      }
+      // Untracked is not enough: a coder's `git add -A`, or the supervisor's
+      // own role-violation patch and `git clean`, would publish or delete a
+      // file git does not ignore. Asked as "is it ignored", so a git that
+      // could not answer refuses rather than passing the file.
+      const ignored = await run("git", ["-C", root, "check-ignore", "-q", "--", inside]);
+      if (!ignored.ok) {
+        return {
+          name,
+          outcome: {
+            status: "denied",
+            why: `the secrets file ${path} is inside the project and not ignored by git, so a commit or a clean could take it`,
+            remedy: `add ${inside} to the project's .gitignore, or move the file outside the project and point secrets.file at it`,
           },
         };
       }
@@ -1037,7 +1054,7 @@ export async function checkSecretsFile(root: string, config: ProjectConfig): Pro
         outcome: {
           status: "denied",
           why: `the secrets file ${path} is unreadable (${read.why})`,
-          remedy: `fix the permissions of ${path} so the loop's user can read it`,
+          remedy: `make ${path} a regular file the loop's user can read`,
         },
       };
     case "malformed":

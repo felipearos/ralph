@@ -59,6 +59,12 @@ describe("parseDotenv", () => {
     expect(vars.get("C")).toBe("");
   });
 
+  it("reads a value that is only a comment as empty", () => {
+    const vars = parseDotenv("A=   # fill me in\nB=#\n");
+    expect(vars.get("A")).toBe("");
+    expect(vars.get("B")).toBe("");
+  });
+
   it("keeps a single-quoted value literal", () => {
     expect(parseDotenv("A=' x\\n #y '  # c\n").get("A")).toBe(" x\\n #y ");
   });

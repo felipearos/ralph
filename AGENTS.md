@@ -47,9 +47,10 @@ of the live loops, so it must also pass on a loaded machine.
   reporters through (Sentry today), shaped like `tracker/`: its in-memory fake,
   shared contract suite and the Sentry adapter, tested over an emulated API.
 - `secrets/` — the `SecretSource` interface every named-secret read goes
-  through (value, absent or unread; #759): the Doppler and environment
-  sources, its in-memory fake and shared contract suite, and `read.ts`, the
-  CLI `ralph.sh` calls.
+  through (value, absent or unread; #759): the Doppler, dotenv-file (#49)
+  and environment sources, its in-memory fake and shared contract suite,
+  `read.ts`, the CLI `ralph.sh` calls, and `dotenv-run.sh`, the wrapper a
+  dotenv project's children run under.
 - `gate-verdict-store.ts` — the per-loop record of the verdict a holding
   gate (coder, triager) waits on after an iteration refuted it (#771).
 - `ci-log.ts` — reads a red check's log: routes to `bk-log.ts` (Buildkite) or

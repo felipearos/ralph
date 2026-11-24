@@ -2825,13 +2825,16 @@ pr-medic), while a warning stays a warning (`buildkite-logs` for a coder,
 turn whose secrets scope cannot be read
 (`doppler run` fails) waits and asks again on the preflight's interval rather
 than running and being recorded as a failure; a failure that names auth or
-setup (the preflight's "denied") stops the loop with the remedy instead.
+setup (the preflight's "denied") stops the loop with the remedy instead. A
+dotenv project's file that is missing, unreadable or malformed at two probes in
+a row stops the loop too; once is waited on, as a file mid-save.
 
 **Which checks run is the loop's role's answer** (`roles.ts`, `preflight`), read
 off the project's roster and never off `RALPH_LOOP_ROLE`, so a hand-run
 preflight asks the same list the supervisor does. A triager drops
-`executor-tools`, `buildkite-logs`, `actions-logs` and `doppler-scope` — it
-delegates no code, reads no CI logs, and is given no application environment, so the secrets CLI is
+`executor-tools`, `buildkite-logs`, `actions-logs`, `doppler-scope` and
+`secrets-file` — it delegates no code, reads no CI logs, and is given no
+application environment, so the secrets CLI is
 not required of it either — and a ci-doctor drops `frontier-prerequisites`,
 taking no work off the frontier. A dropped check is not run at all, not merely
 left out of the report. A role also adds to the labels `loop-labels` requires:
@@ -3066,11 +3069,17 @@ literals and double-quoted values with `\n`/`\t`/`\"`/`\\` escapes, which may
 span lines.
 
 The preflight's `secrets-file` check refuses to start when the file is
-missing, unreadable, malformed (it names the line number, never the text) or
-tracked by git in the project, and says which. A file that goes away while the
-loop runs stops it before the next turn rather than waiting, since nothing but
-a person brings it back. Keep the file outside the worktree: an orchestrator
-can read any file under it, and the redactor only scrubs values it is shown.
+missing, unreadable, malformed (it names the line number, never the text),
+tracked by git in the project, or inside the project and not git-ignored (a
+coder's `git add -A` would publish it), and says which. A file that cannot be
+read at two per-turn probes in a row stops the loop before the turn; once is
+waited on, since an operator saving it clears by the next probe.
+
+The supervisor keeps `RALPH_SECRETS_FILE` out of every child's environment,
+but the file stays readable by the loop's user, and `.ralph/config.json` names
+it: like Doppler's own fence, that is a tripwire, not a boundary. So do not
+put a name you would `withhold` in the file at all; `withhold` strips the
+environment, not the file. Keep the file outside the worktree.
 
 Migration generation is allowed; SQL execution and migration application remain
 human-owned. The executor receives `env -i` plus its explicit allowlist and no

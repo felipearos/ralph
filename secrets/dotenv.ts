@@ -101,6 +101,13 @@ export function parseDotenv(text: string): Map<string, string> {
 
     // Unquoted: a `#` after whitespace starts a comment; one inside a value
     // (`a#b`) does not.
+    // A value that is nothing but a comment (`KEY=   # fill me in`) is empty,
+    // as other dotenv readers have it, so a named secret left as a
+    // placeholder reads absent rather than as the placeholder's text.
+    if (raw.startsWith("#")) {
+      vars.set(key, "");
+      continue;
+    }
     const comment = raw.search(/\s#/);
     vars.set(key, (comment < 0 ? raw : raw.slice(0, comment)).trim());
   }
