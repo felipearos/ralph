@@ -2032,10 +2032,27 @@ runs immediately, which is what covers both of those, and then every
   operator's `kill <pid>` reaches `ralph.sh` as SIGTERM (Ctrl-C as SIGINT, a
   closed terminal as SIGHUP), and its trap (`signal-stop.sh`) records a
   confirmed `interrupted` stop — "stopped by SIGTERM (a shutdown, a reboot or
-  a kill)" — the way Stop now does, so the loop stays stopped and Start or
-  Resume work picks it up. Before it, on 2026-10-28, a shutdown came back at
-  boot as every loop restarted. SIGKILL, an OOM kill and a power cut leave no
-  ending, and stay restarted.
+  a kill)" — the way Stop now does, and Start or Resume work picks it up.
+  The trap also records which signal it caught and that it recorded the stop
+  itself (`stopReason.signal`, `stopReason.self: true`); Stop now's own record
+  replaces it with `self: false`. Before the trap, on 2026-10-28, a shutdown
+  came back at boot as every loop restarted, the ones meant to be off
+  included. SIGKILL, an OOM kill and a power cut leave no ending, and stay
+  restarted.
+- **A shutdown is restarted at the next boot; a kill is not (#6).** A dead
+  loop whose ending is a self-recorded SIGTERM `interrupted` stopped *before*
+  the host's current boot (`btime` in `/proc/stat`) was stopped by the
+  shutdown, not by anyone, and is restarted through the same bounded path as
+  a death, with the journal line `reconcile: <p>/<l> was stopped by the host
+  shutdown before this boot — restarting`. This reverses #520's rule for
+  shutdowns only: on 2026-11-22 it kept both coders down for ten hours after
+  a reboot with a green PR waiting. These stay stopped, as before: Stop now
+  (operator-recorded, and a stop still pending on the control record blocks
+  any restart), a SIGTERM, SIGINT or SIGHUP recorded after the current boot
+  (a manual `kill`), and every other ending. An `interrupted` record written
+  before #6 (no `signal` or `self`), a boot time that cannot be read, or a
+  stop time that will not parse also stays stopped, and the line that says so
+  names why.
 - **Through the Start button's own path.** `gatedStart` into `start()`, so a
   restart cannot step around the new-agent gate, the supervisor lock or
   `start.sh`'s duplicate prevention. A `prepareStart` refusal is an attempt
@@ -2063,7 +2080,7 @@ runs immediately, which is what covers both of those, and then every
   then stays down until the hour has slid past. That is #346's own rule; raise
   `RALPH_DASHBOARD_RESTART_ATTEMPTS`, or press Start, if a host needs more.
 - **A loop it leaves down is said once.** A recorded loop whose dead
-  supervisor has an ending (`is down and stays stopped: …`, the shutdown's
+  supervisor has an ending (`is down and stays stopped: …`, a kill's
   `interrupted` included) or whose supervisor cannot be seen
   (`could not be seen, so it is left alone: …`) is one journal line per run
   and reason, and so is a project whose read fails (`could not read <p>: …`,

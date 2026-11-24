@@ -857,6 +857,50 @@ describe("the contract guard", () => {
     expect(record(undefined)).not.toHaveProperty("lastIterationEndAt");
   });
 
+  it("carries a stop's signal and self, and drops malformed ones without failing the record (#6)", () => {
+    const record = (extra: Record<string, unknown>) =>
+      narrowSnapshot({
+        ...validSnapshot,
+        loops: [
+          {
+            worktree: "/checkout",
+            worktreeStatus: "live",
+            loopStatus: "interrupted",
+            branch: null,
+            state: {
+              version: 1,
+              run: "r",
+              owner: { loop: "ralph", pid: null, host: "h" },
+              worktree: "/checkout",
+              branch: null,
+              stage: "iteration",
+              iteration: null,
+              heartbeat: "T",
+              lastEvent: null,
+              stopReason: { kind: "interrupted", why: "signal received", at: "2026-10-20T11:00:00.000Z", ...extra },
+            },
+            stateProblem: null,
+            supervisor: "dead",
+          },
+        ],
+      }).loops[0]?.state?.stopReason;
+    expect(record({ signal: "SIGTERM", self: true })).toEqual({
+      kind: "interrupted",
+      why: "signal received",
+      at: "2026-10-20T11:00:00.000Z",
+      signal: "SIGTERM",
+      self: true,
+    });
+    expect(record({ self: false })).toMatchObject({ self: false });
+    expect(record({ self: false })).not.toHaveProperty("signal");
+    for (const bad of [{ signal: "", self: "yes" }, { signal: 15, self: 1 }, { signal: null, self: null }]) {
+      const stop = record(bad);
+      expect(stop, JSON.stringify(bad)).not.toHaveProperty("signal");
+      expect(stop, JSON.stringify(bad)).not.toHaveProperty("self");
+      expect(stop?.kind).toBe("interrupted");
+    }
+  });
+
   it("rejects a presence shape that is not the projection", () => {
     expect(() => narrowPresence({ loop: "ralph" })).toThrow(RalphContractError);
     expect(() => narrowPresence(null)).toThrow(RalphContractError);

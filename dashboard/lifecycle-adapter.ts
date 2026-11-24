@@ -406,3 +406,20 @@ export function createRalphLifecycleAdapter(config: LifecycleAdapterConfig): Lif
     },
   };
 }
+
+/**
+ * The host's boot time from `/proc/stat`'s `btime` line, in epoch
+ * milliseconds, or null when it cannot be read. Never throws: a boot time
+ * nobody could read only means a shutdown's stop is not restarted.
+ * The reconciler is handed it (#6) rather than reading the host itself.
+ */
+export function readBootTimeMs(read: () => string = () => readFileSync("/proc/stat", "utf8")): number | null {
+  try {
+    const match = /^btime (\d+)$/m.exec(read());
+    if (match === null) return null;
+    const ms = Number(match[1]) * 1000;
+    return Number.isFinite(ms) ? ms : null;
+  } catch {
+    return null;
+  }
+}

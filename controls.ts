@@ -85,7 +85,7 @@
  *   ralph/controls.ts poll [--supervised] [--only <command,…>] [--json]
  *                          [--phase <next> [--after <finished>] | --in-iteration]
  *   ralph/controls.ts status [--json | --line]
- *   ralph/controls.ts interrupted --key <id> --why <reason> [--self <pid>]
+ *   ralph/controls.ts interrupted --key <id> --why <reason> [--self <pid> [--signal <name>]]
  *
  * `--supervised` is the supervisor saying "I am about to act on the answer",
  * and it is what separates a `confirmed` stop from a `pending` one — see
@@ -143,6 +143,11 @@
  * caller — so the liveness refusal is replaced by a narrower one: the loop
  * state's owner must be exactly `<pid>`. A Stop now that follows records over
  * it under its own key, and its reason replaces the trap's.
+ *
+ * `--signal <name>` (only with `--self`) names the signal the trap caught, and
+ * the loop state's `stopReason` records it with `self: true` — an operator's
+ * Stop now writes `self: false` and no signal — so the dashboard's reconciler
+ * can tell a loop a host shutdown stopped from one an operator stopped (#6).
  *
  * A project put to sleep (`ralph/project-sleep.ts`) holds the loop too, with
  * the detail `sleep`, but only at a poll between iterations: one with
@@ -1979,8 +1984,8 @@ function flagValue(argv: string[], name: string): string | null {
 }
 
 /**
- * Write down a Stop now once its signal has taken effect: the control record's
- * confirmed `interrupted` stop, and the loop state's ending. Both writes are
+ * Write down a Stop now once its signal has taken effect: the loop state's
+ * ending, then the control record's confirmed `interrupted` stop. Both writes are
  * idempotent under the key, so a re-issue after a crash between them finishes
  * the job rather than doubling it. Exit 75 while the owner is alive.
  */
@@ -1995,6 +2000,10 @@ function runInterrupted(root: string, argv: string[]): number {
     throw new Error(`the loop state belongs to run ${loop.run}, not ${identity.run}; nothing was recorded`);
   }
   const self = flagValue(argv, "self");
+  const signal = flagValue(argv, "signal");
+  // A signal is the trap's to name: an operator's record carrying one would
+  // read like the trap's, and the reconciler restarts those after a reboot.
+  if (signal !== null && self === null) throw new Error("interrupted --signal needs --self <pid>; nothing was recorded");
   if (self !== null) {
     if (String(loop.owner.pid) !== self) {
       throw new Error(`the loop state's owner is pid ${String(loop.owner.pid)}, not ${self}; nothing was recorded`);
@@ -2027,6 +2036,16 @@ function runInterrupted(root: string, argv: string[]): number {
             stop: previous.stop?.confirmation === "confirmed" ? null : previous.stop,
           };
   const replay = current.applied.some((entry) => entry.key === key);
+  // A stop an operator queued and the supervisor had not carried out yet. The
+  // trap's confirmed ending replaces it below, so the trap's record must not
+  // read as the shutdown's alone: the reconciler restarts those after a reboot,
+  // and the operator asked for this loop to stay down.
+  const queued = self !== null && current.stop !== null && current.stop.confirmation !== "confirmed" ? current.stop : null;
+  // A replay that still finds no ending on the loop state can no longer see
+  // whether a queued stop was replaced, so it does not claim the shutdown's
+  // restart. The loop state is written first below, so this code never leaves
+  // that half-way state; a record an earlier version left half-way might.
+  const ownEnding = self !== null && queued === null && !replay;
   const state = replay
     ? current
     : interruptedState(current, {
@@ -2036,7 +2055,10 @@ function runInterrupted(root: string, argv: string[]): number {
         iteration: loop.iteration?.index ?? null,
         issue: heldTicket(root, identity.run),
       });
-  if (state !== previous) writeJsonAtomically(join(root, CONTROL_STATE_RELATIVE_PATH), state);
+  // The loop state is written before the control record: the trap's
+  // confirmed stop replaces an operator's queued one there, and a retry after
+  // a crash between the writes must still see that queued stop to keep the
+  // loop state's ending from reading as the shutdown's alone.
   // The loop state keeps the run and the owner it already names: the owner
   // is the supervisor that was stopped, not this process. A Stop now's SIGTERM
   // fires the supervisor's trap first, so an `interrupted` ending already
@@ -2045,16 +2067,27 @@ function runInterrupted(root: string, argv: string[]): number {
   const replaces = loop.stopReason?.kind === "interrupted" && self === null && !replay;
   if (loop.stopReason === null || replaces) {
     const detail = self === null ? `stopped now by an operator (${key})` : `stopped by a signal (${key})`;
+    const queuedWhy = queued === null ? "" : `; an operator's ${queued.kind} stop${queued.key === null ? "" : ` (${queued.key})`} was queued — ${queued.why}`;
     writeState(
       join(root, STATE_RELATIVE_PATH),
       applyRecord(
         loop,
-        { event: "interrupted", detail, stop: { kind: "interrupted", why } },
+        {
+          event: "interrupted",
+          detail,
+          stop: {
+            kind: "interrupted",
+            why: `${why}${queuedWhy}`,
+            self: ownEnding,
+            ...(signal !== null && ownEnding ? { signal } : {}),
+          },
+        },
         { run: loop.run, loop: loop.owner.loop, pid: loop.owner.pid, host: loop.owner.host, worktree: loop.worktree },
         nowIso,
       ),
     );
   }
+  if (state !== previous) writeJsonAtomically(join(root, CONTROL_STATE_RELATIVE_PATH), state);
   console.log(JSON.stringify({ stop: state.stop }, null, 2));
   return 0;
 }

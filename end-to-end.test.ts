@@ -1963,7 +1963,7 @@ const retryFixture = (supervisor: string[]) => {
     }),
     loop: "ralph",
   };
-  const pass = (now: () => Date) =>
+  const pass = (now: () => Date, bootTime?: () => number | null) =>
     reconcile({
       targets: () => [
         {
@@ -1979,6 +1979,7 @@ const retryFixture = (supervisor: string[]) => {
       records: (root) => createRecordsAdapter({ root }),
       adapter: createReconcileAdapter({ cliDir: REPO_ROOT, bunPath: BUN, env, exec: executor }),
       now,
+      ...(bootTime === undefined ? {} : { bootTime }),
     });
   // The raised lines as `push-notification.ts` wrote them, in order.
   const raised = (kind: string): { kind: string; priority: string; retry?: unknown }[] => {
@@ -2070,6 +2071,30 @@ describe("a loop ended by a signal stays stopped, and one killed outright is res
     const live = killed.pidOf();
     rememberSupervisor(live);
     expect(live).not.toBe(killedPid);
+  }, 120_000);
+
+  it("restarts the SIGTERMed one at the next boot: the shutdown stopped it, nobody chose to (#6)", async () => {
+    const termed = retryFixture(trapped("shutdown"));
+    const termedPid = termed.start();
+    expect(await until(() => termed.runOf() === "ralph-run-shutdown")).toBe(true);
+    process.kill(termedPid, "SIGTERM");
+    expect(await until(gone(termedPid))).toBe(true);
+
+    const state = JSON.parse(readFileSync(termed.statePath, "utf8")) as { stopReason: Record<string, unknown> | null };
+    expect(state.stopReason).toMatchObject({ kind: "interrupted", signal: "SIGTERM", self: true });
+    const stoppedAt = Date.parse(String(state.stopReason?.at));
+
+    // The same host, before any reboot: a kill after the boot stays stopped.
+    const kept = await termed.pass(() => new Date(), () => stoppedAt - 60_000);
+    expect(kept.attempts, JSON.stringify(kept)).toEqual([]);
+
+    // The host came back up after the stop: that SIGTERM was the shutdown.
+    const back = await termed.pass(() => new Date(), () => stoppedAt + 60_000);
+    expect(back.attempts[0], JSON.stringify(back)).toMatchObject({ outcome: "restarted", run: "ralph-run-shutdown" });
+    const live = termed.pidOf();
+    rememberSupervisor(live);
+    expect(live).not.toBe(termedPid);
+    expect(termed.raised("loop-restarted")).toHaveLength(1);
   }, 120_000);
 });
 

@@ -4004,7 +4004,7 @@ describe('ending on a signal', () => {
         expect(await until(() => !pgrep(`sleep ${delay}`), 5_000)).toBe(true);
         const recorded = work.argv().filter((line) => line.startsWith('ralph/controls.ts interrupted'));
         expect(recorded).toEqual([
-          `ralph/controls.ts interrupted --self ${child.pid} --key signal-${work.argv().find((l) => l.startsWith('claude run-id='))?.replace('claude run-id=', '')} --why stopped by ${signal} (a shutdown, a reboot or a kill)`,
+          `ralph/controls.ts interrupted --self ${child.pid} --signal ${signal} --key signal-${work.argv().find((l) => l.startsWith('claude run-id='))?.replace('claude run-id=', '')} --why stopped by ${signal} (a shutdown, a reboot or a kill)`,
         ]);
         // The iteration never got to end: the stop is the trap's, not a sigil's.
         expect(work.argv().some((line) => line.includes('--event iteration-end'))).toBe(false);

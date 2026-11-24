@@ -1802,6 +1802,101 @@ describe("recording a stop an operator carried out with a signal", () => {
     expect(loop.stopReason).toMatchObject({ kind: "interrupted", why: "stopped now from the dashboard" });
   });
 
+  it("records the signal the trap caught and that the supervisor recorded it itself (#6)", () => {
+    // The dashboard's reconciler restarts a loop a host shutdown stopped
+    // before this boot; it needs to know the trap wrote the ending, and why.
+    const f = fixture("interrupted-self-signal");
+    f.loopState({});
+    const ran = f.run(["interrupted", "--self", String(2 ** 22), "--signal", "SIGTERM", "--key", "signal-1", "--why", "stopped by SIGTERM"]);
+    expect(ran.status).toBe(0);
+    const loop = JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8"));
+    expect(loop.stopReason).toMatchObject({ kind: "interrupted", signal: "SIGTERM", self: true });
+  });
+
+  it("records the trap's SIGTERM over an operator's queued stop as not self, with no signal (#6)", () => {
+    // The trap's confirmed ending replaces the queued stop on the control
+    // record; were the loop state to read as the shutdown's, the reconciler
+    // would restart after a reboot a loop the operator asked to stop.
+    const f = fixture("interrupted-self-over-queued-stop");
+    f.loopState({});
+    writeFileSync(
+      join(f.root, CONTROL_STATE_RELATIVE_PATH),
+      JSON.stringify({
+        ...blankControlState("ralph-run-1", "ralph"),
+        stop: { kind: "completed", why: "done for today", at: "T", key: "stop-1", confirmation: "pending" },
+      }),
+    );
+    const ran = f.run(["interrupted", "--self", String(2 ** 22), "--signal", "SIGTERM", "--key", "signal-1", "--why", "stopped by SIGTERM"]);
+    expect(ran.status).toBe(0);
+    const loop = JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8"));
+    expect(loop.stopReason).toMatchObject({ kind: "interrupted", self: false });
+    expect(loop.stopReason).not.toHaveProperty("signal");
+    expect(loop.stopReason.why).toContain("an operator's completed stop (stop-1) was queued — done for today");
+  });
+
+  it("keeps an operator's queued stop through a retry after a crash between the two writes (#6)", () => {
+    // A retry under the same key finds the trap's confirmed stop on the
+    // control record, the queued one gone; with no ending on the loop state
+    // it cannot tell what was replaced, so it does not claim the restart.
+    const f = fixture("interrupted-self-queued-retry");
+    f.loopState({});
+    const queuedControl = JSON.stringify({
+      ...blankControlState("ralph-run-1", "ralph"),
+      stop: { kind: "completed", why: "done for today", at: "T", key: "stop-1", confirmation: "pending" },
+    });
+    writeFileSync(join(f.root, CONTROL_STATE_RELATIVE_PATH), queuedControl);
+    const args = ["interrupted", "--self", String(2 ** 22), "--signal", "SIGTERM", "--key", "signal-1", "--why", "stopped by SIGTERM"];
+    expect(f.run(args).status).toBe(0);
+    // The control write done, the loop-state write lost.
+    f.loopState({});
+    expect(JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8")).stopReason ?? null).toBeNull();
+    expect(f.run(args).status).toBe(0);
+    const loop = JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8"));
+    expect(loop.stopReason).toMatchObject({ kind: "interrupted", self: false });
+    expect(loop.stopReason).not.toHaveProperty("signal");
+    // The loop-state write done, the control write lost: the retry still
+    // sees the queued stop, and the loop state's ending stays the first one.
+    writeFileSync(join(f.root, CONTROL_STATE_RELATIVE_PATH), queuedControl);
+    const first = readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8");
+    expect(f.run(args).status).toBe(0);
+    expect(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8")).toBe(first);
+    expect(f.state()?.stop).toMatchObject({ kind: "interrupted", key: "signal-1", confirmation: "confirmed" });
+  });
+
+  it("still records the trap's own ending as self on a first, uninterrupted run (#6)", () => {
+    const f = fixture("interrupted-self-no-queue");
+    f.loopState({});
+    const args = ["interrupted", "--self", String(2 ** 22), "--signal", "SIGTERM", "--key", "signal-1", "--why", "stopped by SIGTERM"];
+    expect(f.run(args).status).toBe(0);
+    const loop = JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8"));
+    expect(loop.stopReason).toMatchObject({ self: true, signal: "SIGTERM" });
+    expect(f.state()?.stop).toMatchObject({ key: "signal-1", confirmation: "confirmed" });
+  });
+
+  it("records an operator's Stop now over the trap's ending as not self, with no signal", () => {
+    const f = fixture("interrupted-self-signal-then-stop-now");
+    f.loopState({});
+    expect(
+      f.run(["interrupted", "--self", String(2 ** 22), "--signal", "SIGTERM", "--key", "signal-1", "--why", "stopped by SIGTERM"]).status,
+    ).toBe(0);
+    expect(f.run(["interrupted", "--key", "now-1", "--why", "stopped now from the dashboard"]).status).toBe(0);
+    const loop = JSON.parse(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8"));
+    expect(loop.stopReason).toMatchObject({ kind: "interrupted", why: "stopped now from the dashboard", self: false });
+    expect(loop.stopReason).not.toHaveProperty("signal");
+  });
+
+  it("refuses --signal without --self, and records nothing", () => {
+    // An operator's record carrying a signal would read like the trap's, which
+    // the reconciler restarts after a reboot.
+    const f = fixture("interrupted-signal-without-self");
+    f.loopState({});
+    const before = readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8");
+    const ran = f.run(["interrupted", "--signal", "SIGTERM", "--key", "now-1", "--why", "stopped now"]);
+    expect(ran.status).not.toBe(0);
+    expect(ran.stderr).toContain("--signal needs --self");
+    expect(readFileSync(join(f.root, STATE_RELATIVE_PATH), "utf8")).toBe(before);
+  });
+
   it("is never a kind an inbox stop can ask for", () => {
     // Only a signal the dashboard verified and sent may be recorded as one.
     expect(commandFromInbox({ stem: "s", value: { command: "stop", stop: "interrupted" } })?.stopKind).toBe("blocked");

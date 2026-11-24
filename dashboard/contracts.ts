@@ -239,6 +239,12 @@ export interface StopReason {
   kind: StopKind;
   why: string;
   at: string;
+  // Who ended the supervisor and with which signal (#6): the trap records
+  // `self: true` and the signal on an `interrupted` stop, an operator's Stop
+  // records `self: false`. Records written before #6 carry neither, so both are
+  // optional and the reconciler treats their absence as "not known".
+  signal?: string;
+  self?: boolean;
 }
 
 export interface LoopEvent {
