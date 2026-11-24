@@ -11,7 +11,7 @@ import { secretSourceContract } from "./contract";
 import { dotenvSource, DotenvSyntaxError, parseDotenv, readDotenvFile } from "./dotenv";
 import { secretSourceFor } from "./source";
 
-subprocessSuite("bash secrets/dotenv-run.sh, which spawns bun secrets/dotenv.ts");
+subprocessSuite("bash secrets/dotenv-run.sh, which spawns bun secrets/dotenv.ts, and mkfifo");
 
 const BUN = execFileSync("bash", ["-c", "command -v bun"], { encoding: "utf8" }).trim();
 const RUN = join(import.meta.dirname, "dotenv-run.sh");
@@ -124,6 +124,16 @@ describe("readDotenvFile", () => {
     const read = readDotenvFile(path);
     expect(read.kind).toBe("unreadable");
     expect(JSON.stringify(read).includes(SECRET)).toBe(false);
+  });
+
+  it("answers unreadable at once for a FIFO with no writer, never blocking on it", () => {
+    const fifo = join(scratchDir("ralph-dotenv-"), "fifo.env");
+    execFileSync("mkfifo", [fifo]);
+    expect(readDotenvFile(fifo)).toEqual({ kind: "unreadable", why: "not a regular file" });
+  });
+
+  it("answers unreadable for a directory", () => {
+    expect(readDotenvFile(scratchDir("ralph-dotenv-")).kind).toBe("unreadable");
   });
 
   it("answers malformed without the line's text", () => {

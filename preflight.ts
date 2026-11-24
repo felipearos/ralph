@@ -67,6 +67,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { access, constants, stat, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -988,6 +989,41 @@ export async function checkClerkIntakeBoard(
 }
 
 /**
+ * The refusal for a secrets file git tracks in the project, or does not
+ * ignore there, naming `path`; null when git leaves it alone or when `path`
+ * lies outside `root`. Shared by the configured path and a symlink's target.
+ */
+async function refuseIfGitCouldTake(root: string, path: string): Promise<Outcome | null> {
+  // Only a path inside the project can be tracked by it; asking git about one
+  // outside would fail as "outside repository", which is not an answer. A
+  // name that merely starts with two dots (`..env`) is still inside.
+  const inside = relative(resolve(root), path);
+  const outside = inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+  if (inside === "" || outside) return null;
+  const tracked = await run("git", ["-C", root, "ls-files", "--error-unmatch", "--", inside]);
+  if (tracked.ok) {
+    return {
+      status: "denied",
+      why: `the secrets file ${path} is tracked by git in the project, so its values are in the repository's history`,
+      remedy: `git rm --cached ${inside}, add it to .gitignore, and rotate every value it holds — they are in the history`,
+    };
+  }
+  // Untracked is not enough: a coder's `git add -A`, or the supervisor's
+  // own role-violation patch and `git clean`, would publish or delete a
+  // file git does not ignore. Asked as "is it ignored", so a git that
+  // could not answer refuses rather than passing the file.
+  const ignored = await run("git", ["-C", root, "check-ignore", "-q", "--", inside]);
+  if (!ignored.ok) {
+    return {
+      status: "denied",
+      why: `the secrets file ${path} is inside the project and not ignored by git, so a commit or a clean could take it`,
+      remedy: `add ${inside} to the project's .gitignore, or move the file outside the project and point secrets.file at it`,
+    };
+  }
+  return null;
+}
+
+/**
  * The dotenv file a `dotenv` project's children run under (#49), read before
  * any child starts: a missing, unreadable or malformed file would otherwise
  * surface as a child failing on an absent variable, far from its cause. A file
@@ -1002,38 +1038,23 @@ export async function checkSecretsFile(root: string, config: ProjectConfig): Pro
   const path = resolve(root, configured);
   const read = readDotenvFile(path);
   if (read.kind !== "missing") {
-    // Only a path inside the project can be tracked by it; asking git about one
-    // outside would fail as "outside repository", which is not an answer. A
-    // name that merely starts with two dots (`..env`) is still inside.
-    const inside = relative(resolve(root), path);
-    const outside = inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside);
-    if (inside !== "" && !outside) {
-      const tracked = await run("git", ["-C", root, "ls-files", "--error-unmatch", "--", inside]);
-      if (tracked.ok) {
-        return {
-          name,
-          outcome: {
-            status: "denied",
-            why: `the secrets file ${path} is tracked by git in the project, so its values are in the repository's history`,
-            remedy: `git rm --cached ${inside}, add it to .gitignore, and rotate every value it holds — they are in the history`,
-          },
-        };
-      }
-      // Untracked is not enough: a coder's `git add -A`, or the supervisor's
-      // own role-violation patch and `git clean`, would publish or delete a
-      // file git does not ignore. Asked as "is it ignored", so a git that
-      // could not answer refuses rather than passing the file.
-      const ignored = await run("git", ["-C", root, "check-ignore", "-q", "--", inside]);
-      if (!ignored.ok) {
-        return {
-          name,
-          outcome: {
-            status: "denied",
-            why: `the secrets file ${path} is inside the project and not ignored by git, so a commit or a clean could take it`,
-            remedy: `add ${inside} to the project's .gitignore, or move the file outside the project and point secrets.file at it`,
-          },
-        };
-      }
+    const refused = await refuseIfGitCouldTake(root, path);
+    if (refused !== null) return { name, outcome: refused };
+    // A symlink is judged by its target too: an ignored, untracked link inside
+    // the project pointing at a file git tracks would otherwise pass, with
+    // the values it reads already in the history. A target outside the
+    // project is not git's to answer for, as with a configured outside path.
+    let real: string | null = null;
+    let realRoot: string | null = null;
+    try {
+      real = realpathSync(path);
+      realRoot = realpathSync(root);
+    } catch {
+      // An unresolvable path leaves the read's own verdict to speak below.
+    }
+    if (real !== null && realRoot !== null && real !== path) {
+      const target = await refuseIfGitCouldTake(realRoot, real);
+      if (target !== null) return { name, outcome: target };
     }
   }
   switch (read.kind) {

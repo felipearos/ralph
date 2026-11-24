@@ -2826,8 +2826,9 @@ turn whose secrets scope cannot be read
 (`doppler run` fails) waits and asks again on the preflight's interval rather
 than running and being recorded as a failure; a failure that names auth or
 setup (the preflight's "denied") stops the loop with the remedy instead. A
-dotenv project's file that is missing, unreadable or malformed at two probes in
-a row stops the loop too; once is waited on, as a file mid-save.
+dotenv project's file that is missing, unreadable or malformed at refusals
+spanning at least one retry interval (`RALPH_PREFLIGHT_RETRY_SECONDS`) stops the
+loop too; a shorter run of refusals is waited on, as a file mid-save.
 
 **Which checks run is the loop's role's answer** (`roles.ts`, `preflight`), read
 off the project's roster and never off `RALPH_LOOP_ROLE`, so a hand-run
@@ -3072,8 +3073,9 @@ The preflight's `secrets-file` check refuses to start when the file is
 missing, unreadable, malformed (it names the line number, never the text),
 tracked by git in the project, or inside the project and not git-ignored (a
 coder's `git add -A` would publish it), and says which. A file that cannot be
-read at two per-turn probes in a row stops the loop before the turn; once is
-waited on, since an operator saving it clears by the next probe.
+read at per-turn probes whose refusals span at least one retry interval
+(`RALPH_PREFLIGHT_RETRY_SECONDS`) stops the loop before the turn; a shorter run
+is waited on, since an operator saving it clears by the next probe.
 
 The supervisor keeps `RALPH_SECRETS_FILE` out of every child's environment,
 but the file stays readable by the loop's user, and `.ralph/config.json` names

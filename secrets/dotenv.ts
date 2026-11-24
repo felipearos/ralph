@@ -12,7 +12,7 @@
  * No error, reason or log line here ever carries a value from the file: a
  * malformed line is named by its number only, since its text may be a secret.
  */
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 
 import type { SecretSource } from "./source";
 
@@ -129,7 +129,16 @@ export function readDotenvFile(path: string): DotenvFileRead {
   if (path === "") return { kind: "missing" };
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    // Opened non-blocking and checked on the open descriptor: a FIFO with no
+    // writer would block a plain read forever (preflight, the export CLI), and
+    // a stat before the read would race a swap of the path in between.
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      if (!fstatSync(fd).isFile()) return { kind: "unreadable", why: "not a regular file" };
+      text = readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
+    }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") return { kind: "missing" };

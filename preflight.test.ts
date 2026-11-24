@@ -32,7 +32,7 @@
  * it; these tests pass it explicitly, as a hand-run preflight must).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -2134,6 +2134,27 @@ describe("the dotenv file a dotenv project runs under (#49)", () => {
     execFileSync("git", ["-c", "user.name=acme", "-c", "user.email=acme@example.org", "add", "-f", "..acme.env"], { cwd: root, stdio: "pipe" });
     const { why } = denial(await checkSecretsFile(root, config));
     expect(why).toContain("tracked by git");
+  });
+
+  it("refuses an ignored symlink inside the project that points at a tracked file", async () => {
+    // The link itself is ignored and untracked; the values it reads are not.
+    const { root, config } = dotenvProject(null, ".env.link");
+    writeFileSync(join(root, ".env.tracked"), `ACME_TOKEN=${SECRET}\n`);
+    symlinkSync(join(root, ".env.tracked"), join(root, ".env.link"));
+    execFileSync("git", ["-c", "user.name=acme", "-c", "user.email=acme@example.org", "add", ".env.tracked"], { cwd: root, stdio: "pipe" });
+    const { why, remedy } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("tracked by git");
+    expect(why).toContain(".env.tracked");
+    expect(remedy).toContain("git rm --cached .env.tracked");
+  });
+
+  it("passes an ignored symlink inside the project that points outside it", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "acme-host-secrets-"));
+    scratchRoots.push(outside);
+    writeFileSync(join(outside, "acme.env"), `ACME_TOKEN=${SECRET}\n`);
+    const { root, config } = dotenvProject(null, ".env.link");
+    symlinkSync(join(outside, "acme.env"), join(root, ".env.link"));
+    expect((await checkSecretsFile(root, config)).outcome.status).toBe("ok");
   });
 
   it("asks git nothing about a file outside the project", async () => {

@@ -611,7 +611,10 @@ esac
 RALPH_ENV_FILTER=(env)
 # The dotenv file's path is the supervisor's, not the children's: it holds the
 # withheld names too, so a session handed the path could read them back (#49).
-[ "$RALPH_SECRETS_RUNNER" = "dotenv" ] && RALPH_ENV_FILTER+=(-u RALPH_SECRETS_FILE)
+# Unset for every role, not only when the runner reads `dotenv` here: a
+# manager-less role (triager, clerk) has its runner set to `none` above while
+# the path is still exported, and unsetting an unset name is harmless.
+RALPH_ENV_FILTER+=(-u RALPH_SECRETS_FILE)
 for secret in "${RALPH_WITHHELD_SECRET_NAMES[@]}"; do
   RALPH_ENV_FILTER+=(-u "$secret")
 done
@@ -1259,14 +1262,17 @@ start_budget_guard() { # <session> <cap> [--only-session]
 # Never fatal otherwise, and a project with no secrets manager is never asked.
 #
 # A dotenv file (#49) has no classifier: the wrapper's own exit says what is
-# wrong (3 missing, 4 unreadable, 5 malformed). Such a refusal is waited on
-# once — an operator saving the file, or a mount coming up late, clears by the
-# next probe — and stops the loop only if the next probe says the same. Any
-# other failure (a timeout on a loaded host, bun killed) is an ordinary wait.
+# wrong (3 missing, 4 unreadable, 5 malformed). Such a refusal is waited on —
+# an operator saving the file, or a mount coming up late, clears by a later
+# probe — and stops the loop only when refusals in a row span at least one
+# retry interval (`RALPH_PREFLIGHT_RETRY_SECONDS`) of real time: two probes at
+# the least, and never two seconds apart because `control_sleep` returned
+# early. Any other failure (a timeout on a loaded host, bun killed) is an
+# ordinary wait, and like a success it starts the count again.
 await_secrets_scope() {
   [ "${#RALPH_SECRETS_CMD[@]}" -gt 0 ] || return 0
   local probe_err="${SUPERVISOR_LOG%/*}/secrets-scope-${RALPH_RUN_ID}.err"
-  local waited=0 started="" alerted="" why failure probe_status dotenv_refused=""
+  local waited=0 started="" alerted="" why failure probe_status dotenv_refused_at=""
   while true; do
     probe_status=0
     timeout 45 "${RALPH_SECRETS_CMD[@]}" true >/dev/null 2> "$probe_err" || probe_status=$?
@@ -1276,7 +1282,7 @@ await_secrets_scope() {
         3 | 4 | 5)
           # The wrapper's one stderr line names the file and which of the
           # three; it never holds a value.
-          if [ -n "$dotenv_refused" ]; then
+          if [ -n "$dotenv_refused_at" ] && [ $(($(date +%s) - dotenv_refused_at)) -ge "$PREFLIGHT_RETRY" ]; then
             why="$(head -n 1 "$probe_err" 2>/dev/null | cut -c 1-200)"
             rm -f "$probe_err"
             say "${LOOP_DISPLAY}: the secrets file ${RALPH_SECRETS_FILE} cannot be read (${why:-no error output}); stopping before the turn."
@@ -1284,9 +1290,9 @@ await_secrets_scope() {
               --why "the secrets file ${RALPH_SECRETS_FILE} cannot be read (${why:-no error output}); no turn was spent"
             exit 1
           fi
-          dotenv_refused=1
+          [ -n "$dotenv_refused_at" ] || dotenv_refused_at="$(date +%s)"
           ;;
-        *) dotenv_refused="" ;;
+        *) dotenv_refused_at="" ;;
       esac
       failure="unavailable"
     else

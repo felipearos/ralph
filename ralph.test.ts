@@ -6617,8 +6617,9 @@ describe('the dotenv secrets runner', () => {
     // file that no longer exists. The file is there for the startup checks
     // (the environment verification runs under the wrapper too) and the fake
     // gate deletes it, which is the shape of a file removed while the loop
-    // runs. The first refusal is waited on — an operator mid-save clears by
-    // the next probe — and the second, saying the same, stops the loop.
+    // runs. Refusals are waited on — an operator mid-save clears by a later
+    // probe — until they span at least one retry interval of real time
+    // (RALPH_PREFLIGHT_RETRY_SECONDS), and then the loop stops.
     const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
     const run = runSupervisor(work, ['1'], { FAKE_GATE_REMOVES: file, RALPH_PREFLIGHT_RETRY_SECONDS: '1' });
 
@@ -6631,6 +6632,27 @@ describe('the dotenv secrets runner', () => {
     // No turn was spent, and Doppler was never the fallback.
     expect(run.argv.some((l) => l.startsWith('claude '))).toBe(false);
     expect(dopplerCalls(run.argv)).toEqual([]);
+  });
+
+  it('keeps the file path from a manager-less role too', () => {
+    // A triager's runner reads `none` once the supervisor drops the manager
+    // for its role, but the path read off the config is still exported: a
+    // filter keyed on the runner would hand the triager's session the path.
+    const { work, file } = dotenvWorktree([...FIXTURE_CONFIG.secrets.withhold]);
+    writeFileSync(
+      join(work.root, '.ralph', 'config.json'),
+      JSON.stringify({
+        ...FIXTURE_CONFIG,
+        loops: ['nova', { name: 'tria', role: 'triager' }],
+        secrets: { runner: 'dotenv', file, withhold: [...FIXTURE_CONFIG.secrets.withhold] },
+        envCheck: [],
+      }),
+    );
+    const run = runSupervisor(work, ['1'], { RALPH_LOOP_NAME: 'tria', FAKE_SIGIL: '<ralph>DONE</ralph>' });
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('is given no application environment');
+    expect(run.argv.filter((l) => l.startsWith('claude run-id='))).toHaveLength(1);
+    expect(run.argv).toContain('claude secrets-file=unset');
   });
 
   it('keeps waiting, never stops, while a refusal clears before the second probe', () => {
