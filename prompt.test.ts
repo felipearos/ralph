@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { mergeRoute } from './models';
+
 const prompt = readFileSync(join(__dirname, 'prompt.md'), 'utf8');
 const FRONTIER = 'selection="$(bun "$RALPH_HOME/frontier/next.ts" --take-one';
 
@@ -52,9 +54,12 @@ describe('merging through the queue', () => {
   const cleanup = prompt.indexOf('7. Close the issue and mark the work as yours');
 
   it('never merges with gh — the queue is the merge path', () => {
-    // The one mention left is the prohibition itself.
-    expect(prompt.match(/gh pr merge/g)).toHaveLength(1);
-    expect(prompt).toContain('**Never run `gh pr merge`**');
+    // The merge route is rendered from `mergeMethod` (#51); with none set, the
+    // one mention is the prohibition itself.
+    expect(prompt).not.toMatch(/gh pr merge/);
+    expect(prompt).toContain('{{RALPH_MERGE_ROUTE}}');
+    expect(mergeRoute(undefined).match(/gh pr merge/g)).toHaveLength(1);
+    expect(mergeRoute(undefined)).toContain('**Never run `gh pr merge`**');
   });
 
   it('waits for MERGED between the enqueue and the post-merge cleanup', () => {
@@ -75,7 +80,7 @@ describe('merging through the queue', () => {
 
   it('no longer rebases a green PR merely for being behind', () => {
     expect(prompt).not.toContain('git rev-list --count "HEAD..origin/$RALPH_BASE_BRANCH"');
-    expect(prompt).toMatch(/Rebase only for a real textual\s+conflict/);
+    expect(mergeRoute(undefined)).toMatch(/Rebase only for a real textual\s+conflict/);
   });
 
   it('resumes a PR a previous iteration already enqueued at the wait', () => {

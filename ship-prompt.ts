@@ -114,6 +114,7 @@ export function nextStep(
   maxRounds: number,
   role: Role = DEFAULT_ROLE,
   merge: string = process.env.RALPH_MERGE ?? "loop",
+  method: string = process.env.RALPH_MERGE_METHOD ?? "",
 ): string {
   if (role === "pr-medic") return medicNextStep(wait);
   const pr = wait.pr ?? "<pr>";
@@ -130,6 +131,15 @@ export function nextStep(
           `CI is green on the PR's head. Continue at §5.5, then §5.6: a person merges on this`,
           `project, so once its three conditions hold, hand the PR off as §5.6 says and end with`,
           `\`<ralph>DONE</ralph>\`. Never merge it and never end with \`AWAIT_PR ${pr} merge\`.`,
+        ].join("\n");
+      }
+      // `mergeMethod: "direct"`: no queue, so the loop merges and the merge
+      // wait only confirms the merge landed before step 7's cleanup.
+      if (method === "direct") {
+        return [
+          `CI is green on the PR's head. Continue at §5.5, then §5.6: check mergeability and merge it`,
+          `(\`gh pr merge ${pr} --squash\`, §5.6). Once it succeeds, end with`,
+          `\`<ralph>AWAIT_PR ${pr} merge</ralph>\` so the supervisor sees the merge land.`,
         ].join("\n");
       }
       return [
@@ -164,6 +174,16 @@ export function nextStep(
         `journal. Nothing is left to wait for.`,
       ].join("\n");
     case "dequeued":
+      // `mergeMethod: "direct"` has no queue: dequeued means `gh pr merge`
+      // did not land, and there is nothing to re-queue.
+      if (method === "direct") {
+        return [
+          `The merge did not land: there is no queue on this project, and the PR is still open.`,
+          `Read why \`gh pr merge ${pr} --squash\` failed — a check that is not green, a conflict —`,
+          `and follow §5.6 for it; after pushing a fix, ${awaitAgain}. Never re-queue, and never`,
+          `pass \`--admin\`.`,
+        ].join("\n");
+      }
       return [
         `The PR left the merge queue, or never entered it. Follow §5.6's **dequeued**`,
         `branch; after pushing a fix, ${awaitAgain}. If it left because of something`,

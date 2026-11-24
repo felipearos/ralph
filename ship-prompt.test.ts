@@ -138,6 +138,25 @@ describe("a pr-medic's recovery turns", () => {
     expect(step).toMatch(/<ralph>DONE<\/ralph>|§5\.7/);
   });
 
+  it("merges directly and reads a dequeued wait as a merge that did not land (mergeMethod: direct)", () => {
+    const green = nextStep({ outcome: "green", pr: "41" }, 1, 4, "coder", "loop", "direct");
+    expect(green).toContain("check mergeability and merge it");
+    expect(green).toContain("`gh pr merge 41 --squash`");
+    expect(green).toContain("`<ralph>AWAIT_PR 41 merge</ralph>`");
+    expect(green).not.toContain("enqueue");
+    const dequeued = nextStep({ outcome: "dequeued", pr: "41" }, 1, 4, "coder", "loop", "direct");
+    expect(dequeued).toContain("The merge did not land");
+    expect(dequeued).toContain("§5.6");
+    expect(dequeued).toContain("Never re-queue");
+    expect(dequeued).not.toContain("<ralph>AWAIT_PR 41 merge</ralph>");
+    // Any other method, or none, reads as it did.
+    for (const method of ["", "mergify", "github-queue"]) {
+      for (const outcome of ["green", "dequeued"]) {
+        expect(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", method)).toBe(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", ""));
+      }
+    }
+  });
+
   it("never sends a coder to merge at green when a person merges (merge: human)", () => {
     const green = nextStep({ outcome: "green", pr: "41" }, 1, 4, "coder", "human");
     expect(green).not.toMatch(/check mergeability and enqueue|<ralph>AWAIT_PR 41 merge<\/ralph> instead/);

@@ -61,7 +61,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { projectRoot } from './paths';
-import { loadProjectConfig, ProjectConfigError, type ProjectConfig } from './project-config';
+import { loadProjectConfig, ProjectConfigError, type MergeMethod, type ProjectConfig } from './project-config';
 import { currentProjectId, LEGACY_PROJECT, PROJECT_ID } from './project-id';
 import {
   DEFAULT_ROLE,
@@ -1254,7 +1254,111 @@ export function projectValues(config: ProjectConfig): Record<string, string> {
     // Rendered from `merge`, the key `ralph.sh` also reads to deny the session
     // `gh pr merge`, so the prompt and the rail never disagree on who merges.
     RALPH_MERGE_HANDOFF: mergeHandoff(config.merge),
+    // Rendered from `mergeMethod`, the key `pr-wait.ts` reads to decide what a
+    // merge wait watches, so the commands the prompt gives and the signal the
+    // supervisor waits on never disagree. Absent renders as today.
+    RALPH_MERGE_ROUTE: mergeRoute(config.mergeMethod),
+    RALPH_MERGE_ENQUEUE: mergeEnqueue(config.mergeMethod),
+    RALPH_MERGE_REQUEUE: mergeRequeue(config.mergeMethod),
   };
+}
+
+/**
+ * Step 6's paragraph on how the base branch takes a merge. Absent and
+ * `mergify` get the merge-queue paragraph every prompt carried before
+ * `mergeMethod` existed, byte for byte.
+ */
+export function mergeRoute(method: MergeMethod | undefined): string {
+  if (method === "github-queue") {
+    return [
+      "   The base branch merges only through GitHub's merge queue, and that",
+      "   changes what \"merge\" means here. `gh pr merge <pr>` with no strategy",
+      "   flag is how the PR enters the queue; **never pass `--admin`, and never a",
+      "   strategy flag** (`--squash`, `--merge`, `--rebase`) that merges around the",
+      "   queue. The queue builds base-plus-your-PR before the merge lands. The",
+      "   queue is what proves the combination, so being behind",
+      "   `origin/$RALPH_BASE_BRANCH` is no longer a reason to rebase — a rebase",
+      "   re-runs CI on the PR for nothing. Rebase only for a real textual",
+      "   conflict.",
+    ].join("\n");
+  }
+  if (method === "direct") {
+    return [
+      "   The base branch has no merge queue on this project (`mergeMethod:",
+      "   \"direct\"`): once the three conditions above hold, you merge the PR",
+      "   yourself with `gh pr merge <pr> --squash`. Rebase only for a real",
+      "   textual conflict. What follows about the queue — the `queued` label,",
+      "   the queue's build, re-queueing — does not apply here: a **dequeued**",
+      "   wait outcome means the merge did not land.",
+    ].join("\n");
+  }
+  return [
+    "   The base branch merges only through the merge queue, and that changes what",
+    "   \"merge\" means here. **Never run `gh pr merge`**: on this project it merges",
+    "   at once, around the queue, and the project's hook refuses it. You enqueue",
+    "   instead, and the queue builds base-plus-your-PR on a temporary branch",
+    "   before the merge lands. The queue is what proves the combination, so being",
+    "   behind `origin/$RALPH_BASE_BRANCH` is no longer a reason to rebase — a",
+    "   rebase re-runs CI on the PR for nothing. Rebase only for a real textual",
+    "   conflict.",
+  ].join("\n");
+}
+
+/**
+ * Step 6's enqueue command for the project's merge method, placed after the
+ * project fragment's own `ENQUEUE` section. Empty when no method is set, so
+ * a project whose fragment carries the command reads as it did.
+ */
+export function mergeEnqueue(method: MergeMethod | undefined): string {
+  if (method === undefined) return "";
+  const block = (command: string): string[] => ["", "", "     ```bash", `     ${command}`, "     ```", ""];
+  if (method === "mergify") {
+    return [
+      ...block('gh pr comment <pr> --body "@mergifyio queue"'),
+      "     That comment is Mergify's enqueue: it replies on the PR and adds the",
+      "     `queued` label, swapped for `dequeued` after a failed attempt.",
+    ].join("\n");
+  }
+  if (method === "github-queue") {
+    return [
+      ...block("gh pr merge <pr>"),
+      "     That is GitHub's enqueue. GitHub's queue puts no label on the PR; this",
+      "     reads whether the PR is in it:",
+      "",
+      "     ```bash",
+      "     gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue}}}' -F owner='{owner}' -F name='{repo}' -F number=<pr>",
+      "     ```",
+      "",
+      "     On this project, read \"carries `queued`\" below as `isInMergeQueue`",
+      "     being `true`.",
+    ].join("\n");
+  }
+  return [
+    ...block("gh pr merge <pr> --squash"),
+    "     A refusal from `gh` means one of the three conditions does not hold — a",
+    "     check that is not green is §5.4's problem, a conflict is the rebase",
+    "     case — and is never a reason to retry it or to pass `--admin`. Once it",
+    "     succeeds, still end with `<ralph>AWAIT_PR <pr> merge</ralph>`, so step",
+    "     7's cleanup runs only after the supervisor has seen the merge land.",
+  ].join("\n");
+}
+
+/**
+ * The `dequeued` branch's re-queue command for the project's merge method,
+ * placed before the fragment-neutral sentence that uses it. Empty when no
+ * method is set and on `direct`, which has no queue to re-enter.
+ */
+export function mergeRequeue(method: MergeMethod | undefined): string {
+  if (method === "mergify") return 'Here the re-queue command is `gh pr comment <pr> --body "@mergifyio requeue"`.';
+  if (method === "github-queue") {
+    return [
+      "Here the re-queue command is `gh pr merge <pr>`, the same command that",
+      "         enqueues: GitHub's queue leaves no check of its own red on the head,",
+      "         so the rule against re-running the enqueue command does not hold",
+      "         here.",
+    ].join("\n");
+  }
+  return "";
 }
 
 /**

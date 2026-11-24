@@ -254,6 +254,78 @@ describe('a project where a person merges (merge: human)', () => {
   });
 });
 
+describe('the merge method (mergeMethod) picks step 6\'s commands', () => {
+  /** loggd's config with no prompt fragment, so the commands come from `mergeMethod` alone. */
+  function withMethod(method?: string): string {
+    const root = projectWithFragment('');
+    const path = join(root, '.ralph', 'config.json');
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    if (method !== undefined) config.mergeMethod = method;
+    writeFileSync(path, JSON.stringify(config));
+    return root;
+  }
+  function rendered(method?: string): string {
+    const run = render('prompt.md', withMethod(method));
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
+    return run.stdout;
+  }
+  /** The `MERGEABLE` bullet, up to the merge wait it hands back. */
+  const enqueueStep = (out: string): string => {
+    const start = out.indexOf('- `MERGEABLE` with every check green');
+    expect(start).toBeGreaterThan(-1);
+    const end = out.indexOf('AWAIT_PR <pr> merge</ralph>', start);
+    expect(end).toBeGreaterThan(start);
+    return out.slice(start, end);
+  };
+  const requeueStep = (out: string): string => {
+    const start = out.indexOf('**dequeued**');
+    const end = out.indexOf('**closed**', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return out.slice(start, end).replace(/\s+/g, ' ');
+  };
+
+  it('places no command of its own when the method is absent', () => {
+    const out = rendered();
+    expect(out).toContain('**Never run `gh pr merge`**');
+    expect(enqueueStep(out)).not.toContain('```bash');
+    expect(requeueStep(out)).not.toContain('Here the re-queue command is');
+  });
+
+  it('enqueues and re-queues through Mergify, with the queue paragraph unchanged (mergify)', () => {
+    const out = rendered('mergify');
+    expect(enqueueStep(out)).toContain('gh pr comment <pr> --body "@mergifyio queue"');
+    expect(requeueStep(out)).toContain('Here the re-queue command is `gh pr comment <pr> --body "@mergifyio requeue"`.');
+    expect(out).toContain('**Never run `gh pr merge`**');
+    // The paragraph is the one an absent method renders.
+    const paragraph = (text: string) => text.slice(text.indexOf('   The base branch merges'), text.indexOf('**Never prefix'));
+    expect(paragraph(out)).toBe(paragraph(rendered()));
+  });
+
+  it("enqueues with a bare gh pr merge and reads isInMergeQueue (github-queue)", () => {
+    const out = rendered('github-queue');
+    const flat = out.replace(/\s+/g, ' ');
+    expect(flat).toContain("GitHub's merge queue");
+    expect(flat).toContain('never pass `--admin`');
+    expect(out).not.toContain('**Never run `gh pr merge`**');
+    const step = enqueueStep(out);
+    expect(step).toMatch(/```bash\n\s+gh pr merge <pr>\n/);
+    expect(step).toContain('isInMergeQueue');
+    expect(requeueStep(out)).toContain('Here the re-queue command is `gh pr merge <pr>`, the same command that enqueues');
+  });
+
+  it('merges with gh pr merge --squash and never re-queues (direct)', () => {
+    const out = rendered('direct');
+    expect(out).not.toContain('Never run `gh pr merge`');
+    expect(out.replace(/\s+/g, ' ')).toContain('a **dequeued** wait outcome means the merge did not land');
+    const step = enqueueStep(out);
+    expect(step).toContain('gh pr merge <pr> --squash');
+    expect(step.replace(/\s+/g, ' ')).toContain('never a reason to retry it or to pass `--admin`');
+    expect(requeueStep(out)).not.toContain('Here the re-queue command is');
+  });
+});
+
 describe('screenshots of a UI change', () => {
   const project = loggdProject();
 
