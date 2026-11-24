@@ -545,6 +545,19 @@ describe("the exports ralph.sh evals", () => {
     expect(() => parseProjectConfig(JSON.stringify({ ...LOGGD, merge: "never" }))).toThrow("'merge' must be 'loop' or 'human'");
   });
 
+  it("accepts the three merge methods, refuses anything else, and leaves an undeclared one absent (#51)", () => {
+    const method = (config: object) => evalIn(exportLines(parseProjectConfig(JSON.stringify(config)), "/work/loggd"), 'printf "%s" "$RALPH_MERGE_METHOD"');
+    expect(parseProjectConfig(JSON.stringify(LOGGD)).mergeMethod).toBeUndefined();
+    expect(method(LOGGD)).toBe("");
+    for (const m of ["mergify", "github-queue", "direct"]) {
+      expect(parseProjectConfig(JSON.stringify({ ...LOGGD, mergeMethod: m })).mergeMethod).toBe(m);
+      expect(method({ ...LOGGD, mergeMethod: m })).toBe(m);
+    }
+    for (const bad of ["squash", "", null, 1]) {
+      expect(() => parseProjectConfig(JSON.stringify({ ...LOGGD, mergeMethod: bad }))).toThrow("'mergeMethod' must be one of 'mergify', 'github-queue', 'direct'");
+    }
+  });
+
   it("accepts how the dashboard saves rules edits, commit or pr, and refuses anything else (#787)", () => {
     // Absent stays absent: the dashboard reads a missing key as `commit`.
     expect(parseProjectConfig(JSON.stringify(LOGGD)).configChanges).toBeUndefined();
@@ -686,6 +699,7 @@ describe("the exports ralph.sh evals", () => {
       "RALPH_ENV_CHECK",
       "RALPH_REQUIRED_CHECKS",
       "RALPH_MERGE",
+      "RALPH_MERGE_METHOD",
       "RALPH_PROMPT_FRAGMENT",
       "RALPH_CODER_FRAGMENT",
       "RALPH_PLAN",

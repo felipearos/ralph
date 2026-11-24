@@ -368,6 +368,138 @@ describe("reading over REST when GraphQL is rate limited", () => {
   });
 });
 
+describe("the merge method", () => {
+  const inQueue = (value: boolean): string => JSON.stringify({ data: { repository: { pullRequest: { isInMergeQueue: value } } } });
+  const view = (over: Record<string, unknown> = {}): string =>
+    JSON.stringify({ state: "OPEN", mergedAt: null, labels: [], headRefOid: "abc", statusCheckRollup: [], ...over });
+
+  it("github-queue: isInMergeQueue flips ci to merge mode and follows it to the merge", async () => {
+    const result = await wait(
+      options({ method: "github-queue" }),
+      sequence([
+        snapshot({ inQueue: true }),
+        snapshot({ inQueue: true }),
+        snapshot({ state: "MERGED", mergedAt: "2026-11-24T10:00:00Z" }),
+      ]),
+    );
+    expect(result).toMatchObject({ outcome: "merged", mode: "merge", detail: "merged 2026-11-24T10:00:00Z" });
+  });
+
+  it("github-queue: removed from the queue, and never entered it, are dequeued", async () => {
+    const fell = await wait(
+      options({ mode: "merge", method: "github-queue" }),
+      sequence([snapshot({ inQueue: true }), snapshot({ inQueue: false })]),
+    );
+    expect(fell).toMatchObject({ outcome: "dequeued" });
+    expect(fell.detail).toContain("removed from GitHub's merge queue");
+
+    const never = await wait(options({ mode: "merge", method: "github-queue" }), sequence([snapshot({ inQueue: false })]));
+    expect(never).toMatchObject({ outcome: "dequeued" });
+    expect(never.detail).toContain("never entered GitHub's merge queue within 2 polls");
+  });
+
+  it("github-queue: reads isInMergeQueue over gh api graphql before the PR's state", () => {
+    const { gh, calls } = fakeGh([
+      ["pr view", view()],
+      ["api graphql", inQueue(true)],
+    ]);
+    expect(readSnapshot("7", null, gh, "github-queue")).toMatchObject({ ok: true, snapshot: { inQueue: true } });
+    // The state is the later read, so a merge between the two reads MERGED.
+    expect(calls[0]?.slice(0, 2)).toEqual(["api", "graphql"]);
+    expect(calls[0]?.slice(4)).toEqual(["-F", "owner={owner}", "-F", "name={repo}", "-F", "number=7"]);
+    expect(calls[1]).toEqual(["pr", "view", "7", "--json", "state,mergedAt,labels,headRefOid,statusCheckRollup"]);
+
+    const named = fakeGh([
+      ["pr view", view()],
+      ["api graphql", inQueue(false)],
+    ]);
+    expect(readSnapshot("7", "o/r", named.gh, "github-queue")).toMatchObject({ ok: true, snapshot: { inQueue: false } });
+    expect(named.calls[0]?.slice(4)).toEqual(["-F", "owner=o", "-F", "name=r", "-F", "number=7"]);
+  });
+
+  it("github-queue: a PR merged between the queue read and the state read is merged, not dequeued", async () => {
+    // The queue still had it when asked; by the state read the queue had merged it.
+    const { gh } = fakeGh([
+      ["api graphql", inQueue(false)],
+      ["pr view", view({ state: "MERGED", mergedAt: "2026-11-24T10:00:00Z" })],
+    ]);
+    const result = await wait(
+      options({ mode: "merge", method: "github-queue" }),
+      (pr, repo, _gh, method, mode) => readSnapshot(pr, repo, gh, method, mode),
+    );
+    expect(result).toMatchObject({ outcome: "merged" });
+  });
+
+  it("github-queue: a merged or closed PR is judged on its state when the queue read fails", () => {
+    for (const state of ["MERGED", "CLOSED"]) {
+      const { gh } = fakeGh([
+        ["api graphql", new Error("API rate limit exceeded")],
+        ["pr view", view({ state })],
+      ]);
+      expect(readSnapshot("7", null, gh, "github-queue")).toMatchObject({ ok: true, snapshot: { state } });
+    }
+  });
+
+  it("github-queue: a CI wait reads an unread queue flag as not queued yet, and keeps waiting", () => {
+    const { gh } = fakeGh([
+      ["api graphql", new Error("HTTP 502: Bad Gateway")],
+      ["pr view", view()],
+    ]);
+    expect(readSnapshot("7", null, gh, "github-queue", "ci")).toMatchObject({ ok: true, snapshot: { inQueue: false } });
+    expect(readSnapshot("7", null, gh, "github-queue", "merge")).toMatchObject({
+      ok: true,
+      snapshot: { queueUnread: "merge queue read: HTTP 502: Bad Gateway" },
+    });
+  });
+
+  it("github-queue: an unread queue flag is neither judged nor counted, so a queued PR waits to its merge", async () => {
+    // GraphQL is rate limited: the state reads over REST, the queue not at all.
+    const unread = snapshot({ queueUnread: "merge queue read: API rate limit exceeded" });
+    // More unread polls than MAX_CONSECUTIVE_FAILURES or the grace allows.
+    const reads = Array.from({ length: MAX_CONSECUTIVE_FAILURES + 3 }, () => unread);
+    const result = await wait(
+      options({ mode: "merge", method: "github-queue" }),
+      sequence([...reads, snapshot({ state: "MERGED", mergedAt: "2026-11-24T10:00:00Z" })]),
+    );
+    expect(result).toMatchObject({ outcome: "merged", polls: 0 });
+  });
+
+  it("github-queue: a failing state read is still a failed read, and enough of them are unreadable", async () => {
+    const { gh } = fakeGh([
+      ["pr view", new Error("HTTP 502: Bad Gateway")],
+      ["api graphql", inQueue(true)],
+    ]);
+    const result = await wait(
+      options({ mode: "merge", method: "github-queue" }),
+      (pr, repo, _gh, method) => readSnapshot(pr, repo, gh, method),
+    );
+    expect(result.outcome).toBe("unreadable");
+  });
+
+  it("mergify and no method make only the pr view call", () => {
+    for (const method of ["mergify", undefined] as const) {
+      const { gh, calls } = fakeGh([["pr view", view()]]);
+      expect(readSnapshot("7", null, gh, method)).toMatchObject({ ok: true });
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("direct: merged at once, closed, and still open past the grace a merge that did not land", async () => {
+    const merged = await wait(
+      options({ mode: "merge", method: "direct" }),
+      sequence([snapshot({ state: "MERGED", mergedAt: "2026-11-24T10:00:00Z" })]),
+    );
+    expect(merged).toMatchObject({ outcome: "merged", polls: 0 });
+    expect((await wait(options({ mode: "merge", method: "direct" }), sequence([snapshot({ state: "CLOSED" })]))).outcome).toBe(
+      "closed",
+    );
+    // A stray queued label means nothing without a queue.
+    const open = await wait(options({ mode: "merge", method: "direct" }), sequence([snapshot({ labels: ["queued"] })]));
+    expect(open).toMatchObject({ outcome: "dequeued", polls: 2 });
+    expect(open.detail).toBe("`gh pr merge` did not land within 2 polls; read its output and the PR's merge state");
+  });
+});
+
 describe("arguments", () => {
   it("takes the required checks from the project config when none are named", () => {
     const previous = process.env.RALPH_REQUIRED_CHECKS;
@@ -378,6 +510,21 @@ describe("arguments", () => {
     } finally {
       if (previous === undefined) delete process.env.RALPH_REQUIRED_CHECKS;
       else process.env.RALPH_REQUIRED_CHECKS = previous;
+    }
+  });
+
+  it("takes the merge method from RALPH_MERGE_METHOD, and refuses one it does not know", () => {
+    const previous = process.env.RALPH_MERGE_METHOD;
+    try {
+      process.env.RALPH_MERGE_METHOD = "direct";
+      expect(parseArgs(["7"])).toMatchObject({ method: "direct" });
+      expect(parseArgs(["7", "--method", "github-queue"])).toMatchObject({ method: "github-queue" });
+      process.env.RALPH_MERGE_METHOD = "";
+      expect(parseArgs(["7"])).toMatchObject({ method: "mergify" });
+      expect(parseArgs(["7", "--method", "bors"])).toMatch(/--method must be one of mergify, github-queue, direct/);
+    } finally {
+      if (previous === undefined) delete process.env.RALPH_MERGE_METHOD;
+      else process.env.RALPH_MERGE_METHOD = previous;
     }
   });
 

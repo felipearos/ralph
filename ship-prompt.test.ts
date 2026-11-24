@@ -138,6 +138,32 @@ describe("a pr-medic's recovery turns", () => {
     expect(step).toMatch(/<ralph>DONE<\/ralph>|§5\.7/);
   });
 
+  it("merges directly and reads a dequeued wait as a merge that did not land (mergeMethod: direct)", () => {
+    const green = nextStep({ outcome: "green", pr: "41" }, 1, 4, "coder", "loop", "direct");
+    expect(green).toContain("check mergeability and merge it");
+    expect(green).toContain("`gh pr merge 41 --squash`");
+    expect(green).toContain("`<ralph>AWAIT_PR 41 merge</ralph>`");
+    expect(green).not.toContain("enqueue");
+    const dequeued = nextStep({ outcome: "dequeued", pr: "41" }, 1, 4, "coder", "loop", "direct");
+    expect(dequeued).toContain("The merge did not land");
+    expect(dequeued).toContain("§5.6");
+    expect(dequeued).toContain("Never re-queue");
+    expect(dequeued).not.toContain("<ralph>AWAIT_PR 41 merge</ralph>");
+    // Mergify, or no method, reads as it did.
+    for (const outcome of ["green", "dequeued"]) {
+      expect(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", "mergify")).toBe(nextStep({ outcome, pr: "41" }, 1, 4, "coder", "loop", ""));
+    }
+    // GitHub's queue puts no label on the PR, so green names the queue read instead.
+    const queueGreen = nextStep({ outcome: "green", pr: "41" }, 1, 4, "coder", "loop", "github-queue");
+    expect(queueGreen).toContain("`gh pr merge 41`");
+    expect(queueGreen).toContain("`isInMergeQueue`");
+    expect(queueGreen).not.toContain("queue's label");
+    expect(queueGreen).toContain("`<ralph>AWAIT_PR 41 merge</ralph>`");
+    expect(nextStep({ outcome: "dequeued", pr: "41" }, 1, 4, "coder", "loop", "github-queue")).toBe(
+      nextStep({ outcome: "dequeued", pr: "41" }, 1, 4, "coder", "loop", ""),
+    );
+  });
+
   it("never sends a coder to merge at green when a person merges (merge: human)", () => {
     const green = nextStep({ outcome: "green", pr: "41" }, 1, 4, "coder", "human");
     expect(green).not.toMatch(/check mergeability and enqueue|<ralph>AWAIT_PR 41 merge<\/ralph> instead/);

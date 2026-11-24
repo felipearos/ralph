@@ -961,14 +961,7 @@ Once the gates are green, `verify` is done: write
    do not re-run it; journal it and end with `<ralph>RETRY_LATER</ralph>`,
    leaving the claim.
 {{RALPH_MERGE_HANDOFF}}
-   The base branch merges only through the merge queue, and that changes what
-   "merge" means here. **Never run `gh pr merge`**: on this project it merges
-   at once, around the queue, and the project's hook refuses it. You enqueue
-   instead, and the queue builds base-plus-your-PR on a temporary branch
-   before the merge lands. The queue is what proves the combination, so being
-   behind `origin/$RALPH_BASE_BRANCH` is no longer a reason to rebase — a
-   rebase re-runs CI on the PR for nothing. Rebase only for a real textual
-   conflict.
+{{RALPH_MERGE_ROUTE}}
 
    **Never prefix a project gate's override** (an environment variable its
    refusal offers "if you have a reason") to get past a refusal. The override
@@ -987,7 +980,7 @@ Once the gates are green, `verify` is done: write
      command, then **wait for the merge to actually happen** — enqueueing is
      not merging:
 
-     {{PROJECT_PROMPT_ENQUEUE}}
+     {{PROJECT_PROMPT_ENQUEUE}}{{RALPH_MERGE_ENQUEUE}}
 
      Then hand the queue wait back exactly as §5.4 hands back CI: update the
      handoff note and end with `<ralph>AWAIT_PR <pr> merge</ralph>`. If the
@@ -1026,7 +1019,7 @@ Once the gates are green, `verify` is done: write
          this exact head is green locally on every command the failed job runs, you may re-queue the
          unchanged head once. That re-queue counts as one of this step's
          two rounds. Then hand back `AWAIT_PR <pr> merge`.
-         {{PROJECT_PROMPT_REQUEUE}} Use the project's re-queue command and
+         {{PROJECT_PROMPT_REQUEUE}}{{RALPH_MERGE_REQUEUE}} Use the project's re-queue command and
          never re-run the enqueue command for it: the failed attempt left
          the queue's own check red on the head, so the gate refuses the
          enqueue, and it is right to. If the project names no re-queue

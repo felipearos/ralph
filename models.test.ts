@@ -27,6 +27,9 @@ import {
   ModelConfigError,
   collectProblems,
   loadConfig,
+  mergeEnqueue,
+  mergeRequeue,
+  mergeRoute,
   lineupJson,
   listLines,
   migrateConfig,
@@ -1758,5 +1761,37 @@ describe('the correctness review axis', () => {
     expect(collectProblems(config({ loggd: { '@triager': named } }))).toEqual([
       expect.stringContaining("review.correctness"),
     ]);
+  });
+});
+
+describe('the merge method blocks (mergeMethod)', () => {
+  it('renders the merge-queue paragraph alike for an absent method and mergify', () => {
+    expect(mergeRoute('mergify')).toBe(mergeRoute(undefined));
+    expect(mergeRoute(undefined)).toContain('**Never run `gh pr merge`**');
+    expect(mergeRoute('github-queue')).not.toContain('Never run `gh pr merge`');
+    expect(mergeRoute('direct')).toContain('`gh pr merge <pr> --squash`');
+  });
+
+  it('adds no enqueue or re-queue text when the method is absent', () => {
+    expect(mergeEnqueue(undefined)).toBe('');
+    expect(mergeRequeue(undefined)).toBe('');
+    expect(mergeRequeue('direct')).toBe('');
+  });
+
+  it('names each method\'s own commands', () => {
+    expect(mergeEnqueue('mergify')).toContain('gh pr comment <pr> --body "@mergifyio queue"');
+    expect(mergeEnqueue('github-queue')).toContain('     gh pr merge <pr>\n');
+    expect(mergeEnqueue('github-queue')).toContain('isInMergeQueue');
+    expect(mergeEnqueue('direct')).toContain('gh pr merge <pr> --squash');
+    expect(mergeEnqueue('direct')).toContain('AWAIT_PR <pr> merge');
+    expect(mergeRequeue('mergify')).toContain('@mergifyio requeue');
+    expect(mergeRequeue('github-queue')).toContain('`gh pr merge <pr>`');
+  });
+
+  it('indents every line it adds so step 6\'s list stays intact', () => {
+    for (const method of ['mergify', 'github-queue', 'direct'] as const) {
+      for (const line of mergeRoute(method).split('\n')) expect(line).toMatch(/^ {3}\S/);
+      for (const line of mergeEnqueue(method).split('\n').filter((l) => l !== '')) expect(line).toMatch(/^ {5}\S/);
+    }
   });
 });

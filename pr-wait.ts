@@ -39,6 +39,11 @@
  * check-runs and its legacy status contexts), and when that fails too the
  * outcome names when the GraphQL quota resets, so the next session knows the
  * PR was never judged rather than guessing at why.
+ *
+ * `--method` (default: RALPH_MERGE_METHOD) says what "in the queue" means, as
+ * in `merge-wait.ts`: Mergify's `queued` label when none is declared, GitHub's
+ * `isInMergeQueue` for `github-queue` (one extra `gh api graphql` read per
+ * poll), and never for `direct`, which has no queue.
  */
 import { spawnSync } from "node:child_process";
 
@@ -47,10 +52,17 @@ import {
   DEFAULT_GRACE_POLLS,
   DEFAULT_QUEUED_LABEL,
   MAX_CONSECUTIVE_FAILURES,
+  dequeuedDetail,
+  inQueueArgs,
+  isQueued,
   judge,
+  methodFromEnv,
+  parseInQueue,
+  parseMethod,
   type Labels,
   type Progress,
 } from "./merge-wait";
+import { MERGE_METHODS, type MergeMethod } from "./project-config";
 
 export type Mode = "ci" | "merge";
 export type Outcome =
@@ -78,6 +90,14 @@ export interface PrSnapshot {
   labels: string[];
   head: string;
   checks: Check[];
+  /** GitHub's `isInMergeQueue`, read for `github-queue` only; when set it, not the label, decides "queued". */
+  inQueue?: boolean;
+  /**
+   * Why the queue flag could not be read on an open PR in the merge wait.
+   * Set, the poll says nothing about the queue: it is neither judged nor
+   * counted, and the wait goes on to its deadline.
+   */
+  queueUnread?: string;
 }
 
 export interface WaitResult {
@@ -205,11 +225,13 @@ export interface Options {
   intervalSeconds: number;
   gracePolls: number;
   labels: Labels;
+  /** How the PR merges; absent is Mergify, the behaviour from before `mergeMethod`. */
+  method?: MergeMethod;
 }
 
 const USAGE =
   "usage: pr-wait.ts <pr> [--mode ci|merge] [--head sha] [--repo owner/name] [--required name]... " +
-  "[--ci-timeout s] [--queue-timeout s] [--interval s] [--grace polls]";
+  "[--ci-timeout s] [--queue-timeout s] [--interval s] [--grace polls] [--method mergify|github-queue|direct]";
 
 const requiredFromEnv = (): string[] =>
   (process.env.RALPH_REQUIRED_CHECKS ?? "")
@@ -230,6 +252,7 @@ export function parseArgs(argv: string[]): Options | string {
     intervalSeconds: DEFAULT_INTERVAL_SECONDS,
     gracePolls: DEFAULT_GRACE_POLLS,
     labels: { queued: DEFAULT_QUEUED_LABEL, dequeued: DEFAULT_DEQUEUED_LABEL },
+    method: methodFromEnv(),
   };
   let requiredGiven = false;
   const number = (flag: string, value: string | undefined): number | string => {
@@ -260,6 +283,13 @@ export function parseArgs(argv: string[]): Options | string {
         if (!value) return "--repo needs owner/name";
         options.repo = take()!;
         break;
+      case "--method": {
+        const method = value === undefined || value.trim() === "" ? null : parseMethod(value);
+        if (method === null) return `--method must be one of ${MERGE_METHODS.join(", ")}, got ${JSON.stringify(value)}`;
+        options.method = method;
+        take();
+        break;
+      }
       case "--required":
         if (!value) return "--required needs a check name";
         options.required.push(take()!);
@@ -417,7 +447,39 @@ export function graphqlResetAt(gh: Gh = runGh): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().replace(/\.000Z$/, "Z");
 }
 
-export function readSnapshot(pr: string, repo: string | null, gh: Gh = runGh): Read {
+export function readSnapshot(
+  pr: string,
+  repo: string | null,
+  gh: Gh = runGh,
+  method: MergeMethod = "mergify",
+  mode: Mode = "merge",
+): Read {
+  if (method !== "github-queue") return readPrSnapshot(pr, repo, gh);
+  // The queue is read BEFORE the state, so the state is the later of the two
+  // reads: a PR the queue merges between them reads MERGED, never "open and
+  // out of the queue", which `judge` would call dequeued.
+  const queue = call(gh, inQueueArgs(pr, repo));
+  const got = readPrSnapshot(pr, repo, gh);
+  if (!got.ok) return got;
+  // A merged or closed PR is judged on its state; the queue read adds nothing.
+  if (got.snapshot.state !== "OPEN") return got;
+  const inQueue = queue.ok ? parseInQueue(queue.stdout) : null;
+  if (inQueue !== null) return { ...got, snapshot: { ...got.snapshot, inQueue } };
+  const error = queue.ok
+    ? `unparseable gh api graphql output: ${queue.stdout.trim().slice(0, 200)}`
+    : `merge queue read: ${queue.error}`;
+  // While CI runs the queue flag only decides when to switch to the merge
+  // wait, so an unread one is "not yet": the CI wait goes on over REST when
+  // GraphQL is rate limited, as it does for every other method.
+  if (mode === "ci") return { ...got, snapshot: { ...got.snapshot, inQueue: false } };
+  // In the merge wait a guess could call a queued PR dequeued, so the poll
+  // is left unjudged. Nor is it a failed read: the state was read, and a
+  // GraphQL rate limit (the state then read over REST) would otherwise give
+  // up on a queued PR after a few minutes instead of at the queue deadline.
+  return { ...got, snapshot: { ...got.snapshot, queueUnread: error } };
+}
+
+function readPrSnapshot(pr: string, repo: string | null, gh: Gh): Read {
   const args = ["pr", "view", pr, "--json", "state,mergedAt,labels,headRefOid,statusCheckRollup"];
   if (repo !== null) args.push("--repo", repo);
   const got = call(gh, args);
@@ -436,6 +498,7 @@ export function readSnapshot(pr: string, repo: string | null, gh: Gh = runGh): R
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function wait(options: Options, read: typeof readSnapshot = readSnapshot): Promise<WaitResult> {
+  const method: MergeMethod = options.method ?? "mergify";
   const started = Date.now();
   let mode: Mode = options.mode;
   let deadline = started + (mode === "ci" ? options.ciTimeoutSeconds : options.queueTimeoutSeconds) * 1000;
@@ -457,7 +520,7 @@ export async function wait(options: Options, read: typeof readSnapshot = readSna
   });
 
   for (;;) {
-    const got = read(options.pr, options.repo);
+    const got = read(options.pr, options.repo, undefined, method, mode);
     if (got.via === "rest") {
       console.error(`pr-wait: #${options.pr} GraphQL is rate limited — ${got.ok ? "read over REST" : "REST failed too"}`);
     }
@@ -478,28 +541,32 @@ export async function wait(options: Options, read: typeof readSnapshot = readSna
       }
     } else {
       failures = 0;
-      const snapshot = got.snapshot;
+      // `direct` has no queue, so nothing on the PR can mean it is in one.
+      const snapshot = method === "direct" ? { ...got.snapshot, inQueue: false } : got.snapshot;
       last = snapshot;
       if (snapshot.state === "MERGED") return result("merged", `merged ${snapshot.mergedAt ?? ""}`.trim());
       if (snapshot.state === "CLOSED") return result("closed", `#${options.pr} was closed without merging`);
 
-      if (mode === "ci" && snapshot.labels.includes(options.labels.queued)) {
+      if (mode === "ci" && isQueued(snapshot, options.labels)) {
         mode = "merge";
         deadline = Date.now() + options.queueTimeoutSeconds * 1000;
         console.error(`pr-wait: #${options.pr} entered the queue — waiting for the merge instead`);
       }
 
-      if (mode === "merge") {
+      if (mode === "merge" && snapshot.queueUnread !== undefined) {
+        console.error(`pr-wait: #${options.pr} queue unread, ${elapsed()}s → wait (${snapshot.queueUnread})`);
+      } else if (mode === "merge") {
         queue.polls += 1;
-        if (snapshot.labels.includes(options.labels.queued)) queue.sawQueued = true;
+        if (isQueued(snapshot, options.labels)) queue.sawQueued = true;
         const verdict = judge(snapshot, queue, options.labels, options.gracePolls);
         console.error(`pr-wait: #${options.pr} merge poll ${queue.polls}, ${elapsed()}s → ${verdict}`);
         if (verdict === "dequeued") {
           return result(
             "dequeued",
-            queue.sawQueued
-              ? "left the queue: its build failed or it was removed; read the queue's comment on the PR"
-              : `never entered the queue within ${queue.polls} polls; its queue conditions did not hold`,
+            dequeuedDetail(method, queue.sawQueued, queue.polls, {
+              left: "left the queue: its build failed or it was removed; read the queue's comment on the PR",
+              never: `never entered the queue within ${queue.polls} polls; its queue conditions did not hold`,
+            }),
           );
         }
       } else if (options.head !== null && snapshot.head !== options.head) {
