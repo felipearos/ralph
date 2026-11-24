@@ -68,7 +68,7 @@
 
 import { execFile } from "node:child_process";
 import { access, constants, stat, writeFile } from "node:fs/promises";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 
 import { loadConfig, resolveLineup, type Runner } from "./models";
 import { loopRoster, type LoopName } from "./frontier/next-tasks";
@@ -79,6 +79,7 @@ import { currentProjectId } from "./project-id";
 import { keyedProjectTracker, projectTrackerConfig } from "./tracker/project";
 import { keyedTriagerLabels, type AppLabels } from "./triage/intake";
 import { TrackerUnavailableError, type Tracker } from "./tracker/types";
+import { readDotenvFile } from "./secrets/dotenv";
 import { JIRA_TOKEN_ENV, JiraError, jiraClient, parseJiraToken, type JiraClient } from "./clerk/jira";
 import { SENTRY_TOKEN_ENV, VERCEL_TOKEN_ENV } from "./verifier/credentials";
 import { isRateLimited } from "./pr-wait";
@@ -461,7 +462,20 @@ const REQUIRED_TOOLS: { name: string; why: string; remedy: string }[] = [
   },
 ];
 
-/** The secrets manager's CLI, when the project's config names one. */
+/**
+ * Where a credential check says a secret should be set: the Doppler scope, the
+ * configured dotenv file, or "" when the project has no secrets runner.
+ */
+function secretsScope(config: ProjectConfig | null): string {
+  if (config?.secrets.runner === "doppler") return ` in Doppler ${config.secrets.project}/${config.secrets.config}`;
+  if (config?.secrets.runner === "dotenv") return ` in ${config.secrets.file}`;
+  return "";
+}
+
+/**
+ * The secrets manager's CLI, when the project's config names one. `dotenv` has
+ * none: the file is read by `bun`, which every run already requires.
+ */
 const SECRETS_TOOLS: Record<string, { name: string; why: string; remedy: string }> = {
   doppler: {
     name: "doppler",
@@ -974,6 +988,71 @@ export async function checkClerkIntakeBoard(
 }
 
 /**
+ * The dotenv file a `dotenv` project's children run under (#49), read before
+ * any child starts: a missing, unreadable or malformed file would otherwise
+ * surface as a child failing on an absent variable, far from its cause. A file
+ * git tracks in the project is refused first, being the worst of the four —
+ * its values are already in the history. No value from the file ever reaches
+ * a `why` or a `remedy`: the parser's own reasons name a line number only.
+ */
+export async function checkSecretsFile(root: string, config: ProjectConfig): Promise<CheckResult> {
+  const name = "secrets-file";
+  if (config.secrets.runner !== "dotenv") return { name, outcome: { status: "ok" } };
+  const configured = config.secrets.file;
+  const path = resolve(root, configured);
+  const read = readDotenvFile(path);
+  if (read.kind !== "missing") {
+    // Only a path inside the project can be tracked by it; asking git about one
+    // outside would fail as "outside repository", which is not an answer.
+    const inside = relative(resolve(root), path);
+    if (inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) {
+      const tracked = await run("git", ["-C", root, "ls-files", "--error-unmatch", "--", inside]);
+      if (tracked.ok) {
+        return {
+          name,
+          outcome: {
+            status: "denied",
+            why: `the secrets file ${path} is tracked by git in the project, so its values are in the repository's history`,
+            remedy: `git rm --cached ${inside}, add it to .gitignore, and rotate every value it holds — they are in the history`,
+          },
+        };
+      }
+    }
+  }
+  switch (read.kind) {
+    case "ok":
+      return { name, outcome: { status: "ok", detail: path } };
+    case "missing":
+      return {
+        name,
+        outcome: {
+          status: "denied",
+          why: `the secrets file ${path} is missing`,
+          remedy: `create ${path} with the project's secrets as KEY=value lines (secrets.file in .ralph/config.json names it)`,
+        },
+      };
+    case "unreadable":
+      return {
+        name,
+        outcome: {
+          status: "denied",
+          why: `the secrets file ${path} is unreadable (${read.why})`,
+          remedy: `fix the permissions of ${path} so the loop's user can read it`,
+        },
+      };
+    case "malformed":
+      return {
+        name,
+        outcome: {
+          status: "denied",
+          why: `the secrets file ${path} is malformed: ${read.why}`,
+          remedy: `fix the named line of ${path}`,
+        },
+      };
+  }
+}
+
+/**
  * Probe the same explicit scope used for child execution (`secrets.project` /
  * `secrets.config` in the project's config). Only names are read here;
  * development-env.sh runs the project's own check on the injected values before
@@ -1052,7 +1131,7 @@ export function checkBuildkiteLogs(
 ): CheckResult | null {
   if (!config?.requiredChecks.some((name) => name.startsWith("buildkite/"))) return null;
   if (env.RALPH_BUILDKITE_READ_TOKEN?.trim()) return { name: "buildkite-logs", outcome: { status: "ok" } };
-  const scope = config.secrets.runner === "doppler" ? ` in Doppler ${config.secrets.project}/${config.secrets.config}` : "";
+  const scope = secretsScope(config);
   const names = (value: string | undefined): string[] => (value ?? "").split(/\s+/).filter((name) => name !== "");
   if (names(env.RALPH_ROLE_SECRETS_UNREAD).includes("RALPH_BUILDKITE_READ_TOKEN")) {
     return { name: "buildkite-logs", outcome: unreadWarning("RALPH_BUILDKITE_READ_TOKEN", scope) };
@@ -1180,7 +1259,7 @@ export function checkBuildkiteRetry(
   if (!withheld && (names(env.RALPH_ROLE_SECRETS_AVAILABLE).includes(secret) || (inEnvironment && proved))) {
     return { name: "buildkite-retry", outcome: { status: "ok" } };
   }
-  const scope = config.secrets.runner === "doppler" ? ` in Doppler ${config.secrets.project}/${config.secrets.config}` : "";
+  const scope = secretsScope(config);
   if (names(env.RALPH_ROLE_SECRETS_UNREAD).includes(secret)) {
     return { name: "buildkite-retry", outcome: unreadWarning(secret, scope) };
   }
@@ -1241,7 +1320,7 @@ export function checkClerkCredentials(
   const available = names(env.RALPH_ROLE_SECRETS_AVAILABLE);
   const withheld = names(env.RALPH_ROLE_SECRETS_WITHHELD);
   const unread = names(env.RALPH_ROLE_SECRETS_UNREAD);
-  const scope = config?.secrets.runner === "doppler" ? ` in Doppler ${config.secrets.project}/${config.secrets.config}` : "";
+  const scope = secretsScope(config);
   for (const secret of declared) {
     // A hand-run preflight under the secrets manager sees the value itself;
     // proved only once its checker exists, as `buildkite-retry` reads it.
@@ -1333,7 +1412,7 @@ export function checkVerifierCredentials(
   const available = names(env.RALPH_ROLE_SECRETS_AVAILABLE);
   const withheld = names(env.RALPH_ROLE_SECRETS_WITHHELD);
   const unread = names(env.RALPH_ROLE_SECRETS_UNREAD);
-  const scope = config.secrets.runner === "doppler" ? ` in Doppler ${config.secrets.project}/${config.secrets.config}` : " in the supervisor's environment";
+  const scope = secretsScope(config) || " in the supervisor's environment";
   for (const secret of required) {
     const check = declared.find((named) => named.name === secret.name)?.check ?? null;
     const inEnvironment = (env[secret.name]?.trim() ?? "") !== "" && check !== null;
@@ -1341,7 +1420,7 @@ export function checkVerifierCredentials(
     if (unread.includes(secret.name)) {
       return {
         name: "verifier-credentials",
-        outcome: { status: "unavailable", why: `${secret.name} could not be read from the secrets manager${config.secrets.runner === "doppler" ? scope : ""}` },
+        outcome: { status: "unavailable", why: `${secret.name} could not be read from the secrets manager${config.secrets.runner === "none" ? "" : scope}` },
       };
     }
     if (withheld.includes(secret.name)) {
@@ -1585,6 +1664,8 @@ export async function preflight(): Promise<CheckResult[]> {
     ...(runs("buildkite-retry") ? [checkBuildkiteRetry(config, role)].filter((result): result is CheckResult => result !== null) : []),
     ...(runs("clerk-credentials") ? [checkClerkCredentials(config, role)].filter((result): result is CheckResult => result !== null) : []),
     ...(verifierCredentials !== null ? [verifierCredentials] : []),
+    // Local and ahead of every child: the file is what their environment is.
+    ...(runs("secrets-file") && config?.secrets.runner === "dotenv" ? [await checkSecretsFile(process.cwd(), config)] : []),
   ];
   // A missing CLI would make its probe fail as "denied" for the wrong reason —
   // "not authenticated" when the truth is "no gh at all". The tools check has

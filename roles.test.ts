@@ -317,7 +317,9 @@ describe("the preflight each role is held to", () => {
     // Exactly: a fifth drop would be a probe silently skipped. `logs-writable`
     // is the one that makes an iteration's own output recoverable, and a
     // `not.toContain` trio would not have noticed it going.
-    expect(checksOf("triager")).toEqual(without("executor-tools", "buildkite-logs", "actions-logs", "doppler-scope"));
+    // `secrets-file` is `doppler-scope`'s dotenv twin: neither reads anything
+    // for a role given no application environment.
+    expect(checksOf("triager")).toEqual(without("executor-tools", "buildkite-logs", "actions-logs", "doppler-scope", "secrets-file"));
     // Which is to say: it still claims with labels, reads GitHub, and takes its
     // work off the frontier's triage bucket.
     for (const check of ["loop-labels", "github-credentials", "frontier-prerequisites", "logs-writable"] as const) {

@@ -35,7 +35,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   applyVerdicts,
@@ -49,6 +49,7 @@ import {
   checkLogsWritable,
   checkProjectConfig,
   checkRepositoryState,
+  checkSecretsFile,
   checkVerifierCredentials,
   checkVerifierDeploySource,
   classifyFailure,
@@ -74,6 +75,9 @@ import { keyedTriagerLabels } from "./triage/intake";
 subprocessSuite("runs preflight through bash and bun");
 
 const REPO_ROOT = __dirname;
+
+/** PATH as the suite was started, before any test swapped it for fakes. */
+const PATH_AT_LOAD = process.env.PATH;
 
 const scratchRoots: string[] = [];
 afterAll(() => scratchRoots.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -410,7 +414,8 @@ describe("the preflight end to end", () => {
     const coder = runPreflight(fakes()).checks.map((result) => result.name);
 
     // `clerk-intake-board` likewise answers null for every role but a clerk.
-    expect(coder).toEqual(without("buildkite-retry", "clerk-credentials", "verifier-credentials", "clerk-intake-board"));
+    // `secrets-file` answers only for a dotenv project; this one is Doppler's.
+    expect(coder).toEqual(without("buildkite-retry", "clerk-credentials", "verifier-credentials", "clerk-intake-board", "secrets-file"));
 
     const project = scratchProject({ ...LOGGD_CONFIG, loops: ["ralph", { name: "doct", role: "ci-doctor" }] });
     const labels = JSON.stringify(requiredLabels("doct", ["ci-health", "priority:urgent"]).map((name) => ({ name })));
@@ -418,7 +423,7 @@ describe("the preflight end to end", () => {
       (result) => result.name,
     );
 
-    expect(doctor).toEqual(without("frontier-prerequisites", "clerk-credentials", "verifier-credentials", "clerk-intake-board"));
+    expect(doctor).toEqual(without("frontier-prerequisites", "clerk-credentials", "verifier-credentials", "clerk-intake-board", "secrets-file"));
   });
 
   it("refuses a coder's missing claim label in the words the checklist quotes", () => {
@@ -582,7 +587,24 @@ describe("the preflight end to end", () => {
     );
     expect(run.status).toBe(0);
     expect(check(run, "doppler-scope")).toBeUndefined();
+    expect(check(run, "secrets-file")).toBeUndefined();
     expect(fake.calls().some((call) => call.startsWith("doppler"))).toBe(false);
+  });
+
+  it("reads a dotenv project's secrets file before any child, and never for a Doppler one", () => {
+    // Doppler: the file check is not this project's, so it is not in the report.
+    expect(check(runPreflight(fakes()), "secrets-file")).toBeUndefined();
+
+    const fake = fakes({ omit: ["doppler"] });
+    const missing = runPreflight(
+      fake,
+      {},
+      scratchProject({ ...LOGGD_CONFIG, secrets: { runner: "dotenv", file: "acme-secrets.env", withhold: [] } }),
+    );
+    expect(missing.status).toBe(1);
+    expect(check(missing, "secrets-file")!.outcome.status).toBe("denied");
+    expect((check(missing, "secrets-file")!.outcome as { why: string }).why).toContain("missing");
+    expect(check(missing, "doppler-scope")).toBeUndefined();
   });
 
   it("refuses a project with no valid .ralph/config.json before asking anything remote", () => {
@@ -2005,5 +2027,90 @@ describe("whether gh can read a project's GitHub Actions logs (#50)", () => {
     expect(await checkActionsLogs(config([]), read)).toBeNull();
     expect(await checkActionsLogs(null, read)).toBeNull();
     expect(calls).toEqual([]);
+  });
+});
+
+describe("the dotenv file a dotenv project runs under (#49)", () => {
+  // A value no `why` or `remedy` may ever carry: the check reads the file it
+  // stands in, so a reason built from the file's text would show it.
+  const SECRET = "acme-zebra-7f3q-do-not-print";
+
+  // The real git, on the PATH this suite started with: an earlier helper that
+  // was handed a PATH deletes the variable on its way out, and the tracked
+  // check asks git through PATH as the supervisor's own run would.
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.PATH;
+    process.env.PATH = PATH_AT_LOAD;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PATH;
+    else process.env.PATH = saved;
+  });
+
+  const dotenvProject = (contents: string | null, file = "acme-secrets.env"): { root: string; config: ProjectConfig } => {
+    const root = mkdtempSync(join(tmpdir(), "acme-preflight-dotenv-"));
+    scratchRoots.push(root);
+    if (contents !== null) writeFileSync(join(root, file), contents);
+    const config = parseProjectConfig(JSON.stringify({ ...LOGGD_CONFIG, secrets: { runner: "dotenv", file, withhold: [] } }));
+    return { root, config };
+  };
+
+  const denial = (result: CheckResult): { why: string; remedy: string } => {
+    expect(result.name).toBe("secrets-file");
+    expect(result.outcome.status).toBe("denied");
+    const outcome = result.outcome as { why: string; remedy: string };
+    expect(`${outcome.why} ${outcome.remedy}`).not.toContain(SECRET);
+    return outcome;
+  };
+
+  it("passes a file that reads and parses", async () => {
+    const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`);
+    expect((await checkSecretsFile(root, config)).outcome.status).toBe("ok");
+  });
+
+  it("names the resolved path of a missing file", async () => {
+    const { root, config } = dotenvProject(null);
+    const { why, remedy } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("missing");
+    expect(why).toContain(join(root, "acme-secrets.env"));
+    expect(remedy).toContain("create");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("names the errno of an unreadable file", async () => {
+    const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`);
+    chmodSync(join(root, "acme-secrets.env"), 0o000);
+    const { why, remedy } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("unreadable");
+    expect(why).toContain("EACCES");
+    expect(remedy).toContain("permissions");
+  });
+
+  it("names the line of a malformed file, never its text", async () => {
+    const { root, config } = dotenvProject(`ACME_OK=1\n${SECRET}\n`);
+    const { why, remedy } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("malformed");
+    expect(why).toContain("line 2");
+    expect(remedy).toContain("line");
+  });
+
+  it("refuses a file git tracks in the project, ahead of reading it", async () => {
+    const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=acme", "-c", "user.email=acme@example.org", ...args], { cwd: root, stdio: "pipe" });
+    git("init", "-q");
+    git("add", "acme-secrets.env");
+    git("commit", "-q", "-m", "a secrets file committed by mistake");
+    const { why, remedy } = denial(await checkSecretsFile(root, config));
+    expect(why).toContain("tracked by git");
+    expect(remedy).toContain("git rm --cached acme-secrets.env");
+    expect(remedy).toContain(".gitignore");
+    expect(remedy).toContain("rotate");
+  });
+
+  it("does not take an untracked file in a repository for a tracked one", async () => {
+    const { root, config } = dotenvProject(`ACME_TOKEN=${SECRET}\n`);
+    execFileSync("git", ["init", "-q"], { cwd: root, stdio: "pipe" });
+    expect((await checkSecretsFile(root, config)).outcome.status).toBe("ok");
   });
 });

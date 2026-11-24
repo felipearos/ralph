@@ -92,8 +92,19 @@ describe("validating .ralph/config.json", () => {
       validateProjectConfig({ ...LOGGD, secrets: { runner: "none", project: "p", withhold: [] } }),
     ).toContain("unknown key 'secrets.project' for runner 'none'");
     expect(validateProjectConfig({ ...LOGGD, secrets: { ...LOGGD.secrets, runner: "vault" } })).toContain(
-      "'secrets.runner' must be 'doppler' or 'none'",
+      "'secrets.runner' must be 'doppler', 'dotenv' or 'none'",
     );
+  });
+
+  it("accepts a dotenv runner naming its file, and refuses one without a path or with a Doppler key", () => {
+    const dotenv = (secrets: object) => validateProjectConfig({ ...LOGGD, secrets: { runner: "dotenv", withhold: [], ...secrets } });
+    expect(dotenv({ file: "../acme-secrets.env" })).toEqual([]);
+    expect(dotenv({ file: "/etc/acme/secrets.env" })).toEqual([]);
+    expect(dotenv({})).toContain("'secrets.file' must be the path of the dotenv file");
+    expect(dotenv({ file: "" })).toContain("'secrets.file' must be the path of the dotenv file");
+    expect(dotenv({ file: "a\nb" })).toContain("'secrets.file' must be the path of the dotenv file");
+    expect(dotenv({ file: "a\0b" })).toContain("'secrets.file' must be the path of the dotenv file");
+    expect(dotenv({ file: "x.env", project: "p" })).toContain("unknown key 'secrets.project' for runner 'dotenv'");
   });
 
   it("refuses withheld names that are not environment variable names", () => {
@@ -490,6 +501,15 @@ describe("the exports ralph.sh evals", () => {
   const evalIn = (lines: string[], script: string): string =>
     spawnSync("bash", ["-c", `${lines.join("\n")}\n${script}`], { encoding: "utf8" }).stdout;
 
+  it("exports the dotenv file as an absolute path, and an empty one for any other runner", () => {
+    const file = (secrets: object) =>
+      evalIn(exportLines(parseProjectConfig(JSON.stringify({ ...LOGGD, secrets })), "/work/acme", "acme"), 'printf "%s" "$RALPH_SECRETS_FILE"');
+    expect(file({ runner: "dotenv", file: "../acme-secrets.env", withhold: [] })).toBe("/work/acme-secrets.env");
+    expect(file({ runner: "dotenv", file: "/etc/acme/secrets.env", withhold: [] })).toBe("/etc/acme/secrets.env");
+    expect(file({ runner: "none", withhold: [] })).toBe("");
+    expect(file(LOGGD.secrets)).toBe("");
+  });
+
   it("round-trips the withhold list, envCheck argv and check names through bash", () => {
     const lines = exportLines(parseProjectConfig(JSON.stringify(LOGGD)), "/work/loggd");
     expect(
@@ -660,6 +680,7 @@ describe("the exports ralph.sh evals", () => {
       "RALPH_SECRETS_RUNNER",
       "RALPH_SECRETS_PROJECT",
       "RALPH_SECRETS_CONFIG",
+      "RALPH_SECRETS_FILE",
       "RALPH_WITHHELD_SECRETS",
       "RALPH_REFUSE_FILES",
       "RALPH_ENV_CHECK",

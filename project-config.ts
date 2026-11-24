@@ -60,7 +60,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { basename, isAbsolute, join, normalize } from "node:path";
+import { basename, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { IssueType } from "./clerk/plan";
 import { CONFIG_RELATIVE_PATH, projectRoot } from "./paths";
@@ -696,8 +696,15 @@ export const writesJira = (mode: ClerkMode): boolean => mode !== "shadow";
  */
 export const holdsOaMove = (rules: Pick<ClerkRules, "mode" | "holdOaMove">): boolean => rules.holdOaMove ?? rules.mode === "quiet";
 
+/**
+ * Where a project's application environment comes from: Doppler (`project`
+ * and `config` name the scope), a dotenv file (`file`, relative to the
+ * project root or absolute; #49) for a host with no secrets manager, or
+ * nothing at all (`none`).
+ */
 export type SecretsConfig =
   | { runner: "doppler"; project: string; config: string; withhold: string[] }
+  | { runner: "dotenv"; file: string; withhold: string[] }
   | { runner: "none"; withhold: string[] };
 
 export class ProjectConfigError extends Error {
@@ -852,12 +859,24 @@ export function validateProjectConfig(raw: unknown): string[] {
       problems.push("'secrets' must be an object");
     } else {
       const runner = secrets.runner;
-      if (runner !== "doppler" && runner !== "none") {
-        problems.push("'secrets.runner' must be 'doppler' or 'none'");
+      if (runner !== "doppler" && runner !== "dotenv" && runner !== "none") {
+        problems.push("'secrets.runner' must be 'doppler', 'dotenv' or 'none'");
       }
-      const allowed = runner === "none" ? ["runner", "withhold"] : ["runner", "project", "config", "withhold"];
+      const allowed =
+        runner === "none"
+          ? ["runner", "withhold"]
+          : runner === "dotenv"
+            ? ["runner", "file", "withhold"]
+            : ["runner", "project", "config", "withhold"];
       for (const key of Object.keys(secrets)) {
-        if (!allowed.includes(key)) problems.push(`unknown key 'secrets.${key}'${runner === "none" ? " for runner 'none'" : ""}`);
+        if (!allowed.includes(key)) {
+          problems.push(`unknown key 'secrets.${key}'${runner === "none" || runner === "dotenv" ? ` for runner '${runner}'` : ""}`);
+        }
+      }
+      // The path reaches ralph.sh through an exported variable and the
+      // preflight's git argv: a NUL or a newline in it could not survive both.
+      if (runner === "dotenv" && !(isText(secrets.file) && !/[\0\n\r]/.test(secrets.file))) {
+        problems.push("'secrets.file' must be the path of the dotenv file");
       }
       if (runner === "doppler") {
         for (const key of ["project", "config"] as const) {
@@ -2865,6 +2884,7 @@ export function exportLines(config: ProjectConfig, root: string, id: string = cu
     `export RALPH_SECRETS_RUNNER=${shellQuote(config.secrets.runner)}`,
     `export RALPH_SECRETS_PROJECT=${shellQuote(config.secrets.runner === "doppler" ? config.secrets.project : "")}`,
     `export RALPH_SECRETS_CONFIG=${shellQuote(config.secrets.runner === "doppler" ? config.secrets.config : "")}`,
+    `export RALPH_SECRETS_FILE=${shellQuote(config.secrets.runner === "dotenv" ? resolve(root, config.secrets.file) : "")}`,
     `export RALPH_WITHHELD_SECRETS=${shellQuote(config.secrets.withhold.join(" "))}`,
     `export RALPH_REFUSE_FILES=${shellQuote(config.refuseFiles.join(" "))}`,
     `export RALPH_ENV_CHECK=${shellQuote(config.envCheck.map(shellQuote).join(" "))}`,
