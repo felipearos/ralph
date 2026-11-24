@@ -5,6 +5,14 @@ split.
 
 ## Open: fix these
 
+### Mobile DiaryTab Books-mode empty-state test fails on main and dequeues every PR (2026-11-23)
+<!-- learning: mobile-diarytab-books-empty-state-fails-on-main -->
+- **Seen:** main build 5095 (f85164a38) and queue build 5097 for PR #3740 red in quality/jest on `mobile/components/__tests__/DiaryTab.test.tsx` › "DiaryTab empty state › names Book Logs and offers a book to log in Books mode": `findByText("No Book Logs with a Read Date yet.")` not found (line 374). Locally on plain origin/main d303a7084 it failed 3/3; on main+PR 2/3; main build 5096 passed it. Landed with #3736 (#3107) next to #3737 (#3138).
+- **Workaround:** not the diff of any PR that doesn't touch DiaryTab. Don't requeue into it. Leave the claim and RETRY_LATER with key `ci:buildkite/loggd:quality` until main's test is fixed.
+- **Fix:** https://github.com/felipearos/loggd/issues/3748
+- **Change:** Make the DiaryTab Books-mode empty-state test deterministic. Mock or await the Books-mode/Media Mode Preview read that gates the Book Logs empty state, so the empty copy renders before `findByText` times out. Or fix the component if the empty state really depends on an order between the #3107 and #3138 changes.
+- **Verify:** `cd mobile && for i in $(seq 10); do npx jest components/__tests__/DiaryTab.test.tsx; done` passes 10/10 on main.
+
 ### Every PR build red on production-migrations while the prod DB is down (2026-11-23)
 <!-- learning: prod-db-down-migration-check-xx000 -->
 - **Seen:** Buildkite builds 5000-5006 (PRs #3686-#3690, 2026-11-23) all fail only `production-migrations` with "Production migration check failed (classification=ledger-check; host=aws-1-us-east-1.pooler.supabase.com port=6543): Failed query ... code=XX000"; prod DB down since 2026-11-19. No build has passed the step since.
