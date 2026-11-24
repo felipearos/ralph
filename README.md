@@ -2245,7 +2245,11 @@ supervisor's children is stopped before the name is taken again. Without
 `systemd-run --user`, or when it refuses, it falls back to `nohup setsid`;
 `loop.stdout` says which path it took. `RALPH_LOOP_SCOPE=off` forces the
 fallback (the test suite sets it). A reboot is covered by the dashboard's
-reconciler, which restarts every loop that died without choosing to stop.
+reconciler, which restarts every loop that died without choosing to stop and,
+since #6, every loop the shutdown itself stopped: a supervisor's trap records
+the SIGTERM a reboot sends it, and a SIGTERM recorded before the current boot
+is restarted, while a Stop now or a `kill` after boot stays stopped
+(`dashboard/README.md`, "A shutdown is restarted at the next boot").
 
 Waiting does not consume an iteration; the cap counts spawned turns. All loops
 on a machine run the same `~/ralph/ralph.sh`; each is told apart by its working
