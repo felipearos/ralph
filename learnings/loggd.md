@@ -10,6 +10,7 @@ split.
 - **Seen:** PR #3746 builds 5100 and 5103 (2026-11-23), also builds 5102, 5101, 5099, 5097 (incl. merge-queue branches): quality job, `components/__tests__/DiaryTab.test.tsx` › "names Book Logs and offers a book to log in Books mode" fails `expect(instance).toBeOnTheScreen()`; bk-log marks it confirmed flake.
 - **Workaround:** Not the diff. First red: re-run CI with an empty commit. Second red: RETRY_LATER without re-running; block only at the 4th flake red per harness §5.4.
 - **Fix:** #3749
+- **Seen again:** 2026-11-24
 
 ### Mobile DiaryTab Books-mode empty-state test fails on main and dequeues every PR (2026-11-23)
 <!-- learning: mobile-diarytab-books-empty-state-fails-on-main -->
