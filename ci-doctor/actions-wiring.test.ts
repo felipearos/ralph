@@ -137,6 +137,13 @@ describe("an Actions project's retry", () => {
     expect(wired.calls).toHaveLength(1);
   });
 
+  it("reserves the re-run POST with the idle read, so an allowance one call short makes no retry", async () => {
+    const path = await scannedStore(["src/a.test.ts"]);
+    const wired = { ...actionsDeps(path), putGhCalls: 1, afford: (calls: number) => calls <= 3 };
+    expect((await retryOnce(wired)).outcome).toBe("no-budget");
+    expect(wired.calls).toEqual([]);
+  });
+
   it("honours ciDoctor.retry.perDay across candidates", async () => {
     const path = await scannedStore(["src/a.test.ts", "src/b.test.ts"]);
     const wired = actionsDeps(path, { ciDoctor: { retry: { perDay: 1 } } });

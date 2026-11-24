@@ -309,7 +309,9 @@ export const retryPath = (org: string, pipeline: string, build: number, job: str
 function confirmIdle(deps: RetryDeps): { stop: { outcome: RetryOutcome; why: string } | null; ghCalls: number } {
   // Immediately before the call: the GitHub calls that show the host idle must
   // be affordable on the gate's own allowance before they are made.
-  if (!deps.afford(deps.ciReadCalls)) {
+  // The write's own GitHub calls too (an Actions re-run is a POST): reserving
+  // only the idle read would let the write overspend the ledger by one.
+  if (!deps.afford(deps.ciReadCalls + (deps.putGhCalls ?? 0))) {
     return {
       stop: {
         outcome: "no-budget",

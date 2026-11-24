@@ -23,6 +23,11 @@ import type { ApiBuild, BuildSource } from "./scan";
 // updated since the cursor are not read, so the overlap costs one list page.
 const LOOKBACK_HOURS = 72;
 
+// Pages of runs one list reads: a thousand runs in the look-back is far past
+// any project the doctor watches, and the cap keeps a misbehaving API from
+// paging forever. Past it, the oldest-created runs go unread this poll.
+const MAX_RUN_PAGES = 10;
+
 /** Steps that run before the job's own commands: a red here is infrastructure, not a test. */
 const SETUP_STEP = /^Set up job$|^Initialize containers$|^(Post )?Run actions\/checkout@/;
 
@@ -137,36 +142,46 @@ export function actionsSource(gh: Gh, repo: string, options: ActionsSourceOption
   const now = options.now ?? Date.now;
   const lookbackMs = (options.lookbackHours ?? LOOKBACK_HOURS) * 3_600_000;
   return {
+    // Every list call reads the whole look-back, so the scan must never page
+    // this source: a page cycle advances the cursor past a run that finished on
+    // an earlier page after that page was read, and loses it for good.
+    exhaustive: true,
     async list(cursor, page, perPage) {
+      // A backfill page left by an older store: the first page already read it all.
+      if (page > 1) return [];
       const since = wholeSeconds(Math.min(Date.parse(cursor), now() - lookbackMs));
-      const args = ["api", `${runsPath}?status=completed&created=>=${since}&per_page=${perPage}&page=${page}`];
-      const result = gh(args);
-      if (result.error || result.status !== 0) {
-        const why = (result.error?.message ?? (result.stderr || result.stdout || `gh exited ${result.status}`)).trim();
-        throw new HelperError(`gh ${args.join(" ")} failed: ${why}`, 2);
+      const runs: ActionsRun[] = [];
+      for (let listPage = 1; listPage <= MAX_RUN_PAGES; listPage += 1) {
+        const args = ["api", `${runsPath}?status=completed&created=>=${since}&per_page=${perPage}&page=${listPage}`];
+        const result = gh(args);
+        if (result.error || result.status !== 0) {
+          const why = (result.error?.message ?? (result.stderr || result.stdout || `gh exited ${result.status}`)).trim();
+          throw new HelperError(`gh ${args.join(" ")} failed: ${why}`, 2);
+        }
+        let batch: ActionsRun[];
+        try {
+          const body = JSON.parse(result.stdout) as { workflow_runs?: ActionsRun[] };
+          batch = Array.isArray(body.workflow_runs) ? body.workflow_runs : [];
+        } catch {
+          throw new HelperError(`gh ${args.join(" ")}: unparseable output`, 2);
+        }
+        runs.push(...batch);
+        if (batch.length < perPage) break;
       }
-      let runs: ActionsRun[];
-      try {
-        const body = JSON.parse(result.stdout) as { workflow_runs?: ActionsRun[] };
-        runs = Array.isArray(body.workflow_runs) ? body.workflow_runs : [];
-      } catch {
-        throw new HelperError(`gh ${args.join(" ")}: unparseable output`, 2);
-      }
-      return runs.map((run) => {
+      const builds: ApiBuild[] = [];
+      for (const run of runs) {
         const state = stateOf(run.conclusion);
         // A run that finished before the cursor was read already, and one with
-        // no finished conclusion is not a build yet. Both stay in the page as
-        // unfinished placeholders, unread, because the page's LENGTH is what
-        // tells the scan a page was full and older runs are still unread.
-        const placeholder = { number: run.id, state: "unfinished", branch: run.head_branch ?? "", commit: run.head_sha ?? "" };
-        if (state === null || !run.updated_at || Date.parse(run.updated_at) < Date.parse(cursor)) return placeholder;
+        // no finished conclusion is not a build yet.
+        if (state === null || !run.updated_at || Date.parse(run.updated_at) < Date.parse(cursor)) continue;
         // A jobs read that fails throws, failing the whole poll: skipping the
         // run would let the cursor pass it for good. The next poll retries.
         const jobs = readJobs(gh, repo, String(run.id), "all");
-        // Another workflow's run is no build of this project's CI: the same placeholder.
-        if (required.size > 0 && !jobs.some((job) => required.has(job.name))) return placeholder;
-        return buildOf(run, jobs, state);
-      });
+        // Another workflow's run is no build of this project's CI.
+        if (required.size > 0 && !jobs.some((job) => required.has(job.name))) continue;
+        builds.push(buildOf(run, jobs, state));
+      }
+      return builds;
     },
     async log(_build, job) {
       return cleanActionsLog(readLog(gh, repo, Number(job.id)));

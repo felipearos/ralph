@@ -164,6 +164,25 @@ describe("a scan over GitHub Actions runs", () => {
     expect(store.failures).toMatchObject([{ testId: T, build: 1002, job: "2002", step: "CI/test", kind: "timeout", retried: false }]);
   });
 
+  it("reads a busy repository's whole look-back in one poll, so no page cycle can skip a run (#52 review)", async () => {
+    // 150 runs is past one page of 100. A page cycle would advance the cursor
+    // past a run that finished on page 1 after page 1 was read; the Actions
+    // source pages inside one list instead and never leaves a backfill.
+    const now = at("2026-09-28T12:00:00Z");
+    const runs = Array.from({ length: 150 }, (_, i) =>
+      run({ id: 1001 + i, commit: sha(i + 1), conclusion: i === 0 ? "failure" : "success", finished: new Date(now - (150 - i) * MINUTE).toISOString() }),
+    );
+    const jobs = Object.fromEntries(runs.map((r, i) => [r.id, [job(5001 + i, i === 0 ? "failure" : "success")]]));
+    const fake = fakeActions(runs, jobs, { 5001: testLog });
+    const path = storeFile();
+    await poll(fake, null, path, now);
+    const store = readStore(path);
+    expect(store.builds).toHaveLength(150);
+    expect(store.backfill).toBeNull();
+    expect(store.failures.some((row) => row.build === 1001 && row.testId === T)).toBe(true);
+    expect(store.cursor).toBe(runs.at(-1)!.updated_at);
+  });
+
   it("does not record a run that finished before the window", async () => {
     const now = at("2026-09-28T12:00:00Z");
     const old = new Date(now - (OPTIONS.windowHours + 1) * HOUR).toISOString();

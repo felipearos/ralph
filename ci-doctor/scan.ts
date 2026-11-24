@@ -258,6 +258,8 @@ export interface Batch {
   listed: number;
   page: number;
   logsRead: number;
+  /** The source read everything since the cursor (`BuildSource.exhaustive`): no backfill. */
+  exhaustive?: boolean;
 }
 
 /** `store.ts`'s set, which `ci-doctor/retry.ts` reads too. */
@@ -281,6 +283,12 @@ export interface BuildSource {
   list(cursor: string, page: number, perPage: number): Promise<ApiBuild[]>;
   /** A failed job's CLEANED log (what `cleanLog` returns for Buildkite). Throws when unreadable. */
   log(build: ApiBuild, job: Job): Promise<string>;
+  /**
+   * `list` returns everything since the cursor in one call (GitHub Actions),
+   * so a full page is no reason to backfill: the scan advances the cursor at
+   * once. Unset, Buildkite's paging.
+   */
+  exhaustive?: boolean;
 }
 
 export function buildkiteSource(api: Buildkite, options: ScanOptions): BuildSource {
@@ -348,7 +356,10 @@ export async function readBatch(
     .filter((build) => FINISHED.has(build.state) && build.finished_at)
     .sort((a, b) => a.number - b.number);
 
-  const batch: Batch = { builds: [], rows: [], seen: {}, retriedJobs: [], listed: Array.isArray(listed) ? listed.length : 0, page, logsRead: 0 };
+  const batch: Batch = {
+    builds: [], rows: [], seen: {}, retriedJobs: [], listed: Array.isArray(listed) ? listed.length : 0, page, logsRead: 0,
+    exhaustive: source.exhaustive === true,
+  };
   for (const build of finished) {
     batch.builds.push(recordOf(build, options.baseBranch));
     const jobs = [
@@ -452,7 +463,7 @@ export function applyBatch(store: CiHealthStore, batch: Batch, now: number, opti
 
   const newest = batch.builds.reduce((max, build) => (build.finishedAt > max ? build.finishedAt : max), "");
   const high = [store.backfill?.high ?? "", newest].reduce((a, b) => (b > a ? b : a), "");
-  if (batch.listed >= options.perPage) {
+  if (!batch.exhaustive && batch.listed >= options.perPage) {
     store.backfill = { page: batch.page + 1, high };
   } else {
     store.backfill = null;
