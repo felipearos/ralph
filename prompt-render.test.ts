@@ -784,6 +784,12 @@ describe('a role render', () => {
     expect(doctor).not.toContain('triage it the loggd way');
   });
 
+  it('sends the ci-doctor to ci-log.ts, which reads a Buildkite build or a GitHub Actions run (#52)', () => {
+    const doctor = render(null, projectWithFragment(FRAGMENT), ['--role', 'ci-doctor']).stdout;
+    expect(doctor).toContain('ci-log.ts" --pr <pr>');
+    expect(doctor).not.toContain('bk-log.ts" --pr');
+  });
+
   it("walks past another role's sections instead of refusing them as unplaced", () => {
     // The whole point of the prefix: one project fragment carries every role's
     // guidance, so adding a triager's must not break every coder's render.

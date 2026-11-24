@@ -166,6 +166,21 @@ describe("ci-log routing by project", () => {
     });
   }
 
+  it("routes a branch read to Buildkite when the project names a Buildkite pipeline, whatever its required checks", async () => {
+    // The ci-doctor's scan (`isActionsProject`) keeps such a project on
+    // Buildkite; its log reads must go to the same CI.
+    expect(routeFor({ target: null, requiredChecks: ["test"], buildkitePipeline: "acme-app" })).toEqual(["buildkite"]);
+    expect(routeFor({ target: null, requiredChecks: ["test"], buildkitePipeline: "" })).toEqual(["actions"]);
+    const bk = readers();
+    const env = { ...ACTIONS_PROJECT, RALPH_BUILDKITE_PIPELINE: "acme-app" };
+    expect(await main(["--branch", "feature"], env, { gh: rollupGh([]), ...bk })).toBe(0);
+    expect(bk.calls).toEqual([{ reader: "buildkite", argv: ["--branch", "feature"] }]);
+    // A PR with nothing failing falls back to the project's provider as well.
+    const pr = readers();
+    expect(await main(["--pr", "12"], env, { gh: rollupGh([passingActions]), ...pr })).toBe(0);
+    expect(pr.calls.map((call) => call.reader)).toEqual(["buildkite"]);
+  });
+
   it("does not read the PR for a positional target or a branch", async () => {
     const gh = rollupGh([]);
     await main(["--branch", "feature"], ACTIONS_PROJECT, { gh, ...readers() });

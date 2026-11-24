@@ -6,7 +6,8 @@ diagnose, fix or file what breaks it. Work EXACTLY ONE case this iteration, end
 to end, then stop and report.
 
 Your case is a red build, not a backlog ticket. It has already been found: the
-intake gate (`ci-doctor/gate.ts`) scanned Buildkite into the ci-health store,
+intake gate (`ci-doctor/gate.ts`) scanned the project's CI (Buildkite builds,
+or GitHub Actions runs) into the ci-health store,
 classified what it saw, took a lease on one case and spawned you for it, and
 **`$RALPH_INTAKE_CASE` is what it handed over** — the text after
 `work available — ` on its verdict line. Read it first; it is the only thing
@@ -138,7 +139,7 @@ order; `--no-record` reports without advancing it.
 
 **Your context is what this iteration costs.** Send broad reading to the
 mapper. Read code and logs yourself in ranges (`sed -n`, `rg -n` with a little
-context), never as whole large files. Pipe long output (`bk-log.ts`, `gh` JSON,
+context), never as whole large files. Pipe long output (`ci-log.ts`, `gh` JSON,
 test runs) through `tail`, `grep` or `jq` before it reaches you. Never re-read
 this prompt from `$RALPH_HOME`: you already have it. If the context-window line
 passes ~70%, say so in the comment and prefer handing off (§HARD RAIL) to
@@ -226,7 +227,7 @@ Recovery comes before new work, exactly as it does for a coder:
 ## 1. Your case, and the classification you may overturn
 
 The gate's verdict names the case; the store holds its evidence. Read the case
-out of the ci-health store rather than re-scanning Buildkite:
+out of the ci-health store rather than re-scanning CI:
 
 ```bash
 store="$(git rev-parse --path-format=absolute --git-common-dir)/ralph/ci-health.json"
@@ -249,10 +250,11 @@ So take the subject out of the middle, re-prefix the kind (`flake:<subject>`,
 `regression:<subject>`), and confirm the key you built is one the store
 actually holds before you pass it to anything. Each case
 carries its kind, its state, its evidence rows (build, branch, commit, kind,
-line) and its 72-hour cost. `"$RALPH_HOME/bk-log.ts" --branch <branch>` or
-`--pr <n>` reads any build's log, and prints the store's own `known:` verdict
-under each failing test; never query Buildkite another way, and never print the
-token it reads.
+line) and its 72-hour cost. `"$RALPH_HOME/ci-log.ts" --branch <branch>` or
+`--pr <n>` reads any build's or run's log (it routes to `bk-log.ts` for
+Buildkite, `gh-actions-log.ts` for GitHub Actions), and on Buildkite prints
+the store's own `known:` verdict under each failing test; never query the CI
+another way, and never print the token it reads.
 
 **The script's classification is a proposal. You review it against the
 evidence, and you may overturn it.** That is the one judgement this role exists
@@ -746,7 +748,7 @@ In this order:
    with the pull request unmerged.
 
    A red REQUIRED check comes back with the failing checks. Read the log before
-   you re-run or reproduce anything (`"$RALPH_HOME/bk-log.ts" --pr <pr>`), and
+   you re-run or reproduce anything (`"$RALPH_HOME/ci-log.ts" --pr <pr>`), and
    read it as the doctor: the `known:` line under a failing test is your own
    store's verdict, and a failure on your own fix's test is the fix not working
    rather than a flake to re-run. Real failures: fix, push, update the note,
@@ -767,7 +769,7 @@ In this order:
      (`"$RALPH_HOME/push-notification.ts" push --kind pr-merged`), then step 7.
    - **dequeued** — the queue's build failed, or the pull request never
      entered the queue; its comment on the pull request says which. Read that
-     build's log (`"$RALPH_HOME/bk-log.ts" --branch <queue-branch>`), fix on
+     build's log (`"$RALPH_HOME/ci-log.ts" --branch <queue-branch>`), fix on
      your own branch, push, and hand the CI wait back. A failure outside the
      repository is `RETRY_LATER` below instead, and a head whose checks were
      never green is step 4's problem.
@@ -869,7 +871,7 @@ bun "$RALPH_HOME/push-notification.ts" push --kind ticket-blocked \
 
 The first line of both the comment and `--body` starts `blocked:` — the
 dashboard reads that line — and a CI block quotes the failing line from
-`bk-log.ts` right after it. Then swap the claim for the blocked label and
+`ci-log.ts` right after it. Then swap the claim for the blocked label and
 journal `**Outcome: blocked (<reason>).**`:
 
 ```bash

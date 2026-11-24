@@ -169,11 +169,12 @@ const sameDayAs = (store: CiHealthStore, day: string): boolean => store.retries.
  * It is keyed on the job id, and a record is dropped as soon as the store stops
  * holding that job's row AT ALL — not only once the row is marked. Dropping
  * only on the marking read well and was wrong in both directions: a retry whose
- * PUT faulted, or whose job Buildkite never reports as retried, is never marked
- * by anything, so its record was carried across every rollover for ever. That
- * barred the candidate permanently and grew `byCase` without bound, while the
- * SUCCESSFUL path's guard — the marked row — expires with the store's 72-hour
- * window. The failed retry was the stricter of the two, which is backwards.
+ * write (Buildkite's PUT, the Actions re-run POST) faulted, or whose job the
+ * CI provider never reports as retried, is never marked by anything, so its
+ * record was carried across every rollover for ever. That barred the candidate
+ * permanently and grew `byCase` without bound, while the SUCCESSFUL path's
+ * guard — the marked row — expires with the store's 72-hour window. The failed
+ * retry was the stricter of the two, which is backwards.
  */
 export function unscannedOrToday(store: CiHealthStore, day: string): Record<string, string> {
   // Copied on both paths: this is exported, and returning the live object on
@@ -278,6 +279,18 @@ export interface RetryDeps {
   /** Is a host lease held, or anybody queued for one? */
   hostLeaseBusy: () => { busy: boolean; detail: string };
   branchHead: (branch: string) => string | null;
+  /**
+   * Where the write goes, when it is not Buildkite's job retry: an Actions
+   * project re-runs one job via `repos/<repo>/actions/jobs/<id>/rerun`.
+   * Unset, the module's Buildkite `retryPath`.
+   */
+  retryPath?: (org: string, pipeline: string, build: number, job: string) => string;
+  /**
+   * GitHub calls one `put` costs, charged whether it succeeds or faults: an
+   * Actions re-run is a `gh api` POST on the gate's allowance. Buildkite's
+   * write costs none; unset is 0.
+   */
+  putGhCalls?: number;
 }
 
 export const retryPath = (org: string, pipeline: string, build: number, job: string): string =>
@@ -297,7 +310,9 @@ export const retryPath = (org: string, pipeline: string, build: number, job: str
 function confirmIdle(deps: RetryDeps): { stop: { outcome: RetryOutcome; why: string } | null; ghCalls: number } {
   // Immediately before the call: the GitHub calls that show the host idle must
   // be affordable on the gate's own allowance before they are made.
-  if (!deps.afford(deps.ciReadCalls)) {
+  // The write's own GitHub calls too (an Actions re-run is a POST): reserving
+  // only the idle read would let the write overspend the ledger by one.
+  if (!deps.afford(deps.ciReadCalls + (deps.putGhCalls ?? 0))) {
     return {
       stop: {
         outcome: "no-budget",
@@ -383,35 +398,37 @@ export async function retryOnce(deps: RetryDeps): Promise<RetryResult> {
 
   let path: string;
   try {
-    path = retryPath(await deps.org(), deps.pipeline, pick.build, pick.job);
+    path = (deps.retryPath ?? retryPath)(await deps.org(), deps.pipeline, pick.build, pick.job);
   } catch (error) {
     // Asked after the claim, so this spends a slot. That is the lesser evil:
     // asking before it would read Buildkite on every poll that had nothing to
     // retry, which is what the eager version did.
     return {
       outcome: "fault",
-      why: `the Buildkite organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+      why: `the CI organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
       retried: null,
       ghCalls: spentGh,
     };
   }
+  const putGh = deps.putGhCalls ?? 0;
   try {
     await deps.put(path);
   } catch (error) {
-    // The slot stays spent. A non-2xx does not say whether Buildkite started
-    // the job, so rolling the claim back here could retry it twice.
+    // The slot stays spent. A non-2xx (Buildkite's PUT or the Actions re-run
+    // POST) does not say whether the CI provider started the job, so rolling
+    // the claim back here could retry it twice.
     return {
       outcome: "fault",
       why: `retrying ${pick.testId} failed: ${error instanceof Error ? error.message : String(error)}`,
       retried: null,
-      ghCalls: spentGh,
+      ghCalls: spentGh + putGh,
     };
   }
   return {
     outcome: "retried",
     why: `retried ${pick.job} of build #${pick.build} (${pick.branch}) for ${pick.testId}; ${room.why}`,
     retried: { ...pick, path },
-    ghCalls: spentGh,
+    ghCalls: spentGh + putGh,
   };
 }
 
@@ -535,22 +552,24 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
   } catch (error) {
     return none(
       "fault",
-      `the Buildkite organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+      `the CI organization could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
       spentGh,
     );
   }
   const paths: string[] = [];
+  let putGh = 0;
   for (const job of target.jobs) {
-    const path = retryPath(org, deps.pipeline, target.build, job);
+    const path = (deps.retryPath ?? retryPath)(org, deps.pipeline, target.build, job);
+    putGh += deps.putGhCalls ?? 0;
     try {
       await deps.put(path);
     } catch (error) {
       // The slots and the head's one retry stay spent: a non-2xx does not say
-      // whether Buildkite started the job (see `retryOnce`).
+      // whether the CI provider started the job (see `retryOnce`).
       return none(
         "fault",
         `retrying job ${job} of build #${target.build} failed: ${error instanceof Error ? error.message : String(error)}`,
-        spentGh,
+        spentGh + putGh,
       );
     }
     paths.push(path);
@@ -559,6 +578,6 @@ export async function retryHead(deps: RetryDeps, target: HeadTarget): Promise<He
     outcome: "retried",
     why: `retried ${target.jobs.length} failed job(s) of build #${target.build} (PR #${target.pr}, ${target.branch} @ ${target.sha.slice(0, 10)}); ${room.why}`,
     retried: { ...target, paths },
-    ghCalls: spentGh,
+    ghCalls: spentGh + putGh,
   };
 }

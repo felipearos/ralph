@@ -467,7 +467,7 @@ The role, its descriptor, its case lease, its gate (`ci-doctor/gate.ts`), the
 case issue it files and claims before it works (below), the supervisor wiring
 that runs that gate and the model-facing prompt (`prompts/ci-doctor.md`,
 felipearos/ralph#157) are live: a rostered ci-doctor starts, passes preflight,
-polls Buildkite, claims a case and works it — fixing a confirmed in-scope
+polls Buildkite (or GitHub Actions; see "A GitHub Actions project"), claims a case and works it — fixing a confirmed in-scope
 flake through the coder's five phases, filing anything out of scope, and
 unparking a coder ticket that was parked on a flake. The prompt calls the diff
 guard and `unpark.ts`, so neither is hand-run any more.
@@ -3161,7 +3161,7 @@ supplies both.
 #### The second token: the ci-doctor's retry
 
 There are **two** Buildkite tokens, and the difference between them is the
-whole of the loops' write access to CI:
+whole of the loops' write access to Buildkite (an Actions project's retry goes through `gh`; see "A GitHub Actions project" below):
 
 | | `RALPH_BUILDKITE_READ_TOKEN` | `RALPH_BUILDKITE_RETRY_TOKEN` |
 | --- | --- | --- |
@@ -3232,6 +3232,34 @@ A retry can **confirm** a flake and can never, by itself, convict one. The next
 scan records the retried job, a pass gives `classify.ts` its "same tree, both
 colours" rule, and a second red is a `retried: true` row that every rule leaves
 out of its evidence.
+
+#### A GitHub Actions project
+
+A project none of whose required checks is a `buildkite/<slug>` one, and that
+sets no `RALPH_BUILDKITE_PIPELINE`, runs GitHub Actions (#52), and the doctor
+reads that instead — the same rule `ci-log.ts` routes a red log by. Its scan
+lists the repository's completed workflow runs created in the last 72 hours,
+reads the jobs (every attempt) of each run updated since the last poll, and
+reads each newly failed job's log once. One run is one build; a job a re-run
+replaced is a retried job. A run with no job named like a required check
+(CodeQL, Dependabot, Pages) is not the project's CI and is not a build, so a
+green side workflow cannot call a red main green. `RALPH_ACTIONS_WORKFLOW`
+(a workflow file or id) narrows the listing to one workflow.
+
+No token of ours is involved: every read goes through the host's own `gh`
+auth, and so does the retry, which re-runs one failed job
+(`repos/<repo>/actions/jobs/<id>/rerun`) under the same `ciDoctor.retry`
+ceilings, idle check and one-per-candidate guard as the Buildkite one, and
+charges its POST to the gate's allowance. A host whose `gh` cannot write
+Actions gets a `fault` per attempt, inside the same six-a-day ceiling; set
+`ciDoctor.retry.perDay` to 0 to turn the retry off. Unlike the Buildkite
+scan's reads, which are no GitHub calls, the Actions scan's are charged to the
+gate's allowance too — every list page, jobs read and log read, also on a poll
+whose scan failed part-way: on an idle repository they are one list call and
+one jobs call a poll. A project with neither required checks nor
+`RALPH_ACTIONS_WORKFLOW` is not scanned (nothing tells its CI from a side
+workflow), and a look-back holding more than ten full pages of runs fails the
+poll rather than skip the oldest; narrow it with `RALPH_ACTIONS_WORKFLOW`.
 
 ### Watch it
 

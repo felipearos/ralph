@@ -558,10 +558,19 @@ export interface CheckReading {
 /** The key prefix of a case that comes from GitHub's checks, not from a build. */
 export const CHECK_CASE_PREFIX = "infra:check:";
 
-export function checkIncidents(readings: readonly CheckReading[], minPrs = 3): Record<string, Case> {
+export function checkIncidents(
+  readings: readonly CheckReading[],
+  minPrs = 3,
+  /**
+   * Check names the scan already reads as jobs (a GitHub Actions project's
+   * `test`): their reds are build evidence, and counting them here too would
+   * turn three PRs' real test failures into a confirmed infra incident.
+   */
+  scanned: ReadonlySet<string> = new Set(),
+): Record<string, Case> {
   const groups = new Map<string, Set<number>>();
   for (const reading of readings) {
-    if (reading.state !== "failure" || reading.name.startsWith("buildkite")) continue;
+    if (reading.state !== "failure" || reading.name.startsWith("buildkite") || scanned.has(reading.name)) continue;
     const key = `${CHECK_CASE_PREFIX.slice("infra:".length)}${reading.name}:${reading.description.trim()}`;
     groups.set(key, (groups.get(key) ?? new Set()).add(reading.pr));
   }

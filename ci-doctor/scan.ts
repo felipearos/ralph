@@ -45,9 +45,13 @@ import {
   type Failure as DigestFailure,
   type Job,
 } from "../bk-log";
+import { runGhForLogs } from "../gh-actions-log";
+import { requiredChecksFrom } from "../host-lease";
 import { projectRoot } from "../paths";
+import type { Gh } from "../pr-wait";
 import { loadProjectConfig } from "../project-config";
 import { DEFAULT_CLASSIFY, QUEUE_BRANCH, classify, mergeCases, type ClassifyOptions } from "./classify";
+import { actionsSource, isActionsProject } from "./actions-source";
 import { rekeyJestIdentities } from "./rekey";
 import {
   FINISHED_BUILD_STATES,
@@ -67,6 +71,15 @@ import {
 export const PER_PAGE = 100;
 export const WINDOW_HOURS = 72;
 export { METRICS_DAYS } from "./store";
+
+/**
+ * Why an Actions project with neither required checks nor a named workflow is
+ * not scanned: nothing would tell its CI from a side workflow (CodeQL, Pages),
+ * and a green side run would call a red main green. The gate and this CLI
+ * decline with the same words.
+ */
+export const NO_ACTIONS_CHECKS =
+  "no required checks to tell the project's CI from side workflows (set requiredChecks, or RALPH_ACTIONS_WORKFLOW)";
 
 export interface ApiBuild extends Build {
   source?: string | null;
@@ -90,7 +103,8 @@ const HOOK_TIMEOUT = /Hook timed out in \d+ ?ms/i;
  * agent lost mid-run (exit -1) with no test failure in the log is infra too.
  */
 export function bootstrapReason(job: Job, log: string): { reason: string; line: string } | null {
-  const ran = RAN_COMMANDS.test(log);
+  // A source without the marker (GitHub Actions) says whether the commands ran.
+  const ran = typeof job.ran === "boolean" ? job.ran : RAN_COMMANDS.test(log);
   if (ran && !(job.exit_status === -1 && digestLog(log).failures.length === 0)) return null;
   const lines = log.split("\n").map((line) => line.trim()).filter((line) => line !== "");
   const errorLine =
@@ -254,6 +268,8 @@ export interface Batch {
   listed: number;
   page: number;
   logsRead: number;
+  /** The source read everything since the cursor (`BuildSource.exhaustive`): no backfill. */
+  exhaustive?: boolean;
 }
 
 /** `store.ts`'s set, which `ci-doctor/retry.ts` reads too. */
@@ -268,13 +284,53 @@ export function buildsPath(options: ScanOptions, cursor: string, page: number): 
   return `/organizations/${options.org}/pipelines/${options.pipeline}/builds?${query}`;
 }
 
+/**
+ * Where a poll reads builds from: Buildkite (`buildkiteSource`) or GitHub
+ * Actions (`actions-source.ts`). The store and the rules never know which.
+ */
+export interface BuildSource {
+  /** One page of FINISHED builds whose finish is at or after `cursor` (ISO), newest first or any order. Throws HelperError when unreadable. */
+  list(cursor: string, page: number, perPage: number): Promise<ApiBuild[]>;
+  /** A failed job's CLEANED log (what `cleanLog` returns for Buildkite). Throws when unreadable. */
+  log(build: ApiBuild, job: Job): Promise<string>;
+  /**
+   * `list` returns everything since the cursor in one call (GitHub Actions),
+   * so a full page is no reason to backfill: the scan advances the cursor at
+   * once. Unset, Buildkite's paging.
+   */
+  exhaustive?: boolean;
+}
+
+export function buildkiteSource(api: Buildkite, options: ScanOptions): BuildSource {
+  const base = `/organizations/${options.org}/pipelines/${options.pipeline}/builds`;
+  return {
+    async list(cursor, page, perPage) {
+      const listed = await api.json<ApiBuild[]>(buildsPath({ ...options, perPage }, cursor, page));
+      return Array.isArray(listed) ? listed : [];
+    },
+    async log(build, job) {
+      return cleanLog(await api.text(`${base}/${build.number}/jobs/${job.id}/log`));
+    },
+  };
+}
+
+const sourceOf = (api: Buildkite | BuildSource, options: ScanOptions): BuildSource =>
+  api instanceof Buildkite ? buildkiteSource(api, options) : api;
+
 function recordOf(build: ApiBuild, baseBranch: string): BuildRecord {
   const steps: Record<string, string> = {};
+  // The plain job names, for a source that says whether commands ran (GitHub
+  // Actions): GitHub names a job's check after the job, and a step key's
+  // `<workflow>/<job>` cannot be cut back into it when either holds a `/`.
+  // Buildkite records stay as they were.
+  const jobNames: string[] = [];
   for (const job of build.jobs ?? []) {
     if (job.type !== "script" || !job.step_key || job.retried || job.state === "broken") continue;
     steps[job.step_key] = job.state;
+    if (typeof job.ran === "boolean" && job.name) jobNames.push(job.name);
   }
   return {
+    ...(jobNames.length > 0 ? { jobNames } : {}),
     number: build.number,
     branch: build.branch ?? "",
     commit: build.commit ?? "",
@@ -303,7 +359,7 @@ const isPrBranch = (branch: string, baseBranch: string): boolean =>
  * `HelperError` when the builds list cannot be read.
  */
 export async function readBatch(
-  api: Buildkite,
+  api: Buildkite | BuildSource,
   git: GitFacts | null,
   snapshot: CiHealthStore,
   options: ScanOptions,
@@ -311,13 +367,16 @@ export async function readBatch(
 ): Promise<Batch> {
   const page = snapshot.backfill?.page ?? 1;
   const cursor = snapshot.cursor || windowStart(now, options);
-  const listed = await api.json<ApiBuild[]>(buildsPath(options, cursor, page));
+  const source = sourceOf(api, options);
+  const listed = await source.list(cursor, page, options.perPage);
   const finished = (Array.isArray(listed) ? listed : [])
     .filter((build) => FINISHED.has(build.state) && build.finished_at)
     .sort((a, b) => a.number - b.number);
 
-  const batch: Batch = { builds: [], rows: [], seen: {}, retriedJobs: [], listed: Array.isArray(listed) ? listed.length : 0, page, logsRead: 0 };
-  const base = `/organizations/${options.org}/pipelines/${options.pipeline}/builds`;
+  const batch: Batch = {
+    builds: [], rows: [], seen: {}, retriedJobs: [], listed: Array.isArray(listed) ? listed.length : 0, page, logsRead: 0,
+    exhaustive: source.exhaustive === true,
+  };
   for (const build of finished) {
     batch.builds.push(recordOf(build, options.baseBranch));
     const jobs = [
@@ -335,7 +394,7 @@ export async function readBatch(
       let log: string;
       try {
         batch.logsRead += 1;
-        log = cleanLog(await api.text(`${base}/${build.number}/jobs/${job.id}/log`));
+        log = await source.log(build, job);
       } catch (error) {
         // Read once, as promised: an unreadable log is a row that says so, not a retry every poll.
         const why = error instanceof Error ? error.message : String(error);
@@ -421,7 +480,7 @@ export function applyBatch(store: CiHealthStore, batch: Batch, now: number, opti
 
   const newest = batch.builds.reduce((max, build) => (build.finishedAt > max ? build.finishedAt : max), "");
   const high = [store.backfill?.high ?? "", newest].reduce((a, b) => (b > a ? b : a), "");
-  if (batch.listed >= options.perPage) {
+  if (!batch.exhaustive && batch.listed >= options.perPage) {
     store.backfill = { page: batch.page + 1, high };
   } else {
     store.backfill = null;
@@ -531,7 +590,7 @@ export interface ScanResult {
 
 /** One poll: read outside the lock, merge under it. */
 export async function scan(
-  api: Buildkite,
+  api: Buildkite | BuildSource,
   git: GitFacts | null,
   path: string,
   options: ScanOptions,
@@ -559,36 +618,64 @@ export async function scan(
  * CLI.
  * ----------------------------------------------------------------------- */
 
-export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env, gh: Gh = runGhForLogs): Promise<number> {
   const unknown = argv.filter((arg) => arg !== "--json");
   if (unknown.length > 0) {
     console.error(`ci-doctor/scan: unknown argument ${unknown[0]}\nusage: ci-doctor/scan.ts [--json]`);
     return 64;
   }
-  const token = tokenFrom(env);
-  if (token === null) {
-    console.error("ci-doctor/scan: no Buildkite token — RALPH_BUILDKITE_READ_TOKEN is not set");
-    return 1;
-  }
-  const pipeline = configuredPipeline(env);
-  if (pipeline === null) {
-    console.error("ci-doctor/scan: which pipeline? set RALPH_BUILDKITE_PIPELINE, or require a buildkite/<slug> check");
-    return 1;
-  }
   const root = projectRoot(process.cwd(), env);
   let baseBranch = env.RALPH_BASE_BRANCH?.trim() || "";
-  if (baseBranch === "") {
-    try {
-      baseBranch = loadProjectConfig(root).baseBranch;
-    } catch {
-      baseBranch = DEFAULT_CLASSIFY.baseBranch;
-    }
-  }
-  const api = new Buildkite(token);
+  let repo: string | null = env.RALPH_PROJECT_REPO?.trim() || null;
+  let required = requiredChecksFrom(env);
   try {
-    const org = await resolveOrg(api, env, pipeline);
-    const options = defaultScanOptions(org, pipeline, { baseBranch });
-    const result = await scan(api, new GitFacts(gitIn(root), baseBranch), storePathFromGit(root), options);
+    const config = loadProjectConfig(root);
+    if (baseBranch === "") baseBranch = config.baseBranch;
+    repo ??= config.repo;
+    if (required.length === 0) required = [...config.requiredChecks];
+  } catch {
+    // No readable config: the env's answers, and the default base branch.
+  }
+  if (baseBranch === "") baseBranch = DEFAULT_CLASSIFY.baseBranch;
+  // A project whose required checks name no Buildkite pipeline runs GitHub
+  // Actions, read through gh's own auth: no token of ours is needed.
+  const actions = isActionsProject(required, env);
+  let source: Buildkite | BuildSource;
+  let pipeline: string | null = null;
+  if (actions) {
+    if (repo === null) {
+      console.error("ci-doctor/scan: no repository to read GitHub Actions from — set RALPH_PROJECT_REPO");
+      return 1;
+    }
+    const workflow = env.RALPH_ACTIONS_WORKFLOW?.trim() || null;
+    if (required.length === 0 && workflow === null) {
+      console.error(`ci-doctor/scan: ${NO_ACTIONS_CHECKS}`);
+      return 1;
+    }
+    source = actionsSource(gh, repo, { workflow, required });
+  } else {
+    const token = tokenFrom(env);
+    if (token === null) {
+      console.error("ci-doctor/scan: no Buildkite token — RALPH_BUILDKITE_READ_TOKEN is not set");
+      return 1;
+    }
+    pipeline = configuredPipeline(env);
+    if (pipeline === null) {
+      console.error("ci-doctor/scan: which pipeline? set RALPH_BUILDKITE_PIPELINE, or require a buildkite/<slug> check");
+      return 1;
+    }
+    source = new Buildkite(token);
+  }
+  try {
+    let options: ScanOptions;
+    if (source instanceof Buildkite) {
+      const org = await resolveOrg(source, env, pipeline!);
+      options = defaultScanOptions(org, pipeline!, { baseBranch });
+    } else {
+      const [owner = repo!, name = repo!] = repo!.split("/");
+      options = defaultScanOptions(owner, name, { baseBranch });
+    }
+    const result = await scan(source, new GitFacts(gitIn(root), baseBranch), storePathFromGit(root), options);
     if (argv.includes("--json")) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -603,7 +690,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     return 0;
   } catch (error) {
     if (error instanceof HelperError) {
-      console.error(`ci-doctor/scan: ${error.message}`);
+      console.error(`ci-doctor/scan: ${actions ? "GitHub Actions could not be read: " : ""}${error.message}`);
       return error.code === 64 ? 64 : error.code === 1 ? 1 : 2;
     }
     throw error;

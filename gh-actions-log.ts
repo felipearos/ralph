@@ -100,6 +100,10 @@ export interface ActionsJob {
   conclusion: string | null;
   html_url?: string | null;
   steps?: Step[];
+  /** The attempt this job belongs to; with `filter=all` a re-run run lists every attempt's jobs. */
+  run_attempt?: number;
+  /** When this attempt's job started; the earliest across attempts is when the run first started. */
+  started_at?: string | null;
 }
 
 export interface ActionsRun {
@@ -113,6 +117,11 @@ export interface ActionsRun {
   html_url?: string | null;
   event?: string;
   workflow_id?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  run_started_at?: string | null;
+  head_commit?: { message?: string | null } | null;
+  pull_requests?: Array<{ number: number }> | null;
 }
 
 /**
@@ -254,13 +263,17 @@ const JOBS_PER_PAGE = 100;
 // misbehaving API from paging forever.
 const MAX_JOB_PAGES = 20;
 
-/** Every job of a run, page by page: a big matrix's failing job may sit past the first 100. */
-export function readJobs(gh: Gh, repo: string, run: string): ActionsJob[] {
+/**
+ * Every job of a run, page by page: a big matrix's failing job may sit past
+ * the first 100. `filter: "all"` lists earlier attempts' jobs too (GitHub's
+ * default, `latest`, hides what a re-run replaced).
+ */
+export function readJobs(gh: Gh, repo: string, run: string, filter?: "latest" | "all"): ActionsJob[] {
   const jobs: ActionsJob[] = [];
   for (let page = 1; page <= MAX_JOB_PAGES; page += 1) {
     const body = readJson<{ jobs?: ActionsJob[]; total_count?: number }>(gh, repo, [
       "api",
-      `repos/${repo}/actions/runs/${run}/jobs?per_page=${JOBS_PER_PAGE}&page=${page}`,
+      `repos/${repo}/actions/runs/${run}/jobs?per_page=${JOBS_PER_PAGE}&page=${page}${filter ? `&filter=${filter}` : ""}`,
     ]);
     const batch = Array.isArray(body.jobs) ? body.jobs : [];
     jobs.push(...batch);
@@ -277,7 +290,7 @@ export function readJobs(gh: Gh, repo: string, run: string): ActionsJob[] {
  * unreadable. `cleanActionsLog` strips the escapes. A gh too old to know the
  * flag is asked again without it.
  */
-function readLog(gh: Gh, repo: string, job: number): string {
+export function readLog(gh: Gh, repo: string, job: number): string {
   const path = `repos/${repo}/actions/jobs/${job}/logs`;
   const args = ["api", "--allow-escape-sequences", path];
   const result = call(gh, args);
@@ -671,9 +684,10 @@ function jobLogs(
  * `runGh` with room for a job log. Its 30s timeout and the default output cap
  * suit a JSON read, but a verbose test job's log runs to megabytes, and a log
  * cut off there reads as "unreadable" and sends the session to re-run what it
- * could have read.
+ * could have read. Exported for the ci-doctor's Actions scan, which reads the
+ * same logs.
  */
-const runGhForLogs: Gh = (args) => {
+export const runGhForLogs: Gh = (args) => {
   const result = spawnSync("gh", args, { encoding: "utf8", timeout: 120_000, maxBuffer: 256 * 1024 * 1024 });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", error: result.error };
 };

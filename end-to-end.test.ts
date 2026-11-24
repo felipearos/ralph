@@ -611,7 +611,7 @@ describe("setting a second loop up from the README alone", () => {
         // undocumented-and-unread here, which is a false failure — and the
         // reverse, a name the README keeps after its reader moves, is the real
         // one this test exists for.
-        "cat $(ls *.ts frontier/*.ts triage/*.ts clerk/*.ts plugins/*/*.ts | grep -v '\\.test\\.ts$') *.sh *.jsonc *.py",
+        "cat $(ls *.ts frontier/*.ts triage/*.ts clerk/*.ts ci-doctor/*.ts plugins/*/*.ts | grep -v '\\.test\\.ts$') *.sh *.jsonc *.py",
       ],
       { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
     );
