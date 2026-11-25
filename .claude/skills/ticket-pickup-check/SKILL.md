@@ -151,18 +151,19 @@ OUT="${TMPDIR:-/tmp}/ticket-pickup-check-$N"; mkdir -p "$OUT"
    | `malformed` | the frontier cannot read its body |
    | `untriaged` | ready, but carries no difficulty label while routing is on |
    | `human` | waits on a person (`reason`) |
+   | `dropped` | a `## Blocked by` / `## Parent` reference the frontier ignored (another repository's or tracker's): the ticket may only look unblocked (`references[].heading`, `.reference`, `.reason`) |
    | `tree` only, state `open` | not offered: usually no `ready-for-agent` |
 
    The sections overlap: a ticket can sit in `ready` and `untriaged` at
    once, and with routing on no coder takes an untriaged one. Say PICKED
    NEXT only for a ticket in `ready` and not in `untriaged`, `inFlight` or
-   `stuck`. Also check `.stuckReasons` and `frontier.err` for lines naming
-   `#N`.
+   `stuck`. Also check `.stuckReasons`, `.dropped` and `frontier.err` for
+   lines naming `#N`.
 
 5. **Cross-check.** The frontier's answer must agree with steps 2-3. If the
    frontier offers the ticket while step 2 found a problem (for example a
-   `## Blocked by` reference to another repository that it silently read as a
-   local issue), report both: the frontier's verdict is what the loops will
+   `## Blocked by` reference to another repository, which it drops and lists
+   under `dropped`), report both: the frontier's verdict is what the loops will
    do, the problem is what the person should fix.
 
 ## Result

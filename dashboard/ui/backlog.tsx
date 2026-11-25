@@ -355,6 +355,7 @@ function Ready({ view, repoUrl }: { view: FrontierView; repoUrl: string | null }
                   · {group.waiting} sibling{group.waiting === 1 ? "" : "s"} behind this one
                 </span>
               )}
+              {dropped.has(group.spec.number) && <DroppedChip references={dropped.get(group.spec.number)!} />}
             </p>
           )}
           {group.tickets.map((ticket) => (
@@ -388,6 +389,7 @@ function Ready({ view, repoUrl }: { view: FrontierView; repoUrl: string | null }
 /* -------------------------------------------------------------- in flight */
 
 function InFlight({ view, repoUrl }: { view: FrontierView; repoUrl: string | null }) {
+  const dropped = droppedByNumber(view);
   if (view.inFlight.length === 0) {
     return (
       <div className="px-4 py-3">
@@ -423,8 +425,11 @@ function InFlight({ view, repoUrl }: { view: FrontierView; repoUrl: string | nul
             <TableCell>
               <TicketPull ticket={ticket.number} repoUrl={repoUrl} />
             </TableCell>
-            <TableCell className="max-w-0 truncate" title={ticket.title}>
-              {ticket.title}
+            <TableCell className="max-w-0" title={ticket.title}>
+              <span className="flex items-baseline gap-2">
+                <span className="truncate">{ticket.title}</span>
+                {dropped.has(ticket.number) && <DroppedChip references={dropped.get(ticket.number)!} />}
+              </span>
             </TableCell>
           </TableRow>
         ))}
@@ -440,10 +445,12 @@ function TicketRows({
   repoUrl,
   note,
   empty,
+  dropped,
   tone = "warn",
 }: {
   rows: FrontierTicket[];
   repoUrl: string | null;
+  dropped: Map<number, FrontierDroppedReference[]>;
   note: (ticket: FrontierTicket) => React.ReactNode;
   empty: string;
   tone?: "warn" | "bad";
@@ -468,6 +475,7 @@ function TicketRows({
           <span className="truncate" title={ticket.title}>
             {ticket.title}
           </span>
+          {dropped.has(ticket.number) && <DroppedChip references={dropped.get(ticket.number)!} />}
           <span className="ml-auto inline-flex items-baseline gap-2">
             <TicketPull ticket={ticket.number} repoUrl={repoUrl} />
             <span className="text-xs whitespace-nowrap text-muted-foreground">{note(ticket)}</span>
@@ -949,6 +957,9 @@ function TreeGroupView({
             </span>
           </Tip>
         )}
+        {group.spec && dropped.has(group.spec.number) && (
+          <DroppedChip references={dropped.get(group.spec.number)!} />
+        )}
         {notes.length > 0 && (
           <span className="ml-auto shrink-0 pl-3 text-xs whitespace-nowrap text-muted-foreground">
             {notes.join(" · ")}
@@ -1097,6 +1108,7 @@ export function Backlog({
   const stuck = view === null ? noStuckGroups() : stuckGroups(view, nowMs);
   const running = view === null ? new Set<number>() : runningTickets(view, loops);
   const reasons = view === null ? new Map<number, StuckReason>() : stuckReasonsByNumber(view);
+  const droppedRefs = view === null ? new Map<number, FrontierDroppedReference[]>() : droppedByNumber(view);
   const forYou = view === null ? [] : forYouRows(view, nowMs);
   const clock: BacklogClock = {
     nowMs,
@@ -1253,6 +1265,7 @@ export function Backlog({
                   count={view.occupied.length}
                 >
                   <TicketRows
+                    dropped={droppedRefs}
                     rows={view.occupied}
                     repoUrl={repoUrl}
                     note={(ticket) => `held by #${(ticket as FrontierView["occupied"][number]).heldBy}`}
@@ -1261,6 +1274,7 @@ export function Backlog({
                 </Section>
                 <Section id={anchor("blocked")} title="Blocked" detail="open blockers, claimed ones included" count={view.blocked.length}>
                   <TicketRows
+                    dropped={droppedRefs}
                     rows={view.blocked}
                     repoUrl={repoUrl}
                     note={(ticket) => {
@@ -1283,6 +1297,7 @@ export function Backlog({
                             <span className="truncate" title={gate.title}>
                               {gate.title}
                             </span>
+                            {droppedRefs.has(gate.number) && <DroppedChip references={droppedRefs.get(gate.number)!} />}
                           </li>
                         ))}
                       </ul>
@@ -1296,6 +1311,7 @@ export function Backlog({
                     count={view.specs.length + view.stuck.length}
                   >
                     <TicketRows
+                      dropped={droppedRefs}
                       rows={[...view.specs, ...view.stuck]}
                       repoUrl={repoUrl}
                       note={(ticket) =>
