@@ -68,6 +68,7 @@ function frontier(now: string, over: Partial<FrontierView> = {}): FrontierRead {
       untriaged: [],
       triage: { staffing: 0, routing: 0, intake: 0, oversize: 0, rescue: 0 },
       human: [],
+      dropped: [],
       ...over,
     },
     problem: null,

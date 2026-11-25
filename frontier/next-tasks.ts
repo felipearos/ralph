@@ -439,6 +439,12 @@ export interface Ticket {
   closedBlockers: number[];
   /** Prose edges with no matching native dependency — the backfill worklist. */
   proseOnlyBlockers: number[];
+  /**
+   * References under `## Blocked by` then `## Parent` that the parser dropped
+   * (another repository's or tracker's), so a report can name them instead of
+   * the ticket quietly reading as unblocked. Empty when nothing was dropped.
+   */
+  droppedReferences: DroppedReference[];
 }
 
 const dim = (s: string): string => `\x1b[2m${s}\x1b[0m`;
@@ -565,17 +571,52 @@ export function issueRefsUnderHeading(
   heading: string,
   options: { prefix?: boolean } = {},
 ): number[] {
+  return readRefsUnderHeading(body, heading, options).refs;
+}
+
+/**
+ * A reference written under a ticket's `## Blocked by` or `## Parent` that the
+ * frontier does not count as an edge: another repository's `owner/repo#n`, or
+ * another tracker's key. Kept rather than only said on stderr because a
+ * dropped blocker makes a ticket look unblocked, and whoever reads the report
+ * (the dashboard) never sees the supervisor's stderr.
+ */
+export interface DroppedReference {
+  /** The section it sat under: "Blocked by" or "Parent". */
+  heading: string;
+  /** The reference as written, e.g. "example-org/other#15" or "OPS-12". */
+  reference: string;
+  /** Why it is not an edge, in one plain sentence. */
+  reason: string;
+}
+
+/**
+ * `issueRefsUnderHeading`, plus the references in the section it dropped.
+ * The stderr warning stays once per reference per process, but `dropped` is
+ * this body's own: every call returns every drop in the section, so a caller
+ * building tickets twice in one process still sees them both times.
+ */
+export function readRefsUnderHeading(
+  body: string,
+  heading: string,
+  options: { prefix?: boolean } = {},
+): { refs: number[]; dropped: DroppedReference[] } {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const tail = options.prefix === true ? ".*" : "\\s*";
   const section = body.split(new RegExp(`^##\\s+${escaped}${tail}$`, "im"))[1];
-  if (!section) return [];
+  if (!section) return { refs: [], dropped: [] };
   const untilNextHeading = section.split(/^##\s+/m)[0] ?? "";
+  const dropped: DroppedReference[] = [];
+  const drop = (reference: string, reason: string): void => {
+    if (dropped.some((d) => d.reference === reference)) return;
+    dropped.push({ heading, reference, reason });
+  };
   const refs =
     referenceKey === null
-      ? githubRefs(untilNextHeading)
+      ? githubRefs(untilNextHeading, drop)
       : [...untilNextHeading.matchAll(keyedPattern(referenceKey))].map((match) => Number(match[1]));
-  warnForeignKeys(untilNextHeading);
-  return [...new Set(refs)];
+  warnForeignKeys(untilNextHeading, drop);
+  return { refs: [...new Set(refs)], dropped };
 }
 
 /**
@@ -621,10 +662,11 @@ export function useOwnRepository(repo: string | null): void {
  * judged, which is what this parser always did (house rule 1).
  */
 const GITHUB_REF = /(?:\b([\w.-]+\/[\w.-]+))?#(\d+)/g;
-function githubRefs(section: string): number[] {
+function githubRefs(section: string, drop: (reference: string, reason: string) => void): number[] {
   const refs: number[] = [];
   for (const [ref, slug, number] of section.matchAll(GITHUB_REF)) {
     if (slug !== undefined && ownRepository !== null && slug.toLowerCase() !== ownRepository) {
+      drop(ref, `not an issue of ${ownRepository}`);
       if (!warnedForeign.has(ref)) {
         warnedForeign.add(ref);
         console.error(`next-tasks: ignoring ${ref}: it is not an issue of ${ownRepository}, so it is no edge here`);
@@ -642,10 +684,12 @@ function githubRefs(section: string): number[] {
  * reference, on stderr, because a silently dropped blocker promotes a ticket.
  */
 const warnedForeign = new Set<string>();
-function warnForeignKeys(section: string): void {
+function warnForeignKeys(section: string, drop: (reference: string, reason: string) => void): void {
   if (referenceKey === null) return;
   for (const [ref, key] of section.matchAll(/\b([A-Z][A-Z0-9_]+)-\d+\b/g)) {
-    if (key === referenceKey || warnedForeign.has(ref)) continue;
+    if (key === referenceKey) continue;
+    drop(ref, `not a ticket of ${referenceKey}`);
+    if (warnedForeign.has(ref)) continue;
     warnedForeign.add(ref);
     console.error(`next-tasks: ignoring ${ref}: it is not a ${referenceKey} ticket, so this project cannot read it`);
   }
@@ -810,7 +854,9 @@ export function buildTickets(
   raw.forEach((issue, index) => {
     const body = issue.body ?? "";
     const labels = new Set(issue.labels.map((l) => l.name));
-    const prose = parseProseBlockers(body);
+    const blockedBy = readRefsUnderHeading(body, "Blocked by");
+    const prose = blockedBy.refs;
+    const parentSection = readRefsUnderHeading(body, "Parent");
     const staffing = readStaffingGroup(body);
     const native = nativesByIndex[index] ?? [];
     const nativeNumbers = new Set(native.map((b) => b.number));
@@ -844,7 +890,7 @@ export function buildTickets(
       assignees: (issue.assignees ?? []).map((a) => a.login),
       openPullRequest: prByIssue.get(issue.number) ?? null,
       liveBranch: liveBranchOf(branchClaims.get(issue.number), labels, issue.comments ?? []),
-      parent: parseParent(body) ?? issue.parent ?? null,
+      parent: parentSection.refs[0] ?? issue.parent ?? null,
       staffingGroup: staffing.group,
       malformed: staffing.problem,
       openBlockers: openBlockers.sort((a, b) => a - b),
@@ -852,6 +898,7 @@ export function buildTickets(
       proseOnlyBlockers: prose.filter(
         (n) => openNumbers.has(n) && !nativeNumbers.has(n),
       ),
+      droppedReferences: [...blockedBy.dropped, ...parentSection.dropped],
     });
   });
 
@@ -1798,6 +1845,13 @@ export interface FrontierReport {
    * mine" without walking the tree. Specs are never in it.
    */
   human: (ReportTicket & { reason: HumanReason })[];
+  /**
+   * Open tickets with a reference the parser dropped under `## Blocked by` or
+   * `## Parent` (`Ticket.droppedReferences`), by number. A dropped blocker
+   * makes a ticket look unblocked, and the dashboard builds its backlog from
+   * this report, not from the stderr line that says it once.
+   */
+  dropped: (ReportTicket & { references: DroppedReference[] })[];
 }
 
 /**
@@ -1969,6 +2023,10 @@ export function frontierReport(
       number
     >,
     human: humanTickets(tickets, frontier, ownership).map(({ ticket, reason }) => ({ ...brief(ticket), reason })),
+    dropped: all
+      .filter((t) => t.droppedReferences.length > 0)
+      .sort(byNumber)
+      .map((t) => ({ ...brief(t), references: t.droppedReferences })),
   };
 }
 

@@ -1144,6 +1144,15 @@ function frontierRead(now: string): FrontierRead {
         { number: 1130, title: "Rename the diary export column headers", reason: "held" },
         { number: 1140, title: "Backfill diary timestamps in production", reason: "ready-for-human" },
       ],
+      // A ready ticket whose blocker lives in another repository: the frontier
+      // drops it, so the backlog has to say why the ticket may only look free.
+      dropped: [
+        {
+          number: 1087,
+          title: "Friends' activity strip on title, season and episode screens",
+          references: [{ heading: "Blocked by", reference: "example-org/archive#165", reason: "not an issue of example-org/app" }],
+        },
+      ],
     },
     problem: null,
   };

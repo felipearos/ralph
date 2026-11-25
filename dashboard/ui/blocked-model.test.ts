@@ -59,6 +59,7 @@ const view = (stuckReasons: StuckReason[]): FrontierView => ({
   untriaged: [],
   triage: { staffing: 0, routing: 0, intake: 0, oversize: 0, rescue: 0 },
   human: [],
+  dropped: [],
 });
 
 describe("stuck groups", () => {

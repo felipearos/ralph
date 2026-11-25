@@ -944,6 +944,23 @@ export interface FrontierView {
    * tree's `human` marks, flat. Empty from a frontier that predates the field.
    */
   human: (FrontierTicket & { reason: HumanReason })[];
+  /**
+   * Open tickets with a reference under `## Blocked by` or `## Parent` the
+   * frontier does not count as an edge (another repository's or tracker's), so
+   * such a ticket may only look unblocked. Empty from a frontier that predates
+   * the field.
+   */
+  dropped: (FrontierTicket & { references: FrontierDroppedReference[] })[];
+}
+
+/** One reference the frontier dropped, as `frontier/next-tasks.ts` reports it. */
+export interface FrontierDroppedReference {
+  /** The section it sat under: "Blocked by" or "Parent". */
+  heading: string;
+  /** The reference as written, e.g. "example-org/other#15" or "OPS-12". */
+  reference: string;
+  /** Why it is not an edge, in one plain sentence. */
+  reason: string;
 }
 
 /**

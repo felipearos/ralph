@@ -27,6 +27,7 @@ const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({
   openBlockers: [],
   closedBlockers: [],
   proseOnlyBlockers: [],
+  droppedReferences: [],
   ...overrides,
 });
 
