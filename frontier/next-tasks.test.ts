@@ -278,13 +278,13 @@ describe('cross-repository references (#22)', () => {
   });
 
   it('returns another tracker\'s key as dropped, once per section', () => {
-    useReferenceKey('AND');
+    useReferenceKey('ACME');
     try {
       withRepository('acme/widgets', () => {
-        const keyed = '## Blocked by\n\n- AND-7\n- OTHER-12\n- OTHER-12\n';
+        const keyed = '## Blocked by\n\n- ACME-7\n- OTHER-12\n- OTHER-12\n';
         const expected = {
           refs: [7],
-          dropped: [{ heading: 'Blocked by', reference: 'OTHER-12', reason: 'not a ticket of AND' }],
+          dropped: [{ heading: 'Blocked by', reference: 'OTHER-12', reason: 'not a ticket of ACME' }],
         };
         expect(readRefsUnderHeading(keyed, 'Blocked by')).toEqual(expected);
         expect(readRefsUnderHeading(keyed, 'Blocked by')).toEqual(expected);

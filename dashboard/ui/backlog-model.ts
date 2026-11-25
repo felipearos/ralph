@@ -156,20 +156,31 @@ export function staleNote(frontier: FrontierRead, time: (iso: string) => string)
   return `Stale since ${time(frontier.readAt)}: ${cause}, retrying every minute.`;
 }
 
-/** The references the frontier dropped, by ticket: built once per view, read per row. */
+/**
+ * The references the frontier dropped, by ticket: built once per view, read per
+ * row. An absent field reads as none: the hosted remote page renders the
+ * snapshot an older host dashboard stored, which may predate it.
+ */
 export const droppedByNumber = (view: FrontierView): Map<number, FrontierDroppedReference[]> =>
-  new Map(view.dropped.map((ticket) => [ticket.number, ticket.references]));
+  new Map((view.dropped ?? []).map((ticket) => [ticket.number, ticket.references]));
 
 /** The chip's word on a ticket with dropped references. */
 export const droppedWord = (references: readonly FrontierDroppedReference[]): string =>
   references.length === 1 ? "ignored ref" : "ignored refs";
 
 /**
- * The chip's hover text: each dropped reference and why, and what that means —
- * the frontier counts none of them as a blocker, so the ticket may only look
- * unblocked.
+ * The chip's hover text: each dropped reference and why, and what that means.
+ * Said per heading, because a dropped parent is no blocker: it changes which
+ * spec the ticket is grouped under, not whether it looks free.
  */
 export function droppedTip(references: readonly FrontierDroppedReference[]): string {
   const lines = references.map((ref) => `${ref.heading}: ${ref.reference} — ${ref.reason}`);
-  return `${lines.join("\n")}\n\nNot counted as blockers, so this ticket may only look unblocked.`;
+  const notes: string[] = [];
+  if (references.some((ref) => ref.heading === "Blocked by")) {
+    notes.push("A dropped blocker is not counted, so this ticket may only look unblocked.");
+  }
+  if (references.some((ref) => ref.heading === "Parent")) {
+    notes.push("A dropped parent is not counted, so this ticket is not grouped under that spec.");
+  }
+  return [lines.join("\n"), ...notes].join("\n\n");
 }
