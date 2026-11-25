@@ -2,14 +2,25 @@
 /**
  * Did this loop lose the claim race for the ticket its gate named?
  *
- * The gate names a ticket through `next.ts --take-one --dry-run`, which reads
- * but does not claim. The iteration it spawns claims for real a few seconds to
- * a minute later, and in that window another loop can claim the same ticket.
- * The iteration's take-one then comes back empty, the iteration ends
- * `ALL_BLOCKED`, and the supervisor used to count that as the gate and the
- * iteration disagreeing. Two in a row halted the loop for a human. On
+ * The gate used to name a ticket through `next.ts --take-one --dry-run`, which
+ * reads but does not claim. The iteration it spawned claimed for real a few
+ * seconds to a minute later, and in that window another loop could claim the
+ * same ticket. The iteration's take-one then came back empty, the iteration
+ * ended `ALL_BLOCKED`, and the supervisor used to count that as the gate and
+ * the iteration disagreeing. Two in a row halted the loop for a human. On
  * 2026-09-26/27 that halted remo and rulo over #1397 and rafa over #1407: each
  * lost a race it could never have won.
+ *
+ * Since #5 the supervisor's coder gate claims the ticket itself when it
+ * reports it (`frontier-gate.ts --claim`), under a lease written with
+ * RALPH_RUN_ID/RALPH_SUPERVISOR_PID that the run heartbeats — a dead
+ * supervisor's lease expires and the frontier reclaims the ticket — so that
+ * session cannot lose the race and `ralph.sh` does not ask this. Polls stay
+ * read-only. The race now only happens on the gate's unreadable-probe
+ * fallback: when the PR list or the loop's claim list could not be read, the
+ * gate does not claim, reports the ticket from a dry run, and the session
+ * claims as before. That path, and a role whose gate does not claim, still
+ * come here.
  *
  * So before the supervisor counts a disagreement, it asks this: is the named
  * ticket now held by someone else? "Held" is the frontier's own claim fence,

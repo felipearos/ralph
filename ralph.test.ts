@@ -1360,7 +1360,7 @@ describe('the ungated supervisor', () => {
     // that has work waiting.
     const run = runSupervisor(scratchWorktree(), ['1'], { FAKE_SIGIL: '<ralph>COMPLETE</ralph>' });
     expect(run.status).toBe(0);
-    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once']);
+    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once --claim']);
     expect(run.argv.filter((l) => l.startsWith('claude run-id='))).toHaveLength(1);
   });
 
@@ -1415,8 +1415,8 @@ describe('the gated supervisor', () => {
     const run = runSupervisor(scratchWorktree(), ['2'], { RALPH_WAIT_FOR_WORK: '300' });
     expect(run.status).toBe(0);
     expect(gateCalls(run.argv)).toEqual([
-      'ralph/frontier-gate.ts 300',
-      'ralph/frontier-gate.ts 300',
+      'ralph/frontier-gate.ts 300 --claim',
+      'ralph/frontier-gate.ts 300 --claim',
     ]);
   });
 
@@ -1444,7 +1444,7 @@ describe('the gated supervisor', () => {
 
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('stopped by an operator — stopped from the dashboard');
-    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts 300']);
+    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts 300 --claim']);
     expect(run.argv.filter((line) => line.startsWith('claude argv='))).toHaveLength(0);
   });
 
@@ -1529,7 +1529,10 @@ describe('the gated supervisor', () => {
     // #1397 and #1407: the gate named a ticket, another loop claimed it before
     // the iteration's real take-one, the iteration came back ALL_BLOCKED, and
     // two of those halted an idle loop for a human. A lost race says nothing
-    // about the gate being wrong, so it must never reach the halt.
+    // about the gate being wrong, so it must never reach the halt. Since #5
+    // this is only the gate's unreadable-probe fallback: the fake gate's
+    // default line carries no `claim held by this loop`, so the session is
+    // the one that claims, as it did before, and these race tests hold.
     const run = runSupervisor(scratchWorktree(), ['4'], {
       RALPH_WAIT_FOR_WORK: '1',
       FAKE_SIGIL: '<ralph>ALL_BLOCKED</ralph>',
@@ -1605,6 +1608,35 @@ describe('the gated supervisor', () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('disagree persistently');
     expect(run.argv.filter((l) => l.includes('claim-race.ts'))).toHaveLength(0);
+  });
+
+  it('does not ask about a claim race when the gate already held the claim (#5)', () => {
+    // The coder's gate claimed #1 when it reported it, so no other loop can
+    // have taken it in between: an empty iteration is a genuine disagreement,
+    // counted through the streak as any other, with nothing to ask.
+    const run = runSupervisor(scratchWorktree(), ['10'], {
+      RALPH_WAIT_FOR_WORK: '1',
+      FAKE_SIGIL: '<ralph>ALL_BLOCKED</ralph>',
+      FAKE_CLAIM_RACE: '0',
+      FAKE_GATE_OUTPUT: 'frontier-gate: work available — frontier ticket #1 — Do it — claim held by this loop',
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('disagree persistently');
+    expect(run.argv.filter((l) => l.includes('claim-race.ts'))).toHaveLength(0);
+  });
+
+  it("asks the coder's gate to claim, both waiting and ungated (#5)", () => {
+    const waiting = runSupervisor(scratchWorktree(), ['1'], {
+      RALPH_WAIT_FOR_WORK: '1',
+      FAKE_SIGIL: '<ralph>COMPLETE</ralph>',
+    });
+    expect(waiting.status).toBe(0);
+    expect(gateCalls(waiting.argv)).not.toHaveLength(0);
+    expect(gateCalls(waiting.argv).every((l) => l === 'ralph/frontier-gate.ts 1 --claim')).toBe(true);
+
+    const once = runSupervisor(scratchWorktree(), ['1'], { FAKE_SIGIL: '<ralph>COMPLETE</ralph>' });
+    expect(once.status).toBe(0);
+    expect(gateCalls(once.argv)).toEqual(['ralph/frontier-gate.ts --once --claim']);
   });
 
   it('resets the disagreement streak when an iteration does work', () => {
@@ -2187,7 +2219,7 @@ describe('the park sweep before the gate', () => {
     expect(run.status).toBe(0);
     expect(sweeps(run.argv)).toEqual(['ralph/park-probe.ts sweep']);
     const sweep = run.argv.indexOf('ralph/park-probe.ts sweep');
-    const gate = run.argv.indexOf('ralph/frontier-gate.ts --once');
+    const gate = run.argv.indexOf('ralph/frontier-gate.ts --once --claim');
     expect(sweep).toBeGreaterThanOrEqual(0);
     expect(gate).toBeGreaterThan(sweep);
     expect(claudeTurns(run.argv)).toHaveLength(1);
@@ -2214,7 +2246,7 @@ describe('the park sweep before the gate', () => {
     const run = runSupervisor(work, ['2'], env);
     expect(run.status).toBe(0);
     expect(sweeps(run.argv)).toHaveLength(2);
-    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once', 'ralph/frontier-gate.ts --once']);
+    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once --claim', 'ralph/frontier-gate.ts --once --claim']);
     expect(claudeTurns(run.argv)).toHaveLength(2);
     const log = readFileSync(join(work.root, '.ralph', 'logs', run.supervisorLogs[0]!), 'utf8');
     expect(log).toMatch(/the park sweep exited \d+; going on to the gate\./);
@@ -2223,7 +2255,7 @@ describe('the park sweep before the gate', () => {
   it('asks the blocking gate to sweep before its polls too, and only that gate', () => {
     const run = runSupervisor(scratchWorktree(), ['1'], { RALPH_WAIT_FOR_WORK: '1' });
     expect(run.status).toBe(0);
-    const asked = run.argv.indexOf('ralph/frontier-gate.ts 1');
+    const asked = run.argv.indexOf('ralph/frontier-gate.ts 1 --claim');
     expect(asked).toBeGreaterThan(run.argv.indexOf('ralph/park-probe.ts sweep'));
     expect(run.argv.slice(asked)).toContain('gate park-sweep-in-gate=1');
 
@@ -2244,8 +2276,8 @@ describe('the default pre-flight check', () => {
     const run = runSupervisor(scratchWorktree(), ['2']);
     expect(run.status).toBe(0);
     expect(gateCalls(run.argv)).toEqual([
-      'ralph/frontier-gate.ts --once',
-      'ralph/frontier-gate.ts --once',
+      'ralph/frontier-gate.ts --once --claim',
+      'ralph/frontier-gate.ts --once --claim',
     ]);
     expect(run.argv.filter((l) => l.startsWith('claude run-id='))).toHaveLength(2);
   });
@@ -2472,7 +2504,7 @@ describe('the startup preflight', () => {
 
     expect(run.status).toBe(0);
     const asked = run.argv.filter((l) => l.includes('preflight.ts') || l.includes('frontier-gate.ts'));
-    expect(asked).toEqual(['ralph/preflight.ts', 'ralph/frontier-gate.ts --once']);
+    expect(asked).toEqual(['ralph/preflight.ts', 'ralph/frontier-gate.ts --once --claim']);
     // Once for the whole run, not once per iteration: it answers about the
     // worktree, and the worktree does not change under a running supervisor.
     expect(runSupervisor(scratchWorktree(), ['2']).argv.filter((l) => l.includes('preflight.ts'))).toHaveLength(1);
@@ -2513,7 +2545,7 @@ describe('the startup preflight', () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('waiting 1s without claiming work');
     expect(run.argv.filter((l) => l.includes('preflight.ts'))).toHaveLength(2);
-    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once']);
+    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once --claim']);
     expect(run.argv.filter((l) => l.startsWith('claude run-id='))).toHaveLength(1);
   });
 
@@ -2871,7 +2903,7 @@ describe('loop identity', () => {
       RALPH_LOOP_NAME: 'nova',
       FAKE_SIGIL: '<ralph>DONE</ralph>',
     });
-    expect(gateCalls(coder.argv)).toEqual(['ralph/frontier-gate.ts --once']);
+    expect(gateCalls(coder.argv)).toEqual(['ralph/frontier-gate.ts --once --claim']);
 
     // The doctor's asks Buildkite rather than the backlog, so it is a different
     // command — and it names itself differently on the verdict line, which the
@@ -3850,6 +3882,11 @@ describe('loop identity', () => {
     });
     expect(run.status).toBe(0);
     expect(run.argv.filter((l) => l.includes('claim-race.ts 146'))).not.toHaveLength(0);
+    // Only the coder's gate knows `--claim` (#5); a triager's gets the argv it
+    // always got, and its line carries no held claim, so the race is asked.
+    const roleGate = run.argv.filter((l) => l.startsWith('ralph/triage/gate.ts'));
+    expect(roleGate).not.toHaveLength(0);
+    expect(roleGate.some((l) => l.includes('--claim'))).toBe(false);
     expect(run.stdout).toContain('back to the gate; not counted as a disagreement.');
     expect(run.stdout).not.toContain('disagree persistently');
   }, 30_000);
@@ -6818,7 +6855,9 @@ describe('the plan usage stop', () => {
     });
     expect(run.status).toBe(0);
     // Draining it asked `--once`; once the stop cleared, the blocking gate.
-    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once', 'ralph/frontier-gate.ts 300']);
+    // The drain's ask claims nothing (#5): it parks on a new frontier ticket,
+    // and a claim taken then would sit fenced off until the window resets.
+    expect(gateCalls(run.argv)).toEqual(['ralph/frontier-gate.ts --once', 'ralph/frontier-gate.ts 300 --claim']);
     const seen = events(run);
     expect(seen).toContain('usage-drain');
     expect(seen.indexOf('usage-stop')).toBeGreaterThan(seen.indexOf('usage-drain'));
@@ -6838,8 +6877,10 @@ describe('the plan usage stop', () => {
     expect(seen.filter((event) => event === 'usage-drain')).toHaveLength(1);
     expect(seen.filter((event) => event === 'usage-stop')).toHaveLength(1);
     expect(run.stdout.match(/draining: only work/g)).toHaveLength(1);
-    // Still asked each time: held work may have turned up since.
-    expect(gateCalls(run.argv).filter((line) => line.endsWith('--once')).length).toBeGreaterThanOrEqual(4);
+    // Still asked each time: held work may have turned up since. The drain's
+    // asks claim nothing (#5); the one after the window resets does.
+    expect(gateCalls(run.argv).filter((line) => line.endsWith('--once')).length).toBeGreaterThanOrEqual(3);
+    expect(gateCalls(run.argv).filter((line) => line.includes('--once')).length).toBeGreaterThanOrEqual(4);
     expect(turns(run)).toHaveLength(1);
   });
 

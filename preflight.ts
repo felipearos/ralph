@@ -29,8 +29,10 @@
  *    labels a loop needs. Nothing else writes — not to GitHub, not to the
  *    frontier, not to the worktree. A
  *    preflight that claimed a ticket would hand it to a process that has not
- *    started yet, and lose it outright if startup then failed — the same
- *    reason `frontier-gate.ts` probes with `--dry-run`. The other probes are
+ *    started yet, and lose it outright if startup then failed. The coder's
+ *    gate may claim (`--claim`, #5) because it runs under the supervisor's
+ *    lease, written with RALPH_RUN_ID/RALPH_SUPERVISOR_PID and heartbeated;
+ *    the preflight runs before any such lease exists. The other probes are
  *    an executable-bit check on `PATH`, `auth status`, `label list`,
  *    `rev-parse`, and a secret-NAME listing; every one is a read.
  *
