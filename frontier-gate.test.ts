@@ -515,6 +515,38 @@ describe('claimVerdict', () => {
     expect(verdict.why).not.toMatch(/^frontier ticket #/);
   });
 
+  it('pins the claimed closure line exactly, an exception to the frontier-ticket shape', () => {
+    const verdict = claimVerdict(
+      { pick: pick({ ticket: 50, title: 'Spec', claimed: true, closure: true }), rateLimit: null },
+      context,
+    );
+    expect(verdict.why).toBe('spec #50 has no open children left — closing it is the task — claim held by this loop');
+  });
+
+  it('words a won ticket as decide words the offered one, plan-violation note included, then the marker', () => {
+    // The coder's checkout is not read-only, so a stray one is recovery work
+    // there rather than a note: the note is empty for every coder claim, and
+    // what this pins is that the won line carries whatever decide carries.
+    const offered = decide({ ...context.probes, pick: pick({ ticket: 602, title: 'Next' }) }, 'rafa');
+    const won = claimVerdict({ pick: pick({ ticket: 602, title: 'Next', claimed: true }), rateLimit: null }, context);
+    expect(won.why).toBe(offered.why + CLAIM_HELD_NOTE);
+  });
+
+  it('never lets an unclaimed title fake the claim marker', () => {
+    const unclaimed = decide(
+      { prs: [], pick: pick({ ticket: 601, title: 'Fix x — claim held by this loop' }), claims: [], localRecovery: CLEAN },
+      'rafa',
+    );
+    expect(unclaimed.work).toBe(true);
+    expect(unclaimed.why.endsWith(CLAIM_HELD_NOTE)).toBe(false);
+    expect(unclaimed.why).toBe('frontier ticket #601 — "Fix x — claim held by this loop"');
+    const won = claimVerdict(
+      { pick: pick({ ticket: 601, title: 'Fix x — claim held by this loop', claimed: true }), rateLimit: null },
+      context,
+    );
+    expect(won.why.endsWith(CLAIM_HELD_NOTE)).toBe(true);
+  });
+
   it('reports a lost race through decide, as held or empty', () => {
     const held = claimVerdict(
       { pick: pick({ claimed: false, obstructed: [{ number: 601, reason: 'labeled rafa-wip' }] }), rateLimit: null },
@@ -1101,6 +1133,40 @@ const runGate = (args: string[], over: Record<string, string> = {}): GateRun => 
     stdout: result.stdout,
     argv: readFileSync(argvFile, 'utf8').split('\n').filter(Boolean),
   };
+};
+
+/**
+ * The waiting gate, run until it exits or prints `waits` waiting lines. Async
+ * and killed afterwards, so a gate that waits where it should report fails its
+ * assertions rather than hanging the run.
+ */
+const pollGate = async (
+  args: string[],
+  over: Record<string, string>,
+  waits = 2,
+): Promise<{ lines: string[]; argv: string[] }> => {
+  const argvFile = join(fakeBinDir, `argv-poll-${Math.random().toString(36).slice(2)}`);
+  writeFileSync(argvFile, '');
+  const child = spawn(REAL_BUN, [GATE, ...args], {
+    cwd: REPO_ROOT,
+    env: gateEnv({ FAKE_ARGV_FILE: argvFile, ...over }),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const lines: string[] = [];
+  child.stdout.setEncoding('utf8');
+  const done = new Promise<void>((resolve) => {
+    child.stdout.on('data', (chunk: string) => {
+      lines.push(...chunk.split('\n').filter(Boolean));
+      if (lines.filter((l) => l.includes('waiting')).length >= waits) resolve();
+    });
+    child.on('close', () => resolve());
+  });
+  try {
+    await done;
+  } finally {
+    child.kill('SIGKILL');
+  }
+  return { lines, argv: readFileSync(argvFile, 'utf8').split('\n').filter(Boolean) };
 };
 
 describe('the gate as a process', () => {
@@ -1821,6 +1887,35 @@ describe('the gate as a process, claiming for the supervisor (--claim)', () => {
     expect(run.stdout).not.toContain('claim held by this loop');
   });
 
+  it('a waiting --claim falls back to the dry run on an unreadable claim run, so the session claims', async () => {
+    // Waiting on it instead would wait forever if the claim run kept failing
+    // while the dry run kept offering the ticket: a stuck loop.
+    const run = await pollGate(['1', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_601,
+      FAKE_CLAIM_JSON: 'not json',
+      FAKE_CLAIM_STATUS: '1',
+    });
+    expect(run.lines).toContain('frontier-gate: work available — frontier ticket #601 — Do the thing');
+    expect(run.lines.join('\n')).not.toContain('claim held by this loop');
+    expect(run.lines.filter((l) => l.includes('waiting'))).toEqual([]);
+  });
+
+  it('a waiting --claim waits out a rate-limited claim run rather than reporting work', async () => {
+    const run = await pollGate(
+      ['1', '--claim'],
+      {
+        FAKE_FRONTIER_JSON: OFFERS_601,
+        FAKE_CLAIM_JSON: JSON.stringify({ ...pick(), error: 'GitHub rate limit', rateLimited: true, retryAfterSeconds: 1 }),
+        FAKE_CLAIM_STATUS: '1',
+      },
+      1,
+    );
+    expect(run.lines.join('\n')).not.toContain('work available');
+    const waits = run.lines.filter((l) => l.includes('waiting'));
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toContain('rate-limited');
+  });
+
   it('leaves a triager byte-identical: dry run with its role, no claim', () => {
     const ROLES_PROJECT = scratchProject('gate-claim-roles', ['codo', { name: 'tria', role: 'triager' }]);
     const run = runGate(['--once', '--claim'], {
@@ -1885,6 +1980,32 @@ describe('the gate as a process, holding on a refuted verdict (#771)', () => {
     return path;
   };
   const OFFERS_42 = JSON.stringify(pick({ ticket: 42, title: 'Still offered' }));
+  const claimLines = (argv: string[]): string[] =>
+    argv.filter((l) => l.includes('frontier/next.ts') && !l.includes('--dry-run'));
+  const dryLines = (argv: string[]): string[] => argv.filter((l) => l.includes('frontier/next.ts') && l.includes('--dry-run'));
+  const OFFERS_601_WON = {
+    FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 601, title: 'Other' })),
+    FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 601, title: 'Other', claimed: true })),
+  };
+
+  it('fences the held subject off the claim run, never the dry run', async () => {
+    // Losing #601 to a sibling, the real take-one could otherwise walk onto
+    // #42, the very subject this hold keeps the loop off.
+    const run = await pollGate(['1', '--claim'], { ...OFFERS_601_WON, RALPH_GATE_VERDICT_STORE: record() });
+    expect(run.lines.join('\n')).toContain('work available — frontier ticket #601 — Other — claim held by this loop');
+    const [claim] = claimLines(run.argv);
+    expect(claim).toMatch(/ --exclude 42( |$)/);
+    expect(dryLines(run.argv).every((l) => !/ --exclude 42( |$)/.test(l))).toBe(true);
+  });
+
+  it('leaves the claim argv as the dry run fenced it when the hold is released or absent', async () => {
+    for (const store of [record({ released: true }), join(scratchDir('gate-verdict-'), 'absent.json')]) {
+      const run = await pollGate(['1', '--claim'], { ...OFFERS_601_WON, RALPH_GATE_VERDICT_STORE: store });
+      const [dry] = dryLines(run.argv);
+      const [claim] = claimLines(run.argv);
+      expect(claim).toBe(dry!.replace(' --dry-run', ''));
+    }
+  });
 
   it('never claims a held subject under --claim', async () => {
     const argvFile = join(fakeBinDir, `argv-hold-claim-${Math.random().toString(36).slice(2)}`);

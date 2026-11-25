@@ -3204,8 +3204,13 @@ while [ "$i" -lt "$MAX" ]; do
   GATE_TICKET="$(printf '%s\n' "$INTAKE_CASE" | sed -nE 's/^frontier ticket #([0-9]+).*/\1/p')"
   # And whether the gate claimed it already (#5), in which case no race can
   # explain an empty iteration. Absent on the gate's unreadable-probe fallback.
+  # Set on the marker alone, whether or not GATE_TICKET was parsed: a claimed
+  # closure parent is held too, but its line reads `spec #N has no open
+  # children left …`, not `frontier ticket #N`, because the #771 hold record
+  # keys that wording as a closable spec. With no GATE_TICKET,
+  # lost_claim_race returns before it reads this flag.
   GATE_CLAIMED=""
-  case "$INTAKE_CASE" in *" — claim held by this loop") [ -n "$GATE_TICKET" ] && GATE_CLAIMED=1 ;; esac
+  case "$INTAKE_CASE" in *" — claim held by this loop") GATE_CLAIMED=1 ;; esac
   # The case itself reaches the session, so a role whose work is not a ticket
   # number — a doctor's red build — has something to start from. A coder's
   # prompt reads the backlog and ignores it.

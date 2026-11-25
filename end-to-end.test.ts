@@ -3472,10 +3472,12 @@ describe("a real ralph.sh iteration inside a trial sandbox", () => {
         expect(existsSync(record)).toBe(false);
         expect(said()).toContain("frontier ticket #8");
         // Every other frontier read was the gate's read-only probe; the only
-        // claims were the two reports', #7 then #8 (#5).
+        // claims were the two reports', #7 then #8 (#5). The hold on #7 was
+        // still on disk when #8 was claimed, so that claim fenced #7 off: the
+        // real take-one could otherwise lose #8 to a sibling and walk onto it.
         const calls = frontierLines();
         expect(calls.length).toBeGreaterThanOrEqual(4);
-        expect(calls.filter((line) => !line.startsWith("--take-one --dry-run"))).toEqual(["--take-one => #7", "--take-one => #8"]);
+        expect(calls.filter((line) => !line.startsWith("--take-one --dry-run"))).toEqual(["--take-one => #7", "--take-one --exclude 7 => #8"]);
         runId = /run (\S+-run-\S+) —/.exec(said())?.[1] ?? null;
       } finally {
         if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {

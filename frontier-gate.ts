@@ -484,7 +484,13 @@ export function decide(probes: Probes, loop: LoopName = "ralph", role: Role = DE
         why: `spec #${pick.ticket} has no open children left — closing it is the task${notes}`,
       };
     }
-    const named = `frontier ticket #${pick.ticket} — ${pick.title ?? ""}`.trimEnd();
+    const title = pick.title ?? "";
+    let named = `frontier ticket #${pick.ticket} — ${title}`.trimEnd();
+    // `ralph.sh` reads a work line ending in `CLAIM_HELD_NOTE` as already
+    // claimed and skips its race check. This pick is NOT claimed, so a title
+    // that happens to end in those words is quoted to break the suffix; every
+    // other title is left exactly as it was.
+    if ((named + notes).endsWith(CLAIM_HELD_NOTE)) named = `frontier ticket #${pick.ticket} — "${title}"`;
     return { work: true, why: named + notes };
   }
 
@@ -707,7 +713,7 @@ export function frontierOutcome(
  * claim a ticket the probe never offered, or one the iteration's own
  * `--exclude` refuses.
  */
-function frontierArgs(fences: PlanFences, role: Role, dryRun: boolean): string[] {
+function frontierArgs(fences: PlanFences, role: Role, dryRun: boolean, exclude: readonly number[] = []): string[] {
   const args = [join(RALPH_HOME, "frontier", "next.ts"), "--take-one"];
   if (dryRun) args.push("--dry-run");
   // The one fence §1 passes by hand — a durable local list. The rescue limit
@@ -720,6 +726,9 @@ function frontierArgs(fences: PlanFences, role: Role, dryRun: boolean): string[]
   // iteration refuses, spending an Opus turn per cycle learning that — the
   // exact waste it exists to prevent.
   for (const number of fences.outOfScope) args.push("--exclude", String(number));
+  // The claim's own extra fence (`ClaimContext.exclude`): empty for every dry
+  // run and for a claim with no active hold, so those argv stay as they were.
+  for (const number of exclude) args.push("--exclude", String(number));
   // The closure list is a fence for a TRIAGER and a task for a coder, so it is
   // passed for one and not the other. Closing a drained spec is `prompt.md`
   // §1's maintenance job, reached only when the coder's frontier is empty;
@@ -756,7 +765,9 @@ async function probeFrontier(
  * the supervisor can tell a ticket this gate already holds from one the
  * session still has to claim. `ralph.sh` matches this exact text as the
  * suffix of the work line (`GATE_CLAIMED`): change both together. Appended after the title, so the verdict still
- * matches `^frontier ticket #([0-9]+)`, which `ralph.sh` parses.
+ * matches `^frontier ticket #([0-9]+)`, which `ralph.sh` parses — except on a
+ * claimed closure parent, worded `spec #N has no open children left …` on
+ * purpose (see `claimVerdict`), which `ralph.sh` marks claimed all the same.
  */
 export const CLAIM_HELD_NOTE = " — claim held by this loop";
 
@@ -771,6 +782,12 @@ export interface ClaimContext {
   loop: LoopName;
   /** The ticket the dry run offered, named in a lost race. */
   offered: number;
+  /**
+   * Tickets the claim run alone also excludes: the subject of an active #771
+   * hold, which the claim could otherwise walk onto after losing `offered` to
+   * a sibling. Never passed to the dry run, whose pick the hold is judged on.
+   */
+  exclude?: number[];
 }
 
 /**
@@ -794,11 +811,22 @@ export function claimVerdict(
     // offered ticket went to a sibling. It is held all the same, but it is
     // maintenance, not a frontier ticket: worded as `decide` words one, so
     // `ralph.sh` does not read it as a ticket the session must work.
+    // The deliberate exception to the `^frontier ticket #` shape
+    // `CLAIM_HELD_NOTE` describes: `gate-verdict-store.ts`'s `verdictSubject`
+    // reads this wording as a `closable-spec` subject, which the #771 hold
+    // record keys on, and §1 treats it as maintenance. It still ends with the
+    // marker, and `ralph.sh` sets `GATE_CLAIMED` on the marker alone for it.
+    // The plan-violation note rides along as `decide` carries it, ahead of the
+    // marker so the line still ends with it.
+    const violation = violationNote(context.probes.localRecovery, DEFAULT_ROLE);
     if (pick.closure === true) {
-      return { work: true, why: `spec #${pick.ticket} has no open children left — closing it is the task${CLAIM_HELD_NOTE}` };
+      return {
+        work: true,
+        why: `spec #${pick.ticket} has no open children left — closing it is the task${violation}${CLAIM_HELD_NOTE}`,
+      };
     }
     const named = `frontier ticket #${pick.ticket} — ${pick.title ?? ""}`.trimEnd();
-    return { work: true, why: named + CLAIM_HELD_NOTE };
+    return { work: true, why: named + violation + CLAIM_HELD_NOTE };
   }
   const race = `claim race lost for #${context.offered}`;
   if (pick === null) {
@@ -820,7 +848,7 @@ export function claimVerdict(
  * failed run is `claimVerdict`'s undetermined wait.
  */
 async function claimFrontier(context: ClaimContext): Promise<Verdict> {
-  const { ok, stdout } = await run("bun", frontierArgs(context.fences, DEFAULT_ROLE, false));
+  const { ok, stdout } = await run("bun", frontierArgs(context.fences, DEFAULT_ROLE, false, context.exclude ?? []));
   return claimVerdict(frontierOutcome(ok, stdout), context);
 }
 
@@ -1522,11 +1550,28 @@ export async function runFrontierGate(argv: string[], hooks: FrontierGateHooks =
     let decision = holdDecision(probed, held, now, holdBudget);
     let polled = probed;
     if (decision === "report" && claiming && claim !== null) {
-      polled = await claimFrontier(claim);
-      // A lost or unreadable claim is a no-work poll: wait the usual interval
-      // (or the throttle backoff) and ask again. Never a release, though — it
-      // says nothing about whether a held subject went away.
-      if (!polled.work) decision = "wait";
+      // The claim also fences off the subject an active hold keeps this loop
+      // off: the dry run's ticket is not the held one ("report" says so), but
+      // the real take-one may lose it to a sibling and walk onto the next,
+      // which can be. Only the claim run is fenced; the dry run must still see
+      // the held subject, or the hold would read as released.
+      const fenced = held !== null && !held.released ? { ...claim, exclude: [held.ticket] } : claim;
+      polled = await claimFrontier(fenced);
+      if (!polled.work) {
+        // A claim run that could not answer (non-zero exit, unreadable output,
+        // the claim lock busy) is not a lost race. Waiting on it would wait
+        // forever if it kept failing while the dry run kept offering work — a
+        // stuck loop. Report the dry run's verdict instead, unmarked, so the
+        // session claims as it did before #5 and `ralph.sh`'s
+        // `lost_claim_race` covers it, as `--once` does. A throttled claim
+        // run and a definite lost race are no-work polls: wait the usual
+        // interval (or the throttle backoff) and ask again. Never a release,
+        // though — neither says whether a held subject went away.
+        const undetermined = "undetermined" in polled && polled.undetermined;
+        const throttled = "rateLimited" in polled && polled.rateLimited === true;
+        if (undetermined && !throttled) polled = probed;
+        else decision = "wait";
+      }
     }
     if (decision === "report") {
       console.log(`frontier-gate: work available — ${polled.why}`);
