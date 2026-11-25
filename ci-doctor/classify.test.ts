@@ -346,4 +346,49 @@ describe("a continuous red run is not same tree, both colours (#57)", () => {
     expect(store.cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { since: 10, builds: 3 } });
     expect(store.cases[`infra:red-run:${STEP}`]?.state).toBe("confirmed");
   });
+
+  it("still refuses the pre-outage green once the run has ended, and raises no incident", () => {
+    // Recovery is a build of a different tree that passed the step.
+    const recovered = build(14, { branch: QUEUE, state: "passed", steps: { [STEP]: "passed" }, tree: "t14" });
+    const store = scenario([green(10), failed(11, "T"), failed(12), failed(13), recovered]);
+    const { cases } = classify(store, NOW);
+    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 10, builds: 3 } });
+    expect(cases[`flake:${TEST}`]!.rule).not.toContain("same tree, both colours");
+    expect(Object.keys(cases).filter((key) => key.startsWith("infra:red-run:"))).toEqual([]);
+  });
+
+  it("keeps a run longer than the window while the case carries it and every build is still red", () => {
+    const store = scenario([failed(20), failed(21), failed(22)]);
+    expect(classify(store, NOW).cases[`infra:red-run:${STEP}`]).toBeUndefined();
+
+    store.cases[`flake:${TEST}`] = kase({ state: "retired", redRun: { step: STEP, since: 5, builds: 9 } });
+    const { cases } = classify(store, NOW);
+    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 5 } });
+    expect(cases[`infra:red-run:${STEP}`]).toMatchObject({ kind: "infra", state: "confirmed", redRun: { step: STEP, since: 5 } });
+  });
+
+  it("gives a dead step one evidence row per build, however many tests fail on it", () => {
+    const store = scenario([green(10), failed(11, "T"), failed(12), failed(13)]);
+    const OTHER = "db/seed.test.ts > seeds";
+    store.failures = [...store.failures, ...store.failures.map((row) => ({ ...row, testId: OTHER, file: "db/seed.test.ts" }))];
+    const { cases } = classify(store, NOW);
+    expect(cases[`flake:${OTHER}`]).toMatchObject({ state: "retired" });
+    expect(cases[`infra:red-run:${STEP}`]!.evidence.map((seen) => seen.build)).toEqual([11, 12, 13]);
+  });
+
+  it("sweeps a rejected red-run case once the step has gone green since the boundary, and keeps it until then", () => {
+    const KEY_RUN = `infra:red-run:${STEP}`;
+    const value = signed({ kind: "infra", evidence: [outage(100), outage(101), outage(102)] });
+    const next: Classification = { cases: {}, main: { state: "green", since: "2026-11-20T00:00:00.000Z", build: 103 } };
+
+    const red = storeWith(value, KEY_RUN);
+    red.builds = [build(100), build(101), build(102)];
+    mergeCases(red, structuredClone(next));
+    expect(red.cases[KEY_RUN]).toMatchObject({ state: "retired", rejectedAt: { build: 100 } });
+
+    const recovered = storeWith(value, KEY_RUN);
+    recovered.builds = [build(100), build(101), build(102), build(103, { state: "passed", steps: { [STEP]: "passed" } })];
+    mergeCases(recovered, structuredClone(next));
+    expect(recovered.cases[KEY_RUN]).toBeUndefined();
+  });
 });

@@ -1153,6 +1153,13 @@ describe("the ci-doctor's prompt", () => {
     expect(out).not.toContain('COMPLETE');
   });
 
+  it('says a rejection comes back only on a different signature or once the step has gone green (#57)', () => {
+    const out = doctor();
+    for (const line of ['DIFFERENT signature', 'gone green since']) {
+      expect(out, `rendered ci-doctor prompt lost: ${line}`).toContain(line);
+    }
+  });
+
   it('restates the four guardrails in so many words', () => {
     const out = doctor();
     for (const line of [
