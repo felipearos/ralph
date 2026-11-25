@@ -212,6 +212,28 @@ describe('rendering for a Linear project', () => {
   });
 });
 
+describe("a claim the supervisor's gate took before the session (#5)", () => {
+  const github = coderProject();
+
+  it('announces a recovered claim once: only when this loop has not commented on it yet', () => {
+    const out = render('prompt.md', github).stdout;
+    const claim = out.slice(out.indexOf('## 2. Claim'), out.indexOf('## 3. Implement'));
+    // The old rule skipped the claim comment for every recovered claim, which
+    // with a claiming gate would leave the normal iteration silent.
+    expect(claim).not.toContain('Do not repeat the claim comment');
+    expect(claim).toMatch(/if none of\s+them is this loop's claim comment/);
+    expect(claim).toMatch(/if one is there, post nothing/);
+    expect(claim).toMatch(/never comments twice/);
+    expect(claim).toContain('bun "$RALPH_HOME/tracker.ts" view <n>');
+  });
+
+  it("tells a resumed claim with no branch that the gate's claim is the usual case", () => {
+    const out = render('prompt.md', github).stdout;
+    expect(out).toMatch(/supervisor's gate claimed the ticket for this session/);
+    expect(out).toContain('claim held by this loop');
+  });
+});
+
 describe('a project where a person merges (merge: human)', () => {
   function humanMerge(merge?: string): string {
     const root = coderProject({ kind: 'jira', site: 'example.atlassian.net', project: 'OAI', scopeLabel: 'acme-pwa' });

@@ -2228,7 +2228,16 @@ owner, which is the operator's bulk claim. Inside a loop session (`RALPH_RUN_ID`
 set, which `ralph.sh` exports) a run that is neither `--take-one` nor
 `--dry-run` is read-only instead, as `--dry-run`, and says so on stderr: an
 agent that ran it only to look once left every loop of a project waiting on
-tickets the owner never took (#786). Loops claim through `--take-one`. The
+tickets the owner never took (#786). Loops claim through `--take-one`, and for
+a coder the supervisor's gate is what runs it (#5): `ralph.sh` calls
+`frontier-gate.ts --claim`, whose polls stay `--dry-run` and which claims a
+frontier ticket with a real `--take-one`, under the run's lease, only at the
+moment it reports it. Its line then ends `claim held by this loop`, and the
+session resumes that claim instead of claiming. A lost race is a no-work poll,
+so no session is spent on it. A hand-run `frontier-gate.ts --once` passes no
+`--claim` and claims nothing; neither does a usage drain. When the gate could
+not read the open PRs or the loop's claim list it does not claim either, and
+the session claims as before. The
 fence covers the iteration's own session; a delegated executor or an
 `inspect.sh` stage runs with a cleared environment that carries no
 `RALPH_RUN_ID`, and is kept off the tracker by its rails instead.
