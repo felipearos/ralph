@@ -2382,6 +2382,60 @@ a `run` drawn from one older than an hour reads `unknown (stale reading)`,
 since an idle loop's last number is not today's. A park or drain on an old
 reading stands: usage only rises until the window resets. See `usage-stop.ts`.
 
+A host may have **more than one Claude account** logged in, each in its own
+config directory. The dashboard does all of this: **Settings → Claude
+accounts** lists the accounts it finds in `~/.claude` and `~/.claude-*` (with
+the address each is logged in as) to register with one click, adds a new one,
+shows which are out of usage until when, and has two dropdowns per row — the
+project and each agent — for the account it runs on and what happens when that
+account is out of usage. Those choices are this host's override
+(`<git-common-dir>/ralph-claude-accounts.json`), read before the committed
+config and picked up at each agent's next iteration: no commit, no restart.
+Logging an account in is the one step left to a terminal
+(`CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`); the page shows the command.
+
+By hand, register them once, by a name of your choosing, in
+`~/.config/ralph/claude-accounts.json` (host-only, never committed), and log
+each one in:
+
+```bash
+bun ~/ralph/claude-account.ts add --name personal --dir ~/.claude
+bun ~/ralph/claude-account.ts add --name work     --dir ~/.claude-work
+CLAUDE_CONFIG_DIR=~/.claude-work claude          # then /login, once per account
+bun ~/ralph/claude-account.ts list               # logged in? at its limit until when?
+```
+
+A project then says which accounts its loops run on, and what a loop does
+when the one it runs on spends its usage limit, in `.ralph/config.json`:
+
+```json
+"claudeAccounts": { "use": ["work", "personal"], "onLimit": "next" }
+```
+
+| `onLimit` | When the account hits its limit |
+| --- | --- |
+| `wait` (default) | wait for that account's reset, as above; only the first account in `use` runs |
+| `next` | move to the next account in `use` that is not at its limit, at once; wait for the earliest reset only when every one is; go back to the first as soon as it resets |
+| `stop` | stop the loop as blocked (`usage-limit-stop`), claim kept, for you to restart |
+
+A `loops` entry may carry its own
+(`{ "name": "tria", "role": "triager", "claudeAccounts": { "use": ["personal"] } }`),
+or `"claudeAccounts": null` to run on the environment's account. The choice is
+made between iterations, never inside one, and applies to everything the
+iteration runs (orchestrator, executors, inspector) through `CLAUDE_CONFIG_DIR`.
+The loop that hits a limit marks the account (`<configDir>/.ralph-limit.json`),
+so every other loop on that account, in any project on the host, moves or waits
+at its next checkpoint instead of spending a turn to find out; an account
+router's `.router-full-until` counts the same. `claude-account.ts clear
+--account <name>` forgets a mark, and `show --loop <name>` prints a loop's rule
+and choice. `assign --target <loop|*> --use a,b --on-limit next` (or `--env`)
+and `unassign --target <loop|*>`, run from the project's checkout, write and
+drop the host override the dashboard writes. Without the key, an account name the host does not register, or
+any read that fails, the loop runs on the account its environment gives it,
+exactly as before. The plan usage stop above reads the loop's newest
+`rate_limit_event`, which after a switch is the new account's. See
+`claude-account.ts`.
+
 The one block time will not clear by itself is a project host fence that
 refuses a heavy local command while CI is busy, when a hard acceptance
 criterion needs that command's output and no CI job produces it (loggd #1604:

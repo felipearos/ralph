@@ -51,6 +51,9 @@ of the live loops, so it must also pass on a loaded machine.
   and environment sources, its in-memory fake and shared contract suite,
   `read.ts`, the CLI `ralph.sh` calls, and `dotenv-run.sh`, the wrapper a
   dotenv project's children run under.
+- `claude-account.ts` — which registered Claude account (`CLAUDE_CONFIG_DIR`)
+  a loop runs on, per project or loop (`claudeAccounts`), and whether a spent
+  limit waits, moves to the next account or stops the loop.
 - `gate-verdict-store.ts` — the per-loop record of the verdict a holding
   gate (coder, triager) waits on after an iteration refuted it (#771).
 - `ci-log.ts` — reads a red check's log: routes to `bk-log.ts` (Buildkite) or

@@ -94,6 +94,8 @@ import { outputResponse, type Emit, type Follower } from "./iteration-output";
 import { JavError, type JavAdapter } from "./jav-adapter";
 import { handleJavRoute } from "./jav-routes";
 import type { ProjectSleepAdapter } from "./project-sleep-adapter";
+import type { ClaudeAccountsAdapter } from "./claude-accounts-adapter";
+import { handleClaudeAccountsRoute } from "./claude-accounts-routes";
 import { handleProjectSleepRoute } from "./project-sleep-routes";
 import type { LearningsFileAdapter } from "./learnings-file-adapter";
 import { handleLearningsFileRoute } from "./learnings-file-routes";
@@ -171,6 +173,11 @@ export interface ProjectScope {
    * reads at its iteration boundary. Absent, the path is 404.
    */
   sleep?: ProjectSleepAdapter;
+  /**
+   * The host's Claude accounts and which one each loop of the project runs
+   * on, at `/api/claude-accounts`. Absent, the path is 404.
+   */
+  claudeAccounts?: ClaudeAccountsAdapter;
   /** Filing one learning as a ticket at `/api/learnings/file`. Absent, the path is 404. */
   learningsFile?: LearningsFileAdapter;
   /** The Evals tab's runs at `/api/evals*` (#801). Absent, those paths are 404. */
@@ -383,6 +390,8 @@ type ProjectHandlerOptions = Omit<HandlerOptions, "projects" | "adapter" | "usag
   intake?: IntakeAdapter;
   /** The project's sleep, read and set through the harness's CLI. */
   sleep?: ProjectSleepAdapter;
+  /** The host's Claude accounts, read and set through the harness's CLI. */
+  claudeAccounts?: ClaudeAccountsAdapter;
   /** Filing one learning as a ticket through the harness's CLI. */
   learningsFile?: LearningsFileAdapter;
   /** The project's eval runs, through the harness's `experiments.ts`. */
@@ -420,6 +429,7 @@ function createProjectHandler({
   jav,
   intake,
   sleep,
+  claudeAccounts,
   learningsFile,
   evals,
   usage,
@@ -507,6 +517,10 @@ function createProjectHandler({
       }
       if (sleep !== undefined) {
         const routed = await handleProjectSleepRoute(request, pathname, sleep);
+        if (routed !== null) return routed;
+      }
+      if (claudeAccounts !== undefined) {
+        const routed = await handleClaudeAccountsRoute(request, pathname, claudeAccounts);
         if (routed !== null) return routed;
       }
       if (learningsFile !== undefined) {
@@ -854,6 +868,7 @@ export function createHandler({
         ...(scope.jav === undefined ? {} : { jav: scope.jav }),
         ...(scope.intake === undefined ? {} : { intake: scope.intake }),
         ...(scope.sleep === undefined ? {} : { sleep: scope.sleep }),
+        ...(scope.claudeAccounts === undefined ? {} : { claudeAccounts: scope.claudeAccounts }),
         ...(scope.learningsFile === undefined ? {} : { learningsFile: scope.learningsFile }),
         ...(scope.evals === undefined ? {} : { evals: scope.evals }),
         ...(agents === undefined ? {} : { agents: () => agents(scope.project) }),

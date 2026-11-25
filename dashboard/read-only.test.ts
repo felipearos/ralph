@@ -51,6 +51,7 @@ import { REDACT_COMMAND } from "./iteration-output";
 import { INTAKE_SURFACE } from "./intake-adapter";
 import { JAV_SURFACE } from "./jav-adapter";
 import { PROJECT_SLEEP_FLAGS, PROJECT_SLEEP_SURFACE } from "./project-sleep-adapter";
+import { CLAUDE_ACCOUNTS_SURFACE } from "./claude-accounts-adapter";
 import { LEARNINGS_FILE_FLAGS, LEARNINGS_FILE_SURFACE } from "./learnings-file-adapter";
 import { ONBOARDING_SURFACE } from "./onboarding-adapter";
 import { RECORDS_SURFACE } from "./records-adapter";
@@ -147,6 +148,8 @@ const ALLOWED: Record<string, string[]> = {
     "./onboarding-routes",
     "./project-sleep-adapter",
     "./project-sleep-routes",
+    "./claude-accounts-adapter",
+    "./claude-accounts-routes",
     "./projects",
     "./records-routes",
     "./reconcile",
@@ -187,6 +190,7 @@ const ALLOWED: Record<string, string[]> = {
     "./onboarding",
     "./onboarding-adapter",
     "./project-sleep-adapter",
+    "./claude-accounts-adapter",
     "./projects",
     "./records-adapter",
     "./reconcile",
@@ -262,6 +266,10 @@ const ALLOWED: Record<string, string[]> = {
   // and its route validates a body and calls one of them.
   "project-sleep-adapter.ts": ["node:path", "./adapter", "./contracts", "./executor"],
   "project-sleep-routes.ts": ["./command-requests", "./contracts", "./project-sleep-adapter"],
+  // The host's Claude accounts: reaches `claude-account.ts` by CLI only, one
+  // read and five writes, and its route validates a body and calls one.
+  "claude-accounts-adapter.ts": ["node:path", "./adapter", "./contracts", "./executor"],
+  "claude-accounts-routes.ts": ["./claude-accounts-adapter", "./command-requests", "./contracts"],
   // Filing one learning as a ticket: reaches `findings.ts file` by CLI only,
   // which publishes through the journal lock; its route validates a slug.
   "learnings-file-adapter.ts": ["node:path", "./adapter", "./contracts", "./executor"],
@@ -423,6 +431,7 @@ describe("the remote bridge's surface", () => {
       "/api/lineup/updates/answer",
       "/api/jav/save",
       "/api/sleep",
+      "/api/claude-accounts",
       "/api/github/repos",
     ];
     for (const path of pinned) {
@@ -572,6 +581,7 @@ describe("the declared read surfaces are a closed list", () => {
     ...Object.entries(USAGEBAR_SURFACE).map(([key, value]) => [`usagebar.${key}`, value] as const),
     ...Object.entries(PROJECT_SLEEP_SURFACE).map(([key, value]) => [`sleep.${key}`, value] as const),
     ...Object.entries(LEARNINGS_FILE_SURFACE).map(([key, value]) => [`findings.${key}`, value] as const),
+    ...Object.entries(CLAUDE_ACCOUNTS_SURFACE).map(([key, value]) => [`accounts.${key}`, value] as const),
   ]);
   const argvOf = ({ script, command, args }: Argv): Argv =>
     script === undefined ? { command, args: [...args] } : { script, args: [...args] };
@@ -580,10 +590,19 @@ describe("the declared read surfaces are a closed list", () => {
   // and wake are the other two: each sets or clears the one sleep marker
   // through `project-sleep.ts`, and touches nothing else. Filing a learning is
   // the last: one named entry through `findings.ts file`, which publishes it.
-  const WRITES = ["jav.save", "sleep.sleep", "sleep.wake", "findings.file"];
+  // The Claude accounts' five writes edit the host's account registry, an
+  // account's limit mark or the project's override, each through one verb of
+  // `claude-account.ts`.
+  const WRITES = ["jav.save", "sleep.sleep", "sleep.wake", "findings.file", "accounts.add", "accounts.remove", "accounts.clear", "accounts.assign", "accounts.unassign"];
 
   it("names exactly these surfaces", () => {
     expect(Object.keys(declared).sort()).toEqual([
+      "accounts.add",
+      "accounts.assign",
+      "accounts.clear",
+      "accounts.remove",
+      "accounts.unassign",
+      "accounts.view",
       "findings.file",
       "intake.metrics",
       "intake.tickets",
@@ -656,6 +675,12 @@ describe("the declared read surfaces are a closed list", () => {
       "sleep.wake": { script: "project-sleep.ts", args: ["wake", "--json"] },
       // One entry by slug; the adapter adds only `<slug> --scope <scope>`.
       "findings.file": { script: "findings.ts", args: ["file"] },
+      "accounts.view": { script: "claude-account.ts", args: ["view", "--json"] },
+      "accounts.add": { script: "claude-account.ts", args: ["add"] },
+      "accounts.remove": { script: "claude-account.ts", args: ["remove"] },
+      "accounts.clear": { script: "claude-account.ts", args: ["clear"] },
+      "accounts.assign": { script: "claude-account.ts", args: ["assign"] },
+      "accounts.unassign": { script: "claude-account.ts", args: ["unassign"] },
     });
     expect(PROJECT_SLEEP_FLAGS).toEqual({ why: "--why", by: "--by", byPage: "dashboard" });
     expect(LEARNINGS_FILE_FLAGS).toEqual({ scope: "--scope" });
@@ -663,7 +688,9 @@ describe("the declared read surfaces are a closed list", () => {
 
   it("keeps the Jav save, the sleep, the wake and filing a learning the only entries outside the read set", () => {
     const writes = Object.keys(declared).filter(
-      (name) => declared[name]!.args.includes("--save") || ["sleep", "wake", "file"].includes(declared[name]!.args[0]!),
+      (name) =>
+        declared[name]!.args.includes("--save") ||
+        ["sleep", "wake", "file", "add", "remove", "clear", "assign", "unassign"].includes(declared[name]!.args[0]!),
     );
     expect(writes).toEqual(WRITES);
   });
@@ -745,7 +772,7 @@ describe("the adapter's command surface is read-only", () => {
     // still matched by name. The executor is the one module of the read path
     // that may reach `node:child_process`; the CLI reader only drives the port
     // it is handed.
-    for (const file of ["adapter.ts", "jav-adapter.ts", "intake-adapter.ts", "project-sleep-adapter.ts"]) {
+    for (const file of ["adapter.ts", "jav-adapter.ts", "intake-adapter.ts", "project-sleep-adapter.ts", "claude-accounts-adapter.ts"]) {
       expect(importsOf(source(file)), file).not.toContain("node:child_process");
       expect(source(file), file).not.toMatch(/Bun\.(spawn|spawnSync|\$)/);
     }

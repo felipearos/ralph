@@ -390,6 +390,10 @@ export const ROUTE_TABLE: readonly RouteRow[] = [
   // first version, so the remote page offers no Sleep project.
   localOnly("project", "GET", "/api/sleep"),
   localOnly("project", "POST", "/api/sleep"),
+  // The host's Claude accounts (claude-accounts-routes.ts): the registry, the
+  // logins and the override live on this machine, so neither is relayed.
+  localOnly("project", "GET", "/api/claude-accounts"),
+  localOnly("project", "POST", "/api/claude-accounts"),
   // Filing a learning as a ticket (learnings-file-routes.ts) publishes from
   // this machine's harness checkout and opens an issue with its `gh`: never
   // relayed, so the remote page offers no File ticket.

@@ -206,6 +206,8 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // The frontier reads the park store to withhold a live park (#776).
     'park-store.ts',
     'usage-limit.ts',
+    // Which Claude account a loop runs on, run for real.
+    'claude-account.ts',
     'control-inbox.ts',
     // Every wait between iterations asks it whether the project sleeps.
     'project-sleep.ts',
@@ -385,6 +387,8 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     // Separate from the line above so a test can read it without parsing prose:
     // whether a gate-scoped credential reached the model session at all.
     `printf 'claude gate-secret=%s\\n' "\${FAKE_GATE_TOKEN:-}" >> ${JSON.stringify(argvFile)}`,
+    // Which Claude account the session ran on: the config directory it was handed.
+    `printf 'claude config-dir=%s\\n' "\${CLAUDE_CONFIG_DIR:-unset}" >> ${JSON.stringify(argvFile)}`,
     // Whether the ci-doctor's gate-only retry token reached the session —
     // set or unset, never the value.
     `if [ -n "\${RALPH_BUILDKITE_RETRY_TOKEN:-}" ]; then t=set; else t=unset; fi; printf 'claude retry-token=%s\\n' "$t" >> ${JSON.stringify(argvFile)}`,
@@ -974,6 +978,8 @@ function scratchWorktree(): { root: string; home: string; bin: string; argv: () 
     '    answer="$(printf \'%s\\n\' "${FAKE_USAGE_STOP:-}" | awk -F"|" -v n="$stops" \'{print $n}\')"',
     '    printf \'%b\\n\' "${answer:-run\\t0\\t-\\tno usage stop}"',
     '    exit 0 ;;',
+    // The account choice, pinned by `claude-account.test.ts`, run for real.
+    `  *claude-account.ts) exec ${JSON.stringify(REAL_BUN)} "$@" ;;`,
     'esac',
     // Whether the supervisor asked the blocking gate to sweep too (#775).
     `[ -n "\${RALPH_PARK_SWEEP_IN_GATE:-}" ] && printf 'gate park-sweep-in-gate=%s\\n' "$RALPH_PARK_SWEEP_IN_GATE" >> ${JSON.stringify(argvFile)}`,
@@ -4622,6 +4628,88 @@ describe('a turn the usage limit rejected', () => {
     expect(run.status).toBe(0);
     expectWaitedAndResumed(run);
     expect(parkAtStart(run)).toEqual(['absent', 'absent']);
+  }, 30_000);
+
+  /**
+   * Two registered accounts and a project rule naming both (`claude-account.ts`).
+   * The registry is the scratch one, so a host's real accounts never answer.
+   */
+  const withAccounts = (work: ReturnType<typeof scratchWorktree>, onLimit: string) => {
+    const dirs = { first: join(work.root, '..', 'acct-first'), second: join(work.root, '..', 'acct-second') };
+    mkdirSync(dirs.first, { recursive: true });
+    mkdirSync(dirs.second, { recursive: true });
+    const registry = join(work.root, '..', 'claude-accounts.json');
+    writeFileSync(registry, JSON.stringify({ accounts: { first: { configDir: dirs.first }, second: { configDir: dirs.second } } }));
+    writeFileSync(
+      join(work.root, '.ralph', 'config.json'),
+      JSON.stringify({ ...FIXTURE_CONFIG, claudeAccounts: { use: ['first', 'second'], onLimit } }, null, 2),
+    );
+    return { dirs, env: { RALPH_CLAUDE_ACCOUNTS_FILE: registry } };
+  };
+  const configDirs = (run: Run): string[] =>
+    run.argv.filter((line) => line.startsWith('claude config-dir=')).map((line) => line.slice('claude config-dir='.length));
+
+  it('moves to the next account at once when onLimit is next, and marks the spent one', () => {
+    const work = scratchWorktree();
+    const { dirs, env } = withAccounts(work, 'next');
+    // An hour out: a loop that waited for it instead would time the test out.
+    const stream = rejected(work, 'rejected.jsonl', { resetsAt: resetIn(3600) });
+    const run = runSupervisor(work, ['1'], { ...FAST, ...env, FAKE_STREAM_SEQUENCE: stream });
+
+    expect(run.status).toBe(0);
+    expect(configDirs(run)).toEqual([dirs.first, dirs.second]);
+    expect(events(run).filter((event) => event === 'account-switch')).toHaveLength(2);
+    expect(events(run)).not.toContain('usage-reset');
+    expect(records(run).join('\n')).not.toContain('--stop failed');
+    const mark = JSON.parse(readFileSync(join(dirs.first, '.ralph-limit.json'), 'utf8')) as { until: string; window: string };
+    expect(Date.parse(mark.until)).toBeGreaterThanOrEqual(resetIn(3600) * 1000);
+    expect(mark.window).toBe('five_hour');
+    expect(existsSync(join(work.root, '.ralph/logs/usage-wait.json'))).toBe(false);
+  }, 30_000);
+
+  it('starts on the next account when another loop already marked the first one spent', () => {
+    const work = scratchWorktree();
+    const { dirs, env } = withAccounts(work, 'next');
+    writeFileSync(join(dirs.first, '.ralph-limit.json'), JSON.stringify({ until: new Date(NOW_MS + 3_600_000).toISOString() }));
+    const run = runSupervisor(work, ['1'], { ...FAST, ...env, FAKE_SIGIL: '<ralph>DONE</ralph>' });
+
+    expect(run.status).toBe(0);
+    expect(configDirs(run)).toEqual([dirs.second]);
+  }, 30_000);
+
+  it('stops the loop as blocked, claim kept, when onLimit is stop', () => {
+    const work = scratchWorktree();
+    const { dirs, env } = withAccounts(work, 'stop');
+    const stream = rejected(work, 'rejected.jsonl', { resetsAt: resetIn(3600) });
+    const run = runSupervisor(work, ['1'], { ...FAST, ...env, FAKE_STREAM_SEQUENCE: stream });
+
+    expect(run.status).toBe(0);
+    expect(configDirs(run)).toEqual([dirs.first]);
+    expect(records(run).join('\n')).toContain('--event usage-limit-stop --stop blocked');
+    expect(run.stdout).toContain('onLimit is stop');
+  }, 30_000);
+
+  it('waits for the same account when onLimit is wait', () => {
+    const work = scratchWorktree();
+    const { dirs, env } = withAccounts(work, 'wait');
+    // On the real clock: the account's mark outlives the loop's own wait, and
+    // under the pinned one it would never reset. A reset that passes before
+    // the turn ends still waits the minimum, so the wait is always there.
+    const stream = rejected(work, 'rejected.jsonl', { resetsAt: Math.floor(Date.now() / 1000) + 2 });
+    const run = runSupervisor(work, ['1'], { ...FAST, RALPH_USAGE_NOW_MS: '', ...env, FAKE_STREAM_SEQUENCE: stream });
+
+    expect(run.status).toBe(0);
+    expect(configDirs(run)).toEqual([dirs.first, dirs.first]);
+    expect(events(run)).toContain('usage-wait');
+  }, 30_000);
+
+  it('leaves CLAUDE_CONFIG_DIR as the loop was started when the project names no accounts', () => {
+    const work = scratchWorktree();
+    const run = runSupervisor(work, ['1'], { ...FAST, CLAUDE_CONFIG_DIR: '/inherited/claude', FAKE_SIGIL: '<ralph>DONE</ralph>' });
+
+    expect(run.status).toBe(0);
+    expect(configDirs(run)).toEqual(['/inherited/claude']);
+    expect(events(run)).not.toContain('account-switch');
   }, 30_000);
 
   it('waits when the sigil recovery is the turn the limit rejected', () => {

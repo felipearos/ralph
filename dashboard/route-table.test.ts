@@ -114,6 +114,8 @@ const EXPECTED: [string, string, string, string][] = [
   ["POST", "/api/jav/save", "project", "local-only POST /api/jav/save"],
   ["GET", "/api/sleep", "project", "local-only GET /api/sleep"],
   ["POST", "/api/sleep", "project", "local-only POST /api/sleep"],
+  ["GET", "/api/claude-accounts", "project", "local-only GET /api/claude-accounts"],
+  ["POST", "/api/claude-accounts", "project", "local-only POST /api/claude-accounts"],
   ["POST", "/api/learnings/file", "project", "local-only POST /api/learnings/file"],
   ["GET", "/api/evals/patch", "project", "derived evals-patches eval-patch"],
   ["GET", "/api/labels", "project", "local-only GET /api/labels"],

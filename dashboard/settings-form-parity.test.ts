@@ -269,6 +269,7 @@ const NOT_FORM_EDITED: Record<string, string> = {
   evalsGuardrails: "the guardrail verdict's cost and token thresholds, edited in the config file",
   evalsImprover: "the improver's recommended-run size and failures-first rule, edited in the config file",
   usageStop: "the plan usage stop's committed default; the dashboard's edits go to the host-local override (usage-stop.ts)",
+  claudeAccounts: "which registered Claude accounts run the loops and what a spent limit does; the accounts themselves stay on the host (claude-account.ts)",
 };
 
 describe("every config key is classified", () => {

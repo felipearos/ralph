@@ -36,6 +36,7 @@ import type { InterruptFactory, LifecycleFactory } from "./lifecycle-routes";
 import { createOnboarding } from "./onboarding";
 import { createOnboardingAdapter } from "./onboarding-adapter";
 import { createProjectSleepAdapter } from "./project-sleep-adapter";
+import { createClaudeAccountsAdapter } from "./claude-accounts-adapter";
 import { createEvalsAdapter } from "./evals-adapter";
 import { createLearningsFileAdapter } from "./learnings-file-adapter";
 import type { ProjectEntry, ProjectRegistry, RegisteredProject } from "./projects";
@@ -258,6 +259,14 @@ export function composeServer(deps: ServerDeps): ComposedServer {
       // One marker per repo, so the registered checkout speaks for every
       // worktree and loop of the project.
       sleep: createProjectSleepAdapter({
+        cliDir: harness,
+        root: project.path,
+        ...(config.bunPath === undefined ? {} : { bunPath: config.bunPath }),
+        exec: sleepExecutor,
+      }),
+      // The registry is the host's; the registered checkout gives the roster,
+      // the committed rule and the git common dir the override lives in.
+      claudeAccounts: createClaudeAccountsAdapter({
         cliDir: harness,
         root: project.path,
         ...(config.bunPath === undefined ? {} : { bunPath: config.bunPath }),

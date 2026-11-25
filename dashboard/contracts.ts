@@ -2252,6 +2252,104 @@ export interface ProjectSleepView {
 /** The longest reason the page may send with a sleep; the marker is a one-line note, not a log. */
 export const PROJECT_SLEEP_WHY_MAX = 500;
 
+/* --------------------------------------------------------- claude accounts */
+
+/** What a loop does when its account's usage limit is spent (`claudeAccounts.onLimit`). */
+export const CLAUDE_ON_LIMITS = ["wait", "next", "stop"] as const;
+export type ClaudeOnLimitView = (typeof CLAUDE_ON_LIMITS)[number];
+
+/** An account name as the harness's registry takes it; copied, since the page may not import the harness. */
+export const CLAUDE_ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+
+/** A `claudeAccounts` rule: the accounts in order, and what a spent limit does. */
+export interface ClaudeAccountsRuleView {
+  use: string[];
+  onLimit: ClaudeOnLimitView;
+}
+
+/**
+ * Where a rule comes from: this host's override for the loop or the project
+ * (what the dashboard writes), the committed config's loop or project entry,
+ * or nowhere (the environment's account).
+ */
+export type ClaudeAccountsSource = "override" | "override-project" | "config-loop" | "config" | "none";
+
+/** One registered account, as `claude-account.ts view` reports it. */
+export interface ClaudeAccountView {
+  name: string;
+  configDir: string;
+  loggedIn: boolean;
+  /** Who it is logged in as, from its profile; null when it says nothing. */
+  email: string | null;
+  organization: string | null;
+  /** ISO time its usage limit is spent until, or null when it is available. */
+  limitedUntil: string | null;
+}
+
+/** A Claude config directory found on the host, registered or not. */
+export interface ClaudeAccountDetectedView {
+  configDir: string;
+  /** A free registry name for it; its registered name when it has one. */
+  suggestedName: string;
+  loggedIn: boolean;
+  email: string | null;
+  organization: string | null;
+  registeredAs: string | null;
+}
+
+/** The account a rule runs on right now: `default` is the environment's account. */
+export interface ClaudeAccountChoiceView {
+  verdict: "default" | "run" | "wait" | "stop";
+  account: string | null;
+  detail: string;
+}
+
+export interface ClaudeAccountsTargetView {
+  rule: ClaudeAccountsRuleView | null;
+  source: ClaudeAccountsSource;
+  choice: ClaudeAccountChoiceView;
+}
+
+export interface ClaudeAccountsLoopView extends ClaudeAccountsTargetView {
+  loop: string;
+  /** The loop has an override of its own on this host (else it follows the project). */
+  own: boolean;
+}
+
+/**
+ * `GET /api/claude-accounts`: the host's Claude accounts and which one each
+ * loop of the project runs on. Local only: the registry and the logins live
+ * on this machine. `problem` is set when the CLI could not be run or read;
+ * `problems` are the parts it could not read (registry, override, config).
+ */
+export interface ClaudeAccountsView {
+  accounts: ClaudeAccountView[];
+  detected: ClaudeAccountDetectedView[];
+  project: ClaudeAccountsTargetView | null;
+  loops: ClaudeAccountsLoopView[];
+  problems: string[];
+  problem: string | null;
+}
+
+/** `POST /api/claude-accounts`: one change, then the view read again. */
+export type ClaudeAccountsRequest =
+  | { action: "add"; name: string; dir: string }
+  | { action: "remove"; name: string }
+  | { action: "clear-limit"; name: string }
+  | { action: "assign"; target: string; use: string[]; onLimit: ClaudeOnLimitView }
+  | { action: "assign-env"; target: string }
+  | { action: "unassign"; target: string };
+
+/** The project-wide target of an assignment. */
+export const CLAUDE_ACCOUNTS_PROJECT_TARGET = "*";
+
+export interface ClaudeAccountsAnswer {
+  ok: boolean;
+  /** What the CLI said: its confirmation, or why it refused. */
+  message: string;
+  view: ClaudeAccountsView;
+}
+
 /* ------------------------------------------------- notifications and history */
 
 /**

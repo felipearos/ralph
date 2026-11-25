@@ -530,6 +530,72 @@ export interface ProjectConfig {
    * dashboard's edits go to a host-local override, never to this file.
    */
   usageStop?: UsageStopRule;
+  /**
+   * Which Claude accounts run this project's loops (`claude-account.ts`), by
+   * the names the host registers them under, and what a loop does when the
+   * one it runs on hits its usage limit. Optional, and absent means no
+   * choice: the loop runs on whatever account its environment gives it, as
+   * before. A `loops` entry may carry its own, or `null` to run that loop on
+   * the environment's account.
+   */
+  claudeAccounts?: ClaudeAccountsRule;
+}
+
+/**
+ * What a loop does when its Claude account hits its usage limit:
+ *
+ *   wait   wait for that account's reset (the account's own limit, #407);
+ *   next   run on the next account in `use` that is not at its limit, and
+ *          wait for the earliest reset only when every one of them is;
+ *   stop   stop the loop as blocked, claim kept, for a person to decide.
+ */
+export const CLAUDE_ON_LIMIT = ["wait", "next", "stop"] as const;
+export type ClaudeOnLimit = (typeof CLAUDE_ON_LIMIT)[number];
+/** The limit policy when a rule does not say: today's behaviour. */
+export const CLAUDE_ON_LIMIT_DEFAULT: ClaudeOnLimit = "wait";
+/** An account name: one shell word, so `ralph.sh` can carry it in a tab-separated line. */
+export const CLAUDE_ACCOUNT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+
+/** A `claudeAccounts` as the file spells it. */
+export interface ClaudeAccountsRule {
+  /** Account names in order of preference; the first is the one a loop runs on while it can. */
+  use: string[];
+  onLimit?: ClaudeOnLimit;
+}
+
+/**
+ * Every problem with one `claudeAccounts` value at `where`. `null` is allowed
+ * only on a loop entry (`nullable`), where it opts that loop out of the
+ * project's. Whether a name is registered is the host's business, not the
+ * file's: the config is committed and read on every host.
+ */
+export function claudeAccountsProblems(value: unknown, where: string, nullable: boolean): string[] {
+  if (value === null && nullable) return [];
+  if (!isObject(value)) {
+    return [`'${where}' must be an object with a 'use' list${nullable ? ", or null to run the loop on the environment's account" : ""}`];
+  }
+  const problems: string[] = [];
+  for (const key of Object.keys(value)) {
+    if (key !== "use" && key !== "onLimit") problems.push(`unknown key '${where}.${key}'`);
+  }
+  if (!Array.isArray(value.use) || value.use.length === 0) {
+    problems.push(`'${where}.use' must be a non-empty list of account names`);
+  } else {
+    const seen = new Set<string>();
+    value.use.forEach((name: unknown, index: number) => {
+      if (typeof name !== "string" || !CLAUDE_ACCOUNT_NAME.test(name)) {
+        problems.push(`'${where}.use[${index}]' must be an account name (lowercase letters, digits, '-' or '_'); got ${JSON.stringify(name)}`);
+      } else if (seen.has(name)) {
+        problems.push(`'${where}.use' repeats '${name}'`);
+      } else {
+        seen.add(name);
+      }
+    });
+  }
+  if ("onLimit" in value && !CLAUDE_ON_LIMIT.includes(value.onLimit as ClaudeOnLimit)) {
+    problems.push(`'${where}.onLimit' must be one of ${CLAUDE_ON_LIMIT.join(", ")}`);
+  }
+  return problems;
 }
 
 /** The usage windows a plan reports and a stop may watch. */
@@ -663,7 +729,9 @@ export const GITHUB_ONLY_ROLES: readonly Role[] = ["ci-doctor"];
  * A `loops` entry as the file spells it: a name, which is a coder, or an
  * object naming the role. `role` may be left out; it defaults to `coder`.
  */
-export type LoopEntry = string | { name: string; role?: Role; usageStop?: UsageStopRule | null };
+export type LoopEntry =
+  | string
+  | { name: string; role?: Role; usageStop?: UsageStopRule | null; claudeAccounts?: ClaudeAccountsRule | null };
 
 /** A roster entry with its role resolved. */
 export interface RosterEntry {
@@ -671,6 +739,8 @@ export interface RosterEntry {
   role: Role;
   /** The loop's own usage stop, or null when it is exempt; absent: the project's. */
   usageStop?: UsageStopRule | null;
+  /** The loop's own accounts, or null to run on the environment's; absent: the project's. */
+  claudeAccounts?: ClaudeAccountsRule | null;
 }
 
 /**
@@ -759,7 +829,7 @@ export type EvalSuggestionWeightKey = (typeof EVAL_SUGGESTION_WEIGHT_KEYS)[numbe
 export const MERGE_METHODS = ["mergify", "github-queue", "direct"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
 
-export const OPTIONAL_KEYS = ["plugins", "executorGuard", "ciDoctor", "prMedic", "clerk", "verifier", "sentinel", "triage", "learnings", "tracker", "merge", "mergeMethod", "screenshots", "worktreeSetup", "configChanges", "usageStop", "relayEvalPatches", "appLabels", "evalSuggestionWeights", "evalsNoiseFloor", "evalsSaturation", "evalsGuardrails", "evalsImprover"] as const;
+export const OPTIONAL_KEYS = ["plugins", "executorGuard", "ciDoctor", "prMedic", "clerk", "verifier", "sentinel", "triage", "learnings", "tracker", "merge", "mergeMethod", "screenshots", "worktreeSetup", "configChanges", "usageStop", "claudeAccounts", "relayEvalPatches", "appLabels", "evalSuggestionWeights", "evalsNoiseFloor", "evalsSaturation", "evalsGuardrails", "evalsImprover"] as const;
 
 /**
  * A loop name: one lowercase word. It becomes a label (`<loop>-wip`), a branch
@@ -1147,6 +1217,7 @@ export function validateProjectConfig(raw: unknown): string[] {
   if ("worktreeSetup" in raw) problems.push(...worktreeSetupProblems(raw.worktreeSetup));
 
   if ("usageStop" in raw) problems.push(...usageStopProblems(raw.usageStop, "usageStop", false));
+  if ("claudeAccounts" in raw) problems.push(...claudeAccountsProblems(raw.claudeAccounts, "claudeAccounts", false));
 
   if ("loops" in raw) problems.push(...loopsProblems(raw.loops));
 
@@ -2786,9 +2857,14 @@ export function loopsProblems(loops: unknown): string[] {
     let where = `'loops[${index}]'`;
     if (isObject(entry)) {
       for (const key of Object.keys(entry)) {
-        if (key !== "name" && key !== "role" && key !== "usageStop") problems.push(`unknown key 'loops[${index}].${key}'`);
+        if (key !== "name" && key !== "role" && key !== "usageStop" && key !== "claudeAccounts") {
+          problems.push(`unknown key 'loops[${index}].${key}'`);
+        }
       }
       if ("usageStop" in entry) problems.push(...usageStopProblems(entry.usageStop, `loops[${index}].usageStop`, true));
+      if ("claudeAccounts" in entry) {
+        problems.push(...claudeAccountsProblems(entry.claudeAccounts, `loops[${index}].claudeAccounts`, true));
+      }
       if ("role" in entry && !isRole(entry.role)) {
         problems.push(`'loops[${index}].role' must be one of ${ROLES.join(", ")}; got ${JSON.stringify(entry.role)}`);
       }
@@ -2824,6 +2900,7 @@ export function rosterEntries(loops: readonly LoopEntry[]): RosterEntry[] {
           role: entry.role ?? DEFAULT_ROLE,
           // Only when spelt, so a roster without stops reads as it always did.
           ...(entry.usageStop !== undefined ? { usageStop: entry.usageStop } : {}),
+          ...(entry.claudeAccounts !== undefined ? { claudeAccounts: entry.claudeAccounts } : {}),
         },
   );
 }

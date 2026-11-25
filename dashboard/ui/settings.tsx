@@ -47,6 +47,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { Answer, Confirming, RemoveProject, shown, type Said } from "./agents";
+import { ClaudeAccounts } from "./claude-accounts";
 import { isRemote } from "./api";
 import { CommandNotice, LocalOnlyNote, useCommand } from "./command";
 import type { CommandError } from "./command-model";
@@ -85,6 +86,7 @@ export function ProjectSettings({ project }: { project: string }) {
     <section className="space-y-6" aria-label="Project settings">
       <Overview project={project} />
       <Edit project={project} />
+      <ClaudeAccounts project={project} />
       <Gates project={project} />
       <Prompts project={project} />
       <WorktreeSetup project={project} />
