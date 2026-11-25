@@ -18,6 +18,7 @@ import type {
   FrontierTicket,
   FrontierTreeGroup,
   FrontierTreeNode,
+  FrontierDroppedReference,
   FrontierView,
   HumanReason,
   PullState,
@@ -35,7 +36,19 @@ import { IssueLink, PullLink } from "./label";
 import { Tip } from "./tip";
 import { Talk } from "./chat";
 import { blockingLoop } from "./chat-model";
-import { type BacklogLoop, forPerson, forYouRows, inFlightTip, runningTickets, since, staleNote, stuckTip } from "./backlog-model";
+import {
+  type BacklogLoop,
+  droppedByNumber,
+  droppedTip,
+  droppedWord,
+  forPerson,
+  forYouRows,
+  inFlightTip,
+  runningTickets,
+  since,
+  staleNote,
+  stuckTip,
+} from "./backlog-model";
 
 /* ------------------------------------------------------------- primitives */
 
@@ -161,6 +174,21 @@ function HumanChip({ reason }: { reason: HumanReason }) {
     <Tip content={HUMAN_TITLE[reason]}>
       <span className="shrink-0 rounded border border-foreground/40 bg-foreground/10 px-1 font-mono text-[10px] whitespace-nowrap text-foreground">
         {HUMAN_WORD[reason]}
+      </span>
+    </Tip>
+  );
+}
+
+/**
+ * A ticket with a `## Blocked by` / `## Parent` reference the frontier does not
+ * count as an edge (another repository's or tracker's): without this it would
+ * read as unblocked with no hint why it may not be.
+ */
+function DroppedChip({ references }: { references: FrontierDroppedReference[] }) {
+  return (
+    <Tip content={droppedTip(references)}>
+      <span className="shrink-0 rounded border border-status-warn/40 bg-status-warn/10 px-1 font-mono text-[10px] whitespace-nowrap text-status-warn">
+        {droppedWord(references)}
       </span>
     </Tip>
   );
@@ -303,6 +331,7 @@ function Ready({ view, repoUrl }: { view: FrontierView; repoUrl: string | null }
   const { nowMs } = useContext(Clock);
   const reasons = stuckReasonsByNumber(view);
   const human = humanByNumber(view);
+  const dropped = droppedByNumber(view);
   if (view.ready.length === 0) {
     return (
       <div className="px-4 py-3">
@@ -347,6 +376,7 @@ function Ready({ view, repoUrl }: { view: FrontierView; repoUrl: string | null }
                 </Tip>
               )}
               {human.has(ticket.number) && <HumanChip reason={human.get(ticket.number)!} />}
+              {dropped.has(ticket.number) && <DroppedChip references={dropped.get(ticket.number)!} />}
             </p>
           ))}
         </li>
@@ -756,6 +786,7 @@ function TreeRow({
   last,
   repoUrl,
   reasons,
+  dropped,
 }: {
   node: DrawnNode;
   /** For each ancestor depth, whether a guide line continues past this row. */
@@ -763,6 +794,7 @@ function TreeRow({
   last: boolean;
   repoUrl: string | null;
   reasons: Map<number, StuckReason>;
+  dropped: Map<number, FrontierDroppedReference[]>;
 }) {
   const { nowMs, prs } = useContext(Clock);
   const pull = prs?.get(node.number);
@@ -843,6 +875,7 @@ function TreeRow({
             </Tip>
           )}
           {node.human && <HumanChip reason={node.human} />}
+          {dropped.has(node.number) && <DroppedChip references={dropped.get(node.number)!} />}
           {pull && node.state !== "done" && <PullChip pull={pull} repoUrl={repoUrl} />}
           {(blockedBy !== null || notes.length > 0) && (
             <span className="ml-auto shrink-0 pl-3 text-xs whitespace-nowrap text-muted-foreground">
@@ -861,6 +894,7 @@ function TreeRow({
           last={index === node.children.length - 1}
           repoUrl={repoUrl}
           reasons={reasons}
+          dropped={dropped}
         />
       ))}
     </>
@@ -874,10 +908,12 @@ function TreeGroupView({
   group,
   repoUrl,
   reasons,
+  dropped,
 }: {
   group: FrontierTreeGroup;
   repoUrl: string | null;
   reasons: Map<number, StuckReason>;
+  dropped: Map<number, FrontierDroppedReference[]>;
 }) {
   const { nowMs } = useContext(Clock);
   const open = countNodes(group.roots);
@@ -929,6 +965,7 @@ function TreeGroupView({
               last={index === drawn.length - 1}
               repoUrl={repoUrl}
               reasons={reasons}
+              dropped={dropped}
             />
           ))}
         </ul>
@@ -939,6 +976,7 @@ function TreeGroupView({
 
 function Tree({ view, repoUrl }: { view: FrontierView; repoUrl: string | null }) {
   const reasons = stuckReasonsByNumber(view);
+  const dropped = droppedByNumber(view);
   const live = view.tree.filter((group) => !group.complete && group.spec !== null);
   const finished = view.tree.filter((group) => group.complete);
   // A parentless ticket is its own group in the script; on a page, a row each
@@ -970,7 +1008,7 @@ function Tree({ view, repoUrl }: { view: FrontierView; repoUrl: string | null })
       <div className="rounded-xl border">
         <ul className="divide-y">
           {live.map((group) => (
-            <TreeGroupView key={group.spec!.number} group={group} repoUrl={repoUrl} reasons={reasons} />
+            <TreeGroupView key={group.spec!.number} group={group} repoUrl={repoUrl} reasons={reasons} dropped={dropped} />
           ))}
           {standalone.length > 0 && (
             <li className="py-1.5">
@@ -989,6 +1027,7 @@ function Tree({ view, repoUrl }: { view: FrontierView; repoUrl: string | null })
                     last={index === drawn.length - 1}
                     repoUrl={repoUrl}
                     reasons={reasons}
+                    dropped={dropped}
                   />
                 ))}
               </ul>
@@ -1000,7 +1039,7 @@ function Tree({ view, repoUrl }: { view: FrontierView; repoUrl: string | null })
         <Section title="Finished specs" detail="every child has closed" count={finished.length}>
           <ul className="divide-y">
             {finished.map((group) => (
-              <TreeGroupView key={group.spec?.number ?? "solo"} group={group} repoUrl={repoUrl} reasons={reasons} />
+              <TreeGroupView key={group.spec?.number ?? "solo"} group={group} repoUrl={repoUrl} reasons={reasons} dropped={dropped} />
             ))}
           </ul>
         </Section>

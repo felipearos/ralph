@@ -486,6 +486,23 @@ describe("the frontier read", () => {
       );
     });
 
+    it("carries the references the frontier dropped", () => {
+      const references = [{ heading: "Blocked by", reference: "example-org/archive#165", reason: "not an issue of acme/widgets" }];
+      const view = narrowFrontier({ ...empty, dropped: [{ number: 166, title: "Store schema", references }] });
+      expect(view.dropped).toEqual([{ number: 166, title: "Store schema", references }]);
+    });
+
+    it("reads a frontier that predates dropped as nothing dropped, not as drift", () => {
+      expect(narrowFrontier(empty).dropped).toEqual([]);
+    });
+
+    it("refuses a malformed dropped reference", () => {
+      const references = [{ heading: "Parent", reference: "OPS-12", reason: 3 }];
+      expect(() => narrowFrontier({ ...empty, dropped: [{ number: 1, title: "x", references }] })).toThrow(
+        /dropped\[0\]\.references\[0\]\.reason/,
+      );
+    });
+
     it("mirrors the harness's reasons, so a new one cannot reach the dashboard as drift", () => {
       expect([...HARNESS_HUMAN_REASONS]).toEqual([...HUMAN_REASONS]);
     });

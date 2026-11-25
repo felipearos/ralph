@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { ClaimView, FrontierRead, FrontierView, ParkReason, StuckReason } from "../contracts";
 import {
   type BacklogLoop,
+  droppedByNumber,
+  droppedTip,
+  droppedWord,
   duration,
   forPerson,
   forYouRows,
@@ -57,6 +60,7 @@ const view = (patch: Partial<FrontierView>): FrontierView => ({
   untriaged: [],
   triage: { staffing: 0, routing: 0, intake: 0, oversize: 0, rescue: 0 },
   human: [],
+  dropped: [],
   ...patch,
 });
 
@@ -249,6 +253,31 @@ describe("staleNote", () => {
   it("falls back to a plain failure for any other reason", () => {
     expect(staleNote(read({ problem: "gh: not logged in", failedAt: minutesAgo(1) }), time)).toBe(
       "Stale since 13:58: the latest read failed, retrying every minute.",
+    );
+  });
+});
+
+describe("dropped references", () => {
+  const archive = { heading: "Blocked by", reference: "example-org/archive#165", reason: "not an issue of acme/widgets" };
+  const ops = { heading: "Parent", reference: "OPS-12", reason: "not a ticket of AND" };
+
+  it("looks each ticket's dropped references up by number", () => {
+    const view = { dropped: [{ number: 7, title: "Store schema", references: [archive, ops] }] } as unknown as FrontierView;
+    const byNumber = droppedByNumber(view);
+    expect(byNumber.get(7)).toEqual([archive, ops]);
+    expect(byNumber.has(8)).toBe(false);
+  });
+
+  it("says ref or refs by how many were dropped", () => {
+    expect(droppedWord([archive])).toBe("ignored ref");
+    expect(droppedWord([archive, ops])).toBe("ignored refs");
+  });
+
+  it("lists each reference and why, and says it is not counted as a blocker", () => {
+    expect(droppedTip([archive, ops])).toBe(
+      "Blocked by: example-org/archive#165 — not an issue of acme/widgets\n" +
+        "Parent: OPS-12 — not a ticket of AND\n\n" +
+        "Not counted as blockers, so this ticket may only look unblocked.",
     );
   });
 });

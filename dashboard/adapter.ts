@@ -861,6 +861,28 @@ export function narrowFrontier(value: unknown): FrontierView {
             const t = ticket(path, entry);
             return { number: t.number, title: t.title, reason: humanReasonOf(contract, `${path}.reason`, t.rest.reason) };
           }),
+    // Absent from a frontier that predates it, for the same lag as `human`:
+    // missing reads as nothing dropped rather than as a broken read.
+    dropped:
+      raw.dropped === undefined
+        ? []
+        : list("$.dropped", raw.dropped).map((entry, index) => {
+            const path = `$.dropped[${index}]`;
+            const t = ticket(path, entry);
+            return {
+              number: t.number,
+              title: t.title,
+              references: list(`${path}.references`, t.rest.references).map((ref, at) => {
+                const refPath = `${path}.references[${at}]`;
+                const record = asRecord(contract, refPath, ref);
+                return {
+                  heading: string(contract, `${refPath}.heading`, record.heading),
+                  reference: string(contract, `${refPath}.reference`, record.reference),
+                  reason: string(contract, `${refPath}.reason`, record.reason),
+                };
+              }),
+            };
+          }),
   };
 }
 

@@ -5,7 +5,14 @@
  * Every age here is measured against the dashboard's own read time (`nowMs`),
  * not the browser's clock, so the page and its tooltips agree on "now".
  */
-import type { DashboardLoop, FrontierRead, FrontierView, HumanReason, StuckReason } from "../contracts";
+import type {
+  DashboardLoop,
+  FrontierDroppedReference,
+  FrontierRead,
+  FrontierView,
+  HumanReason,
+  StuckReason,
+} from "../contracts";
 import { parkLive, parkText } from "./blocked-model";
 
 export type BacklogLoop = Pick<DashboardLoop, "loop" | "supervisor" | "claims" | "issue" | "phase" | "lastEvent">;
@@ -147,4 +154,22 @@ export function staleNote(frontier: FrontierRead, time: (iso: string) => string)
   if (frontier.view === null || !frontier.failedAt) return null;
   const cause = RATE_LIMITED.test(frontier.problem ?? "") ? "GitHub is rate-limiting the read" : "the latest read failed";
   return `Stale since ${time(frontier.readAt)}: ${cause}, retrying every minute.`;
+}
+
+/** The references the frontier dropped, by ticket: built once per view, read per row. */
+export const droppedByNumber = (view: FrontierView): Map<number, FrontierDroppedReference[]> =>
+  new Map(view.dropped.map((ticket) => [ticket.number, ticket.references]));
+
+/** The chip's word on a ticket with dropped references. */
+export const droppedWord = (references: readonly FrontierDroppedReference[]): string =>
+  references.length === 1 ? "ignored ref" : "ignored refs";
+
+/**
+ * The chip's hover text: each dropped reference and why, and what that means —
+ * the frontier counts none of them as a blocker, so the ticket may only look
+ * unblocked.
+ */
+export function droppedTip(references: readonly FrontierDroppedReference[]): string {
+  const lines = references.map((ref) => `${ref.heading}: ${ref.reference} — ${ref.reason}`);
+  return `${lines.join("\n")}\n\nNot counted as blockers, so this ticket may only look unblocked.`;
 }
