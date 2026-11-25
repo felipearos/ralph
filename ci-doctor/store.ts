@@ -142,8 +142,11 @@ export interface Evidence {
 
 /**
  * `kind|line` with what changes from build to build normalised away — ISO
- * timestamps, UUIDs, hex runs of 7+ characters (commits, ids), durations —
- * and whitespace collapsed (#57). Error codes (`XX000`, `08006`,
+ * timestamps, UUIDs, hex runs of 12+ characters mixing digits and letters
+ * (full commit SHAs, container ids), digit runs of 10+ (epoch times, large
+ * ids), durations — and whitespace collapsed (#57). Shorter hex-looking
+ * values stay: `expected abcdef0` and `expected deadbee` are an assertion's
+ * values, two different failures. Error codes (`XX000`, `08006`,
  * `ECONNREFUSED`) and `file:line` positions are KEPT: they are what tells one
  * failure from another. A doctor's rejection holds while new reds carry the
  * signatures it was taken against, so a step red on every build for one
@@ -156,7 +159,8 @@ export function failureSignature(kind: string, line: string): string {
   const normalised = String(line ?? "")
     .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<time>")
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
-    .replace(/\b[0-9a-f]{7,}\b/gi, "<hex>")
+    .replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,}\b/gi, "<hex>")
+    .replace(/\b\d{10,}\b/g, "<num>")
     .replace(/\b\d+(?:\.\d+)?\s?(?:ms|s)\b/g, "<duration>")
     .replace(/\s+/g, " ")
     .trim();
@@ -263,9 +267,11 @@ export interface Case {
    * step (or the test id when the step is unknown), the green build the run
    * started after, and how many builds it holds. Set on the retired
    * `flake:` case and on the `infra:red-run:<step>` case `classify` proposes
-   * instead. Optional, for `rejectedAt`'s reason.
+   * instead. `last` is the newest build the run counted: the next scan
+   * extends the run past a pruned green only while that build is still in a
+   * red streak (#57). Optional, for `rejectedAt`'s reason.
    */
-  redRun?: { step: string; since: number; builds: number } | null;
+  redRun?: { step: string; since: number; builds: number; last?: number } | null;
   /**
    * The `ci-incident` occurrence this infra case was already notified as
    * (#156). An infra case starts no iteration, so the notification is the

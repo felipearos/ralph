@@ -86,13 +86,34 @@ export function rejectionStands(value: Case, evidence: readonly Evidence[], buil
   const known = new Set<string>(signatures);
   if (newer.some((seen) => !known.has(failureSignature(seen.kind, seen.line)))) return false;
   if (builds === undefined) return true;
-  // Only a named step: a null step's "pass" is any green build, which would
-  // overturn every rejection on the first unrelated green.
-  const steps = [...new Set(newer.map((seen) => seen.step).filter((step): step is string => typeof step === "string"))];
-  const greenSince = (builds ?? []).some(
+  // The steps the NEWER rows failed in: a green of one says the red is no
+  // longer continuous.
+  return !passedSince(boundary, newer, builds);
+}
+
+/**
+ * Did a tested build after `boundary` pass one of the named steps of
+ * `evidence`? Only a named step: a null step's "pass" is any green build,
+ * which would read every unrelated green as the step going green.
+ */
+function passedSince(boundary: number, evidence: readonly Evidence[], builds: readonly BuildRecord[]): boolean {
+  const steps = [...new Set(evidence.map((seen) => seen.step).filter((step): step is string => typeof step === "string"))];
+  return builds.some(
     (build) => tested(build) && build.number > boundary && build.steps != null && steps.some((step) => passedStep(build, step)),
   );
-  return !greenSince;
+}
+
+/**
+ * Has a step this rejected case's evidence names gone green since the
+ * rejection's boundary (#57)? The delete sweep's question: unlike
+ * `rejectionStands`, it asks it with no newer red, so a case whose run ended
+ * in a green is dropped rather than kept until a later red of the same
+ * signature is suppressed by a rejection of a run that is over.
+ */
+export function greenSinceRejection(value: Case, builds: readonly BuildRecord[]): boolean {
+  const boundary = value.rejectedAt?.build;
+  if (typeof boundary !== "number") return false;
+  return passedSince(boundary, value.evidence ?? [], builds ?? []);
 }
 
 const TIMEOUT_KINDS = new Set(["timeout", "hook-timeout"]);
@@ -326,7 +347,7 @@ export interface FlakeVerdict {
    * incident. An ended run still refuses the green — the outage's reds paired
    * with a pre-outage green are no flake after recovery either.
    */
-  redRun: { step: string; since: number; builds: number; ongoing: boolean } | null;
+  redRun: { step: string; since: number; builds: number; last: number; ongoing: boolean } | null;
 }
 
 /**
@@ -369,63 +390,102 @@ export function flakeOf(
   ctx: Context,
   rows: Failure[],
   retried: Failure[],
-  known: { step: string; since: number; builds: number } | null = null,
+  known: { step: string; since: number; builds: number; last?: number } | null = null,
 ): FlakeVerdict | null {
   const candidates = rows.filter((row) => candidateRow(ctx, row, rows));
   const retriedCandidates = retried.filter((row) => candidateRow(ctx, row, rows));
   if (candidates.length === 0 && retriedCandidates.length === 0) return null;
   const { baseBranch } = ctx.options;
 
+  const reds = [...candidates, ...retriedCandidates];
+  const failed = new Set([...rows, ...retried].map((row) => row.build));
+  const ownBuild = (red: Failure) => ctx.builds.get(red.build);
+  const sameTreeGreen = (red: Failure, build: BuildRecord): boolean => {
+    const own = ownBuild(red);
+    return (
+      build.number !== red.build &&
+      (build.commit === red.commit || (own?.tree != null && build.tree === own.tree)) &&
+      passedStep(build, red.step) &&
+      !rows.some((row) => row.build === build.number)
+    );
+  };
+  // A qualifying red run after an older green that holds `red`, or null.
+  const runAfter = (red: Failure, green: BuildRecord) => {
+    const streak = redStreak(ctx, green.number, red.step, failed);
+    return streak.builds.length >= RED_RUN_MIN && red.build <= streak.builds.at(-1)!.number ? streak : null;
+  };
+
+  // Pass 1, the red run (#57): the longest run of `RED_RUN_MIN`+ consecutive
+  // reds right after an older same-tree green, over every red. Found first so
+  // the rules below can leave its reds out — an outage's own reds are not
+  // evidence of a flake by any rule.
+  let redRun = null as FlakeVerdict["redRun"];
+  for (const red of reds) {
+    for (const build of ctx.store.builds) {
+      if (!sameTreeGreen(red, build) || build.number > red.build) continue;
+      const streak = runAfter(red, build);
+      if (streak === null) continue;
+      if (redRun === null || streak.builds.length > redRun.builds) {
+        redRun = {
+          step: red.step ?? red.testId,
+          since: build.number,
+          builds: streak.builds.length,
+          last: streak.builds.at(-1)!.number,
+          ongoing: streak.ongoing,
+        };
+      }
+    }
+  }
+
+  // A run that outlived its green (#57): the scan keeps 72 h, so a long
+  // outage prunes the green the run was found against and nothing above can
+  // see it any more. It is the same run only while the build the last scan
+  // counted last is still in an unbroken red streak: then the count grows by
+  // the reds since, rather than stalling at a window's worth. Without that
+  // build in the streak the old run may have ended in a pruned green, and a
+  // new run must not inherit its `since`.
+  if (redRun === null && known !== null && typeof known.since === "number" && typeof known.last === "number") {
+    const last = known.last;
+    const step = rows[0]?.step ?? retried[0]?.step ?? null;
+    const streak = redStreak(ctx, 0, step, failed);
+    if (streak.ongoing && streak.builds.length >= RED_RUN_MIN && streak.builds.some((build) => build.number === last)) {
+      redRun = {
+        step: known.step,
+        since: known.since,
+        builds: known.builds + streak.builds.filter((build) => build.number > last).length,
+        last: streak.builds.at(-1)!.number,
+        ongoing: true,
+      };
+    }
+  }
+
+  // Pass 2: the rules, over the rows outside the run.
+  const run = redRun as FlakeVerdict["redRun"];
+  const outside = (row: Failure): boolean => run === null || row.build <= run.since || row.build > run.last;
   const rules: string[] = [];
 
   // Main flip.
-  if (candidates.some((row) => row.branch === baseBranch && greenNextWithoutTouching(ctx, row))) rules.push("main flip");
+  if (candidates.some((row) => outside(row) && row.branch === baseBranch && greenNextWithoutTouching(ctx, row))) rules.push("main flip");
 
   // Same tree, both colours: another build of the same tree passed T's step, or the red job's retry did.
   // An OLDER green does not count when the red sits in a run of
   // `RED_RUN_MIN`+ consecutive reds right after it (#57): the green predates
   // the run's cause — whether the run is still going or has just ended.
-  const reds = [...candidates, ...retriedCandidates];
-  const failed = new Set([...rows, ...retried].map((row) => row.build));
-  // Declared with `as` so the closure's assignment is not narrowed away.
-  let redRun = null as FlakeVerdict["redRun"];
-  const sameTree = reds.some((red) => {
-    const own = ctx.builds.get(red.build);
+  const sameTree = reds.filter(outside).some((red) => {
+    const own = ownBuild(red);
     if (red.retried && own !== undefined && passedStep(own, red.step)) return true;
     return ctx.store.builds.some((build) => {
-      const green =
-        build.number !== red.build &&
-        (build.commit === red.commit || (own?.tree != null && build.tree === own.tree)) &&
-        passedStep(build, red.step) &&
-        !rows.some((row) => row.build === build.number);
-      if (!green || build.number > red.build) return green;
-      const streak = redStreak(ctx, build.number, red.step, failed);
-      const inRun = streak.builds.length >= RED_RUN_MIN && red.build <= streak.builds.at(-1)!.number;
-      if (!inRun) return true;
-      if (redRun === null || streak.builds.length > redRun.builds) {
-        redRun = { step: red.step ?? red.testId, since: build.number, builds: streak.builds.length, ongoing: streak.ongoing };
-      }
-      return false;
+      if (!sameTreeGreen(red, build)) return false;
+      return build.number > red.build || runAfter(red, build) === null;
     });
   });
   if (sameTree) rules.push("same tree, both colours");
 
-  // A run that outlived its green (#57): the scan keeps 72 h, so a long
-  // outage prunes the green the run was found against and nothing above can
-  // see it any more. While the store's case already carries the run and every
-  // build in the window that ran the step still failed T, it is the same run.
-  if (redRun === null && known !== null && typeof known.since === "number") {
-    const step = rows[0]?.step ?? retried[0]?.step ?? null;
-    const streak = redStreak(ctx, 0, step, failed);
-    if (streak.ongoing && streak.builds.length >= RED_RUN_MIN) {
-      redRun = { step: known.step, since: known.since, builds: Math.max(known.builds, streak.builds.length), ongoing: true };
-    }
-  }
-
   // Cross-branch recurrence.
-  const builds = new Set(rows.map((row) => row.build));
-  const branches = new Set(rows.map((row) => row.branch));
-  if (builds.size >= 3 && branches.size >= 2 && rows.some((row) => greenNextWithoutTouching(ctx, row))) {
+  const rest = rows.filter(outside);
+  const builds = new Set(rest.map((row) => row.build));
+  const branches = new Set(rest.map((row) => row.branch));
+  if (builds.size >= 3 && branches.size >= 2 && rest.some((row) => greenNextWithoutTouching(ctx, row))) {
     rules.push("cross-branch recurrence");
   }
 
@@ -466,7 +526,7 @@ export function classify(store: CiHealthStore, now: number, options: ClassifyOpt
   }
 
   // Red runs by step (#57): tests failing on one dead step share one incident.
-  const redRuns = new Map<string, { rows: Failure[]; run: { step: string; since: number; builds: number } }>();
+  const redRuns = new Map<string, { rows: Failure[]; run: { step: string; since: number; builds: number; last: number } }>();
 
   for (const [testId, all] of byTest) {
     const rows = all.filter((row) => !row.retried).sort((a, b) => a.build - b.build);
@@ -676,7 +736,9 @@ export function mergeCases(store: CiHealthStore, next: Classification): void {
       // boundary, and once a green ends that run the gate would read the
       // rejection as overturned while a sweep that asked only "is it rejected
       // at all" kept it — and the gate then reported an ended run as live.
-      rejectionStands(prev, prev.evidence ?? [], store.builds)
+      // With no newer red that still stands, so a green of a step the
+      // evidence names since the boundary drops the case here as well.
+      (rejectionStands(prev, prev.evidence ?? [], store.builds) && !greenSinceRejection(prev, store.builds))
     ) {
       prev.cost72h = { redBuilds: 0, mainReds: 0, dequeues: 0 };
       continue;

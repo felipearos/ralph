@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classify, MANAGED_STATES, mergeCases, RED_RUN_MIN, rejectionStands, type Classification } from "./classify";
+import { classify, greenSinceRejection, MANAGED_STATES, mergeCases, RED_RUN_MIN, rejectionStands, type Classification } from "./classify";
 import {
   emptyStore,
   failureSignature,
@@ -166,8 +166,8 @@ describe("mergeCases and a doctor's rejection", () => {
 
 describe("failureSignature", () => {
   it("keeps error codes and positions, and strips what changes per build", () => {
-    const a = failureSignature("assertion", "error XX000 at 2026-11-20T01:02:03.456Z in db/migrate.ts:12:5 after 1.5s (abc1234def)");
-    const b = failureSignature("assertion", "error  XX000 at 2026-11-21T09:00:00Z in db/migrate.ts:12:5 after 230ms (0fedcba9876)");
+    const a = failureSignature("assertion", "error XX000 at 2026-11-20T01:02:03.456Z in db/migrate.ts:12:5 after 1.5s (abc1234def01)");
+    const b = failureSignature("assertion", "error  XX000 at 2026-11-21T09:00:00Z in db/migrate.ts:12:5 after 230ms (0fedcba98765)");
     expect(a).toBe(b);
     expect(a).toContain("XX000");
     expect(a).toContain("db/migrate.ts:12:5");
@@ -175,6 +175,19 @@ describe("failureSignature", () => {
     expect(a.startsWith("assertion|")).toBe(true);
     expect(failureSignature("assertion", "08006 ECONNREFUSED")).toBe("assertion|08006 ECONNREFUSED");
     expect(failureSignature("assertion", "error XX000")).not.toBe(failureSignature("assertion", "error 08006"));
+  });
+
+  it("keeps an assertion's short values, and strips SHAs, container ids and epoch numbers", () => {
+    const sig = (line: string) => failureSignature("assertion", line);
+    expect(sig("expected abcdef0")).not.toBe(sig("expected deadbee"));
+    expect(sig("expected 1234567")).not.toBe(sig("expected 7654321"));
+    expect(sig("at commit 0123456789abcdef0123456789abcdef01234567 failed")).toBe(
+      sig("at commit fedcba9876543210fedcba9876543210fedcba98 failed"),
+    );
+    expect(sig("container 3f2a1b4c5d6e exited")).toBe(sig("container 9e8d7c6b5a41 exited"));
+    expect(sig("lease expired at 1795572656123")).toBe(sig("lease expired at 1795572999999"));
+    expect(sig("lease expired at 1795572656123")).toContain("<num>");
+    expect(sig("error XX000 08006 ECONNREFUSED")).toBe("assertion|error XX000 08006 ECONNREFUSED");
   });
 });
 
@@ -361,10 +374,69 @@ describe("a continuous red run is not same tree, both colours (#57)", () => {
     const store = scenario([failed(20), failed(21), failed(22)]);
     expect(classify(store, NOW).cases[`infra:red-run:${STEP}`]).toBeUndefined();
 
-    store.cases[`flake:${TEST}`] = kase({ state: "retired", redRun: { step: STEP, since: 5, builds: 9 } });
+    store.cases[`flake:${TEST}`] = kase({ state: "retired", redRun: { step: STEP, since: 5, builds: 9, last: 20 } });
     const { cases } = classify(store, NOW);
-    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 5 } });
+    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 5, builds: 11, last: 22 } });
     expect(cases[`infra:red-run:${STEP}`]).toMatchObject({ kind: "infra", state: "confirmed", redRun: { step: STEP, since: 5 } });
+    expect(cases[`infra:red-run:${STEP}`]!.rule).toBe(`red on every build of ${STEP} since #5 (11 builds)`);
+
+    // A run recorded before `last` cannot prove it is the same run: no fallback.
+    store.cases[`flake:${TEST}`] = kase({ state: "retired", redRun: { step: STEP, since: 5, builds: 9 } });
+    expect(classify(store, NOW).cases[`infra:red-run:${STEP}`]).toBeUndefined();
+  });
+
+  it("keeps counting an outage whose old reds the window prunes on every scan", () => {
+    const scan = (store: CiHealthStore) => {
+      const { cases } = classify(store, NOW);
+      store.cases[`flake:${TEST}`] = cases[`flake:${TEST}`]!;
+      return cases[`flake:${TEST}`]!.redRun;
+    };
+    const first = scenario([green(10), failed(11, "T"), failed(12), failed(13)]);
+    expect(scan(first)).toMatchObject({ since: 10, builds: 3, last: 13 });
+
+    const second = scenario([failed(12), failed(13), failed(14), failed(15)]);
+    second.cases = first.cases;
+    expect(scan(second)).toMatchObject({ since: 10, builds: 5, last: 15 });
+
+    const third = scenario([failed(15), failed(16), failed(17), failed(18)]);
+    third.cases = second.cases;
+    expect(scan(third)).toMatchObject({ since: 10, builds: 8, last: 18 });
+  });
+
+  it("does not hand an ended run's since to a new run after a scan gap pruned its green", () => {
+    // The run ended at #14 (green); a gap pruned #11–#14, and #20–#22 are a new run.
+    const store = scenario([failed(20), failed(21), failed(22)]);
+    store.cases[`flake:${TEST}`] = kase({ state: "retired", redRun: { step: STEP, since: 10, builds: 3, last: 13 } });
+    const { cases } = classify(store, NOW);
+    expect(cases[`infra:red-run:${STEP}`]).toBeUndefined();
+    expect(cases[`flake:${TEST}`]?.redRun).toBeUndefined();
+  });
+
+  it("does not read an ended run's recovery on main as a main flip", () => {
+    const mainRed = (number: number, branch = "main"): Failure => ({ ...red(number, `2026-11-20T01:${number}:00.000Z`), branch });
+    const recovery = build(14, { state: "passed", steps: { [STEP]: "passed" }, sincePrevious: { from: "c13", files: ["src/other.ts"] } });
+    const store = emptyStore();
+    store.builds = [build(10, { state: "passed", steps: { [STEP]: "passed" }, tree: "T" }), build(11, { tree: "T" }), build(12), build(13), recovery];
+    store.failures = [mainRed(11), mainRed(12), mainRed(13)];
+    const { cases } = classify(store, NOW);
+    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 10, builds: 3, last: 13 } });
+    expect(cases[`regression:${TEST}`]).toBeUndefined();
+  });
+
+  it("does not confirm a run of one main red and two queue reds when main recovers", () => {
+    const at = (number: number) => `2026-11-20T01:${number}:00.000Z`;
+    const recovery = build(14, { state: "passed", steps: { [STEP]: "passed" }, sincePrevious: { from: "c11", files: ["src/other.ts"] } });
+    const store = emptyStore();
+    store.builds = [
+      build(10, { state: "passed", steps: { [STEP]: "passed" }, tree: "T" }),
+      build(11, { tree: "T" }),
+      build(12, { branch: QUEUE }),
+      build(13, { branch: QUEUE }),
+      recovery,
+    ];
+    store.failures = [{ ...red(11, at(11)), branch: "main" }, red(12, at(12)), red(13, at(13))];
+    const { cases } = classify(store, NOW);
+    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 10, builds: 3 } });
   });
 
   it("gives a dead step one evidence row per build, however many tests fail on it", () => {
@@ -390,5 +462,24 @@ describe("a continuous red run is not same tree, both colours (#57)", () => {
     recovered.builds = [build(100), build(101), build(102), build(103, { state: "passed", steps: { [STEP]: "passed" } })];
     mergeCases(recovered, structuredClone(next));
     expect(recovered.cases[KEY_RUN]).toBeUndefined();
+  });
+
+  it("sweeps a rejected case with no red since its boundary once a later build passed its step", () => {
+    const KEY_RUN = `infra:red-run:${STEP}`;
+    const value = signed({ kind: "infra", evidence: [outage(100)] });
+    const next: Classification = { cases: {}, main: { state: "green", since: "2026-11-20T00:00:00.000Z", build: 103 } };
+    const passed = build(101, { state: "passed", steps: { [STEP]: "passed" } });
+    expect(greenSinceRejection(value, [build(100), passed])).toBe(true);
+    expect(greenSinceRejection(value, [build(100)])).toBe(false);
+
+    const held = storeWith(value, KEY_RUN);
+    held.builds = [build(100)];
+    mergeCases(held, structuredClone(next));
+    expect(held.cases[KEY_RUN]).toMatchObject({ state: "retired", rejectedAt: { build: 100 } });
+
+    const green = storeWith(value, KEY_RUN);
+    green.builds = [build(100), passed];
+    mergeCases(green, structuredClone(next));
+    expect(green.cases[KEY_RUN]).toBeUndefined();
   });
 });
