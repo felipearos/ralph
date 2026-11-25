@@ -449,7 +449,12 @@ export function useLoopControl(loop: string): Polled<ControlView> {
 export const useNotifications = (): Polled<NotificationsView> => usePolled(notificationsRead(shellProject()));
 export const useLoopNotifications = (loop: string): Polled<NotificationFeed> => usePolled(loopNotificationsRead(shellProject(), loop));
 export const useLoopHistory = (loop: string): Polled<HistoryView> => usePolled(loopHistoryRead(shellProject(), loop));
-export const useAgents = (): Polled<AgentsView> => usePolled(agentsRead(shellProject()));
+/** Carries the busy flag for the roster PR step's Refresh, which spins while a read is out. */
+export function useAgents(): Polled<AgentsView> & { busy: boolean } {
+  const target = agentsRead(shellProject());
+  const store = useQueryStore();
+  return { ...useReadOn(store, target), busy: useReadBusyOn(store, target) };
+}
 /** The labels page draws a busy Refresh button, so this read alone carries the flag. */
 export function useLabels(): Polled<LabelsView> & { busy: boolean } {
   const target = labelsRead(shellProject());

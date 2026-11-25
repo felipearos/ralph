@@ -584,8 +584,12 @@ export async function agentGuide(deps: AgentsDeps): Promise<GuideView> {
  * `ready` once `origin/<baseBranch>` names it, else `pending-merge`, with the
  * PR that adds it. A `ready` agent whose supervisor is alive has been started
  * and is left out, even while the main checkout sits on a branch that predates
- * its roster entry. Read-only: no fetch, so the base branch is as last fetched
- * — every running loop fetches it each iteration, and a Start fetches first.
+ * its roster entry. The base branch is as last fetched — every running loop
+ * fetches it each iteration, and a Start fetches first — except when GitHub
+ * calls an agent's roster PR merged and that ref does not list it yet: then
+ * it is fetched once and read again, since on a project with no loop running
+ * nothing else would, and the card would wait on a merge already made. A
+ * fetch moves only `origin/<baseBranch>`; no checkout is touched.
  */
 export async function listPendingAgents(deps: AgentsDeps): Promise<AgentsView> {
   const { agents } = deps;
@@ -605,8 +609,19 @@ export async function listPendingAgents(deps: AgentsDeps): Promise<AgentsView> {
     return name !== null && !config.value.loops.includes(name) ? [{ name, worktree: path }] : [];
   });
   if (candidates.length === 0) return answer({ baseBranch: config.value.baseBranch });
-  const base = await readConfig(deps, { ref: baseRef(config.value) });
+  let base = await readConfig(deps, { ref: baseRef(config.value) });
   const onBase = (name: string): boolean => base.ok && base.value.loops.includes(name);
+  // The PRs of the agents the base does not list yet, read before the base is
+  // trusted: one GitHub calls merged means that ref is behind, so fetch it.
+  const waiting = new Map<string, RosterPrView | null>();
+  for (const { name } of candidates) {
+    if (!onBase(name)) waiting.set(name, await findPr(deps, config.value.repo, "add", name));
+  }
+  if ([...waiting.values()].some((pr) => pr?.state === "merged")) {
+    // A failed fetch keeps the read already made: the card says pending, as before.
+    const fresh = await readBaseConfig(deps, config.value);
+    if (fresh.ok) base = fresh;
+  }
   // A merged agent whose supervisor is alive has been started: the card's job
   // is done, however far behind the main checkout's own branch is.
   const supervisors = candidates.some(({ name }) => onBase(name))
@@ -622,7 +637,7 @@ export async function listPendingAgents(deps: AgentsDeps): Promise<AgentsView> {
     const agent = {
       ...candidate,
       status: onBase(candidate.name) ? ("ready" as const) : ("pending-merge" as const),
-      pr: await findPr(deps, config.value.repo, "add", candidate.name),
+      pr: waiting.has(candidate.name) ? waiting.get(candidate.name)! : await findPr(deps, config.value.repo, "add", candidate.name),
     };
     // Readiness is a fold over reads that each degrade on their own, so one
     // agent whose every command fails still leaves the other cards complete.

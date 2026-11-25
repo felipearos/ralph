@@ -392,7 +392,8 @@ const BADGE_TONE: Record<Tone, string> = {
 
 /**
  * The roster PR step as one status card: the PR and its state, what Start
- * will do about it, and — while it waits — that the card refreshes itself.
+ * will do about it, and — while it waits — that the card refreshes itself,
+ * with a Refresh for whoever just merged and will not wait for the poll.
  * "Merged" follows the agent's status, not the PR's own state: the base
  * branch naming the agent is what lets Start through.
  */
@@ -401,11 +402,15 @@ function RosterPrCard({
   base,
   status,
   card,
+  refreshing,
+  onRefresh,
 }: {
   name: string;
   base: string;
   status: PendingAgentView["status"];
   card: PendingCard;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   const merged = status === "ready";
   const state = merged ? "merged" : card.pr?.state === "closed" ? "closed" : "open";
@@ -437,7 +442,12 @@ function RosterPrCard({
       {!merged && (
         <p className="flex items-center gap-2 border-t px-3.5 py-2 text-xs text-muted-foreground">
           <span aria-hidden className="size-1.5 shrink-0 animate-pulse rounded-full bg-status-info" />
-          Checking every few seconds · you can close this and come back from {name}'s setup card
+          <span className="flex-1">Checking every few seconds · you can close this and come back from {name}'s setup card</span>
+          {/* Never disabled: the poll keeps a read out most of the time, and a click then is still a fresh ask. */}
+          <Button variant="outline" size="sm" className="shrink-0" onClick={onRefresh}>
+            <RotateCw aria-hidden className={cn("size-3.5", refreshing && "animate-spin")} />
+            Refresh
+          </Button>
         </p>
       )}
     </div>
@@ -492,11 +502,14 @@ type FlowTarget = { kind: "new" } | { kind: "resume"; name: string };
 function AddAgentFlow({
   target,
   view,
+  refreshing,
   onClose,
   onChanged,
 }: {
   target: FlowTarget;
   view: AgentsView | null;
+  /** A read of the agents view is out: the roster PR step's Refresh spins meanwhile. */
+  refreshing: boolean;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -641,7 +654,7 @@ function AddAgentFlow({
                 {agent === null ? (
                   <p className="text-sm text-muted-foreground">Reading {name}'s worktree…</p>
                 ) : (
-                  <RosterPrCard name={name} base={base} status={agent.status} card={card!} />
+                  <RosterPrCard name={name} base={base} status={agent.status} card={card!} refreshing={refreshing} onRefresh={onChanged} />
                 )}
               </>
             )}
@@ -847,6 +860,7 @@ export function AgentsAdmin({ onChanged }: { onChanged: () => void }) {
           key={flow.kind === "new" ? "new" : flow.name}
           target={flow}
           view={view}
+          refreshing={agents.busy}
           onClose={() => setFlow(null)}
           onChanged={changed}
         />
