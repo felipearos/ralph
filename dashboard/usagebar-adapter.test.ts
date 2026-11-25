@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ExecResult, Invocation } from "./executor";
 import type { UsageBarView } from "./contracts";
 import {
+  baselineOf,
   carryStale,
   createUsageBarAdapter,
   narrowUsageBar,
@@ -158,6 +159,21 @@ describe("narrowUsageBar", () => {
     });
   });
 
+  it("baselines every provider with bars, keeping those a reading left out", () => {
+    const before = narrowUsageBar(
+      JSON.stringify([
+        { provider: "codex", usage: { primary: { usedPercent: 10, windowMinutes: 43200 } } },
+        { provider: "claude", usage: { primary: { usedPercent: 40, windowMinutes: 300 } } },
+      ]),
+      AT,
+    );
+    const partial = narrowUsageBar(JSON.stringify([{ provider: "codex", error: { message: "down" } }]), AT);
+    // Codex is named with no bars and nothing carried: it drops; Claude, unnamed, stays.
+    expect(baselineOf(before, partial)).toMatchObject({ providers: [{ provider: "claude" }] });
+    expect(baselineOf(before, { state: "unavailable", readAt: AT, why: "x" })).toBe(before);
+    expect(baselineOf(null, partial)).toBeNull();
+  });
+
   it("reads anything that is not a JSON array as unavailable", () => {
     expect(narrowUsageBar("not json", AT)).toEqual({ state: "unavailable", readAt: AT, why: "codexbar printed no JSON" });
     expect(narrowUsageBar("{}", AT)).toMatchObject({ state: "unavailable" });
@@ -255,6 +271,54 @@ describe("createUsageBarAdapter", () => {
     await settle();
     expect(await adapter.usage()).toMatchObject({ providers: [{ stale: true, windows: [{ usedPercent: 40 }] }] });
     expect(saves).toHaveLength(2);
+  });
+
+  it("shows the remembered bars, stale, when the CLI prints nothing after a restart", async () => {
+    const memory = {
+      load: () => ({
+        state: "read",
+        readAt: AT,
+        providers: [{ provider: "claude", plan: "max", windows: [{ label: "Weekly", usedPercent: 40 }] }],
+      }),
+      save: () => {},
+    };
+    const { exec } = scripted([{ status: 1, stdout: "", stderr: "codexbar: timed out" }]);
+    const adapter = createUsageBarAdapter({ exec, cwd: "/tmp", env: {}, memory });
+    expect(await adapter.usage()).toMatchObject({
+      state: "read",
+      providers: [{ provider: "claude", error: "codexbar: timed out", stale: true, windows: [{ usedPercent: 40 }] }],
+    });
+  });
+
+  it("keeps a provider a partial read left out, so its bars survive a restart", async () => {
+    let saved: UsageBarView | null = null;
+    const memory = { load: () => saved, save: (view: UsageBarView) => (saved = view) };
+    const both = JSON.stringify([
+      { provider: "codex", usage: { primary: { usedPercent: 10, windowMinutes: 43200 } } },
+      { provider: "claude", usage: { primary: { usedPercent: 40, windowMinutes: 300 } } },
+    ]);
+    const codexOnly = JSON.stringify([{ provider: "codex", usage: { primary: { usedPercent: 12, windowMinutes: 43200 } } }]);
+    let nowMs = 0;
+    const first = createUsageBarAdapter({
+      exec: scripted([
+        { status: 0, stdout: both, stderr: "" },
+        { status: 0, stdout: codexOnly, stderr: "" },
+      ]).exec,
+      cwd: "/tmp",
+      env: {},
+      ttlMs: 1,
+      now: () => nowMs,
+      memory,
+    });
+    await first.usage();
+    nowMs = 10;
+    await first.usage();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(saved).toMatchObject({ providers: [{ provider: "codex", windows: [{ usedPercent: 12 }] }, { provider: "claude" }] });
+
+    const limited = JSON.stringify([{ provider: "claude", error: { message: "rate limited" } }]);
+    const second = createUsageBarAdapter({ exec: scripted([{ status: 3, stdout: limited, stderr: "" }]).exec, cwd: "/tmp", env: {}, memory });
+    expect(await second.usage()).toMatchObject({ providers: [{ provider: "claude", stale: true, windows: [{ usedPercent: 40 }] }] });
   });
 
   it("survives a memory that throws", async () => {

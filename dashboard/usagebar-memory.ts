@@ -4,9 +4,11 @@
  *
  * The file holds what the page already shows: limit windows, the plan and
  * the account name. No token, no loop state; deleting it only costs the stale
- * bars until the next good read. Written atomically, user-only.
+ * bars until the next good read. Written atomically, user-only: the directory
+ * is narrowed to its owner, and the temporary file is created exclusively, so
+ * a link planted at its name fails the save instead of being written through.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -32,10 +34,17 @@ export function createUsageBarFileMemory(path: string = usageBarMemoryPath()): {
       }
     },
     save(view) {
-      mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-      const temp = `${path}.${process.pid}.tmp`;
-      writeFileSync(temp, JSON.stringify(view), { mode: 0o600 });
-      renameSync(temp, path);
+      const dir = join(path, "..");
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      const temp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+      try {
+        writeFileSync(temp, JSON.stringify(view), { mode: 0o600, flag: "wx" });
+        renameSync(temp, path);
+      } catch (error) {
+        rmSync(temp, { force: true });
+        throw error;
+      }
     },
   };
 }

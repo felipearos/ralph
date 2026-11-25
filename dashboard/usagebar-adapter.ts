@@ -121,9 +121,21 @@ function providerView(value: unknown): UsageBarProviderView | null {
  * A failed provider's last good windows, carried into a fresh reading and
  * marked stale (UsageBar's `mergeStale`): a provider whose usage endpoint
  * rate-limits keeps the bars it last showed instead of blanking to an error.
+ * A run that printed nothing at all keeps every bar it can, each provider
+ * stale and carrying why the run failed.
  */
 export function carryStale(previous: UsageBarView | null, fresh: UsageBarView): UsageBarView {
-  if (previous?.state !== "read" || fresh.state !== "read") return fresh;
+  if (previous?.state !== "read") return fresh;
+  if (fresh.state === "unavailable") {
+    const carried = previous.providers.filter((provider) => provider.windows.length > 0);
+    if (carried.length === 0) return fresh;
+    return {
+      state: "read",
+      readAt: fresh.readAt,
+      providers: carried.map((provider) => ({ ...provider, error: fresh.why, stale: true })),
+    };
+  }
+  if (fresh.state !== "read") return fresh;
   return {
     ...fresh,
     providers: fresh.providers.map((provider) => {
@@ -140,6 +152,23 @@ export function carryStale(previous: UsageBarView | null, fresh: UsageBarView): 
       };
     }),
   };
+}
+
+/**
+ * The bars to carry from next time: every provider with windows in this
+ * reading, and every one the reading left out kept from before, so a partial
+ * read never forgets a provider it did not mention. Pure.
+ */
+export function baselineOf(previous: UsageBarView | null, view: UsageBarView): UsageBarView | null {
+  if (view.state !== "read") return previous;
+  const current = view.providers.filter((provider) => provider.windows.length > 0);
+  const named = new Set(view.providers.map((provider) => provider.provider));
+  const kept =
+    previous?.state === "read"
+      ? previous.providers.filter((provider) => provider.windows.length > 0 && !named.has(provider.provider))
+      : [];
+  const providers = [...current, ...kept];
+  return providers.length === 0 ? previous : { state: "read", readAt: view.readAt, providers };
 }
 
 /** What the CLI printed, or why it is not a reading. Pure. */
@@ -388,7 +417,6 @@ export function createUsageBarAdapter(
   };
 
   const remember = (view: UsageBarView): void => {
-    if (view.state !== "read" || !view.providers.some((provider) => provider.windows.length > 0)) return;
     try {
       options.memory?.save(view);
     } catch {
@@ -409,10 +437,11 @@ export function createUsageBarAdapter(
         why,
       }));
       const merged = carryStale(lastUsage, fresh);
-      // A run that printed nothing keeps the reading to carry from.
-      if (merged.state === "read") {
-        lastUsage = merged;
-        remember(merged);
+      // A run that printed nothing teaches nothing new: the baseline stands.
+      const next = fresh.state === "read" ? baselineOf(lastUsage, merged) : lastUsage;
+      if (next !== null && next !== lastUsage) {
+        lastUsage = next;
+        remember(next);
       }
       return merged;
     },
