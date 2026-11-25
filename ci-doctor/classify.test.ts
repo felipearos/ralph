@@ -370,6 +370,16 @@ describe("a continuous red run is not same tree, both colours (#57)", () => {
     expect(Object.keys(cases).filter((key) => key.startsWith("infra:red-run:"))).toEqual([]);
   });
 
+  it("raises the ongoing run's incident when an older, longer run has ended", () => {
+    // #11–#15 is an ended five-build run (recovered at #16); #17–#19 is a new
+    // three-build run after the same-tree green #16, still going.
+    const recovered = build(16, { branch: QUEUE, state: "passed", steps: { [STEP]: "passed" }, tree: "T2" });
+    const store = scenario([green(10), failed(11, "T"), failed(12), failed(13), failed(14), failed(15), recovered, failed(17, "T2"), failed(18), failed(19)]);
+    const { cases } = classify(store, NOW);
+    expect(cases[`flake:${TEST}`]).toMatchObject({ state: "retired", redRun: { step: STEP, since: 16, builds: 3, last: 19 } });
+    expect(cases[`infra:red-run:${STEP}`]).toMatchObject({ kind: "infra", state: "confirmed", redRun: { step: STEP, since: 16, builds: 3 } });
+  });
+
   it("keeps a run longer than the window while the case carries it and every build is still red", () => {
     const store = scenario([failed(20), failed(21), failed(22)]);
     expect(classify(store, NOW).cases[`infra:red-run:${STEP}`]).toBeUndefined();

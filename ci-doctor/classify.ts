@@ -415,17 +415,25 @@ export function flakeOf(
     return streak.builds.length >= RED_RUN_MIN && red.build <= streak.builds.at(-1)!.number ? streak : null;
   };
 
-  // Pass 1, the red run (#57): the longest run of `RED_RUN_MIN`+ consecutive
-  // reds right after an older same-tree green, over every red. Found first so
-  // the rules below can leave its reds out — an outage's own reds are not
-  // evidence of a flake by any rule.
+  // Pass 1, the red run (#57): a run of `RED_RUN_MIN`+ consecutive reds right
+  // after an older same-tree green, over every red. Found first so the rules
+  // below can leave its reds out — an outage's own reds are not evidence of a
+  // flake by any rule. An ongoing run wins over an ended one whatever their
+  // lengths: an older, longer run that recovered must not hide the outage
+  // going on now. Then the longer run, then the later.
+  type Ranked = { ongoing: boolean; builds: number; last: number };
+  const beats = (a: Ranked, b: Ranked): boolean => {
+    if (a.ongoing !== b.ongoing) return a.ongoing;
+    return a.builds !== b.builds ? a.builds > b.builds : a.last > b.last;
+  };
   let redRun = null as FlakeVerdict["redRun"];
   for (const red of reds) {
     for (const build of ctx.store.builds) {
       if (!sameTreeGreen(red, build) || build.number > red.build) continue;
       const streak = runAfter(red, build);
       if (streak === null) continue;
-      if (redRun === null || streak.builds.length > redRun.builds) {
+      const found = { ongoing: streak.ongoing, builds: streak.builds.length, last: streak.builds.at(-1)!.number };
+      if (redRun === null || beats(found, redRun)) {
         redRun = {
           step: red.step ?? red.testId,
           since: build.number,
