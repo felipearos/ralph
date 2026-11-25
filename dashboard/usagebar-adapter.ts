@@ -129,9 +129,10 @@ export function carryStale(previous: UsageBarView | null, fresh: UsageBarView): 
   if (fresh.state === "unavailable") {
     const carried = previous.providers.filter((provider) => provider.windows.length > 0);
     if (carried.length === 0) return fresh;
+    // The bars were measured then, not now: the run that failed measured nothing.
     return {
       state: "read",
-      readAt: fresh.readAt,
+      readAt: previous.readAt,
       providers: carried.map((provider) => ({ ...provider, error: fresh.why, stale: true })),
     };
   }
@@ -155,20 +156,44 @@ export function carryStale(previous: UsageBarView | null, fresh: UsageBarView): 
 }
 
 /**
- * The bars to carry from next time: every provider with windows in this
- * reading, and every one the reading left out kept from before, so a partial
- * read never forgets a provider it did not mention. Pure.
+ * The bars carried from: a reading of every provider with windows, and when
+ * each was last named by a run. Saved as is, so the rule holds after a restart.
  */
-export function baselineOf(previous: UsageBarView | null, view: UsageBarView): UsageBarView | null {
+export type UsageBarBaseline = Extract<UsageBarView, { state: "read" }> & { seenAt: Record<string, string> };
+
+/**
+ * How long a provider a reading leaves out keeps its bars. `codexbar` names
+ * every enabled provider, failed or not, so a long absence means it was
+ * disabled; a short one is a partial read the bars should outlast.
+ */
+export const OMITTED_KEEP_MS = 6 * 60 * 60_000;
+
+/**
+ * The bars to carry from next time: every provider with windows in this
+ * reading, and every one the reading left out kept from before while it was
+ * named within `keepMs`, so a partial read never forgets a provider it did
+ * not mention, and a disabled one does not come back. Pure.
+ */
+export function baselineOf(
+  previous: UsageBarBaseline | null,
+  view: UsageBarView,
+  keepMs: number = OMITTED_KEEP_MS,
+): UsageBarBaseline | null {
   if (view.state !== "read") return previous;
+  const at = Date.parse(view.readAt);
   const current = view.providers.filter((provider) => provider.windows.length > 0);
   const named = new Set(view.providers.map((provider) => provider.provider));
-  const kept =
-    previous?.state === "read"
-      ? previous.providers.filter((provider) => provider.windows.length > 0 && !named.has(provider.provider))
-      : [];
+  const seenAt: Record<string, string> = {};
+  for (const provider of current) seenAt[provider.provider] = view.readAt;
+  const kept = (previous?.providers ?? []).filter((provider) => {
+    if (provider.windows.length === 0 || named.has(provider.provider)) return false;
+    const seen = previous!.seenAt[provider.provider] ?? previous!.readAt;
+    if (!(at - Date.parse(seen) < keepMs)) return false;
+    seenAt[provider.provider] = seen;
+    return true;
+  });
   const providers = [...current, ...kept];
-  return providers.length === 0 ? previous : { state: "read", readAt: view.readAt, providers };
+  return providers.length === 0 ? previous : { state: "read", readAt: view.readAt, providers, seenAt };
 }
 
 /** What the CLI printed, or why it is not a reading. Pure. */
@@ -319,7 +344,7 @@ export interface UsageBarMemory {
  * A remembered reading, if it still is one: only providers with windows are
  * kept, since only those can be carried. Pure.
  */
-export function recalled(raw: unknown): UsageBarView | null {
+export function recalled(raw: unknown): UsageBarBaseline | null {
   const view = record(raw);
   if (view?.state !== "read" || !Array.isArray(view.providers)) return null;
   const readAt = text(view.readAt);
@@ -358,7 +383,11 @@ export function recalled(raw: unknown): UsageBarView | null {
       },
     ];
   });
-  return providers.length === 0 ? null : { state: "read", readAt, providers };
+  if (providers.length === 0) return null;
+  const seen = record(view.seenAt) ?? {};
+  const seenAt: Record<string, string> = {};
+  for (const provider of providers) seenAt[provider.provider] = text(seen[provider.provider]) ?? readAt;
+  return { state: "read", readAt, providers, seenAt };
 }
 
 export interface UsageBarAdapter {
@@ -423,7 +452,7 @@ export function createUsageBarAdapter(
       // A reading that is not remembered only costs its bars after a restart.
     }
   };
-  let lastUsage: UsageBarView | null = null;
+  let lastUsage: UsageBarBaseline | null = null;
   try {
     lastUsage = recalled(options.memory?.load() ?? null);
   } catch {

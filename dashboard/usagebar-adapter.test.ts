@@ -144,6 +144,7 @@ describe("narrowUsageBar", () => {
     ).toEqual({
       state: "read",
       readAt: AT,
+      seenAt: { claude: AT },
       providers: [
         {
           provider: "claude",
@@ -168,10 +169,23 @@ describe("narrowUsageBar", () => {
       AT,
     );
     const partial = narrowUsageBar(JSON.stringify([{ provider: "codex", error: { message: "down" } }]), AT);
+    const base = baselineOf(null, before)!;
+    expect(base.seenAt).toEqual({ codex: AT, claude: AT });
     // Codex is named with no bars and nothing carried: it drops; Claude, unnamed, stays.
-    expect(baselineOf(before, partial)).toMatchObject({ providers: [{ provider: "claude" }] });
-    expect(baselineOf(before, { state: "unavailable", readAt: AT, why: "x" })).toBe(before);
+    expect(baselineOf(base, partial)).toMatchObject({ providers: [{ provider: "claude" }], seenAt: { claude: AT } });
+    expect(baselineOf(base, { state: "unavailable", readAt: AT, why: "x" })).toBe(base);
     expect(baselineOf(null, partial)).toBeNull();
+    // Left out past the keep window, a provider counts as disabled and is forgotten.
+    const later = narrowUsageBar(
+      JSON.stringify([{ provider: "codex", usage: { primary: { usedPercent: 11, windowMinutes: 43200 } } }]),
+      new Date(Date.parse(AT) + 7 * 60 * 60_000).toISOString(),
+    );
+    expect(baselineOf(base, later)?.providers.map((p) => p.provider)).toEqual(["codex"]);
+    const soon = narrowUsageBar(
+      JSON.stringify([{ provider: "codex", usage: { primary: { usedPercent: 11, windowMinutes: 43200 } } }]),
+      new Date(Date.parse(AT) + 60 * 60_000).toISOString(),
+    );
+    expect(baselineOf(base, soon)?.providers.map((p) => p.provider)).toEqual(["codex", "claude"]);
   });
 
   it("reads anything that is not a JSON array as unavailable", () => {
@@ -282,10 +296,20 @@ describe("createUsageBarAdapter", () => {
       }),
       save: () => {},
     };
-    const { exec } = scripted([{ status: 1, stdout: "", stderr: "codexbar: timed out" }]);
-    const adapter = createUsageBarAdapter({ exec, cwd: "/tmp", env: {}, memory });
+    let nowMs = Date.parse(AT) + 3_600_000;
+    const { exec } = scripted([
+      { status: 1, stdout: "", stderr: "codexbar: timed out" },
+      { status: 1, stdout: "", stderr: "codexbar: timed out" },
+    ]);
+    const adapter = createUsageBarAdapter({ exec, cwd: "/tmp", env: {}, ttlMs: 1, now: () => nowMs, memory });
+    expect(await adapter.usage()).toMatchObject({ readAt: AT });
+    nowMs += 10;
+    await adapter.usage();
+    await new Promise((resolve) => setImmediate(resolve));
+    // Failed runs measure nothing: the reading keeps the time its bars were read.
     expect(await adapter.usage()).toMatchObject({
       state: "read",
+      readAt: AT,
       providers: [{ provider: "claude", error: "codexbar: timed out", stale: true, windows: [{ usedPercent: 40 }] }],
     });
   });
