@@ -31,7 +31,7 @@
  * than 30 min, and, from the gate's GitHub read, a non-Buildkite required
  * check red on 3+ PRs with one description (`checkIncidents`).
  */
-import type { BuildRecord, Case, CaseState, CiHealthStore, Culprit, Evidence, Failure } from "./store";
+import { failureSignature, type BuildRecord, type Case, type CaseState, type CiHealthStore, type Culprit, type Evidence, type Failure } from "./store";
 
 export interface ClassifyOptions {
   baseBranch: string;
@@ -49,11 +49,22 @@ export const QUEUE_BRANCH = /^mergify\/merge-queue\//;
 export const MANAGED_STATES: ReadonlySet<CaseState> = new Set(["filed", "fixing", "fixed", "handed-off"]);
 
 /**
- * Does this case's rejection still stand against the evidence given (#240)?
+ * Does this case's rejection still stand against the evidence given (#240,
+ * #57)?
  *
  * `recurred`'s mirror (`gate.ts`): a doctor's rejection is taken as of a build,
- * and only evidence from a LATER build overturns it. Strictly later — a
+ * and only evidence from a LATER build can overturn it. Strictly later — a
  * rejection taken as of build N was taken with build N already read.
+ *
+ * Later evidence overturns it only when it is a DIFFERENT failure: a newer row
+ * whose `failureSignature` is not among the `signatures` the rejection
+ * recorded, or — when `builds` is given — a tested build after the boundary
+ * that PASSED the step a newer row failed in, which says the red is no longer
+ * continuous. The same reds on new builds keep it rejected: before #57 any
+ * newer build overturned it, and a step red on every build of a database
+ * outage reopened a rejected case seven times. A rejection with no
+ * `signatures`, or a malformed one, is an older record and keeps the older
+ * rule — any newer evidence overturns it (house rule 1).
  *
  * A case with no `rejectedAt` was never rejected, so nothing stands: that is
  * the answer for `classify.ts`'s own stale-retire, which reaches `retired`
@@ -63,12 +74,25 @@ export const MANAGED_STATES: ReadonlySet<CaseState> = new Set(["filed", "fixing"
  * which is what the delete sweep needs — with no fresh rows, nothing can have
  * overtaken the boundary.
  */
-export function rejectionStands(value: Case, evidence: readonly Evidence[]): boolean {
+export function rejectionStands(value: Case, evidence: readonly Evidence[], builds?: readonly BuildRecord[]): boolean {
   const boundary = value.rejectedAt?.build;
   if (typeof boundary !== "number") return false;
   // `?? []` for `rejectedBuild`'s reason: the store is a cache whose version
   // gate guards only the top level, so a field can be missing on a read back.
-  return !(evidence ?? []).some((seen) => seen.build > boundary);
+  const newer = (evidence ?? []).filter((seen) => seen.build > boundary);
+  if (newer.length === 0) return true;
+  const signatures: unknown = value.rejectedAt?.signatures;
+  if (!Array.isArray(signatures) || !signatures.every((signature) => typeof signature === "string")) return false;
+  const known = new Set<string>(signatures);
+  if (newer.some((seen) => !known.has(failureSignature(seen.kind, seen.line)))) return false;
+  if (builds === undefined) return true;
+  // Only a named step: a null step's "pass" is any green build, which would
+  // overturn every rejection on the first unrelated green.
+  const steps = [...new Set(newer.map((seen) => seen.step).filter((step): step is string => typeof step === "string"))];
+  const greenSince = (builds ?? []).some(
+    (build) => tested(build) && build.number > boundary && build.steps != null && steps.some((step) => passedStep(build, step)),
+  );
+  return !greenSince;
 }
 
 const TIMEOUT_KINDS = new Set(["timeout", "hook-timeout"]);
@@ -130,7 +154,14 @@ const ranStep = (build: BuildRecord, step: string | null): boolean =>
 const passedStep = (build: BuildRecord, step: string | null): boolean =>
   step === null ? build.state === "passed" : build.steps[step] === "passed";
 
-const evidenceOf = (row: Failure): Evidence => ({ build: row.build, branch: row.branch, commit: row.commit, kind: row.kind, line: row.line });
+const evidenceOf = (row: Failure): Evidence => ({
+  build: row.build,
+  branch: row.branch,
+  commit: row.commit,
+  kind: row.kind,
+  line: row.line,
+  step: row.step,
+});
 
 const sameFailure = (a: Failure, b: Failure): boolean => a.kind === b.kind && a.line === b.line;
 
@@ -288,6 +319,28 @@ export interface FlakeVerdict {
   state: "candidate" | "confirmed" | "retired";
   rule: string | null;
   candidates: Failure[];
+  /** Set when "same tree, both colours" was refused because the test has been red on every build since the green (#57). */
+  redRun: { step: string; since: number; builds: number } | null;
+}
+
+/**
+ * How many consecutive red builds after a same-tree green make the pair a
+ * red RUN rather than a flake (#57). A step that fails on every build since
+ * a green — a database that went away — is not "both colours": the green is
+ * from before the outage. Three, not fewer: a genuine flake with an older
+ * green of the same tree and one or two reds since would be lost below it.
+ */
+export const RED_RUN_MIN = 3;
+
+/**
+ * The red run since `green`: every tested build after it that ran `step`
+ * failed this test (`failed`) and none passed the step, and there are at
+ * least `RED_RUN_MIN` of them. Their count, or null when there is no run.
+ */
+function redRunSince(ctx: Context, green: BuildRecord, step: string | null, failed: ReadonlySet<number>): number | null {
+  const after = ctx.store.builds.filter((build) => tested(build) && build.number > green.number && ranStep(build, step));
+  if (after.length < RED_RUN_MIN) return null;
+  return after.every((build) => failed.has(build.number) && !passedStep(build, step)) ? after.length : null;
 }
 
 /** Rule 3. `rows` are T's non-retried failures outside PR-specific branches; `retried` its retried ones. */
@@ -303,17 +356,27 @@ export function flakeOf(ctx: Context, rows: Failure[], retried: Failure[]): Flak
   if (candidates.some((row) => row.branch === baseBranch && greenNextWithoutTouching(ctx, row))) rules.push("main flip");
 
   // Same tree, both colours: another build of the same tree passed T's step, or the red job's retry did.
+  // An OLDER green does not count when T has been red on every build since it
+  // (#57): that is a continuous red run, and the green predates its cause.
   const reds = [...candidates, ...retriedCandidates];
+  const failed = new Set([...rows, ...retried].map((row) => row.build));
+  // Declared with `as` so the closure's assignment is not narrowed away.
+  let redRun = null as FlakeVerdict["redRun"];
   const sameTree = reds.some((red) => {
     const own = ctx.builds.get(red.build);
     if (red.retried && own !== undefined && passedStep(own, red.step)) return true;
-    return ctx.store.builds.some(
-      (build) =>
+    return ctx.store.builds.some((build) => {
+      const green =
         build.number !== red.build &&
         (build.commit === red.commit || (own?.tree != null && build.tree === own.tree)) &&
         passedStep(build, red.step) &&
-        !rows.some((row) => row.build === build.number),
-    );
+        !rows.some((row) => row.build === build.number);
+      if (!green || build.number > red.build) return green;
+      const run = redRunSince(ctx, build, red.step, failed);
+      if (run === null) return true;
+      if (redRun === null || run > redRun.builds) redRun = { step: red.step ?? red.testId, since: build.number, builds: run };
+      return false;
+    });
   });
   if (sameTree) rules.push("same tree, both colours");
 
@@ -324,12 +387,15 @@ export function flakeOf(ctx: Context, rows: Failure[], retried: Failure[]): Flak
     rules.push("cross-branch recurrence");
   }
 
-  if (rules.length > 0) return { state: "confirmed", rule: rules.join("; "), candidates };
+  if (rules.length > 0) return { state: "confirmed", rule: rules.join("; "), candidates, redRun };
 
   const newest = Math.max(...reds.map((row) => ms(row.finishedAt)));
   const stale = ctx.now - newest > ctx.options.retireHours * 3_600_000;
-  return { state: stale ? "retired" : "candidate", rule: null, candidates };
+  return { state: stale ? "retired" : "candidate", rule: null, candidates, redRun };
 }
+
+const redRunRule = (run: NonNullable<FlakeVerdict["redRun"]>): string =>
+  `red on every build of ${run.step} since #${run.since} (${run.builds} builds)`;
 
 function waitedTooLong(build: BuildRecord, options: ClassifyOptions): boolean {
   const waited = ms(build.startedAt) - ms(build.createdAt);
@@ -357,6 +423,9 @@ export function classify(store: CiHealthStore, now: number, options: ClassifyOpt
     byTest.set(row.testId, list);
   }
 
+  // Red runs by step (#57): tests failing on one dead step share one incident.
+  const redRuns = new Map<string, { rows: Failure[]; run: NonNullable<FlakeVerdict["redRun"]> }>();
+
   for (const [testId, all] of byTest) {
     const rows = all.filter((row) => !row.retried).sort((a, b) => a.build - b.build);
     const retried = all.filter((row) => row.retried);
@@ -383,9 +452,33 @@ export function classify(store: CiHealthStore, now: number, options: ClassifyOpt
     const rest = rows.filter((row) => !own.has(row.branch));
     const retriedRest = retried.filter((row) => !own.has(row.branch));
     const flake = flakeOf(ctx, rest, retriedRest);
-    if (flake !== null) {
+    if (flake !== null && flake.state !== "confirmed" && flake.redRun !== null) {
+      // A continuous red run (#57): not a flake to fix, an incident on the
+      // step. The flake case is retired so the doctor is not offered it, and
+      // one infra case per step stands for the run.
+      const run = flake.redRun;
+      cases[`flake:${testId}`] = {
+        ...newCase("flake", "retired", [...rest, ...retriedRest], ctx.builds, options.baseBranch),
+        rule: redRunRule(run),
+        redRun: run,
+      };
+      const held = redRuns.get(run.step);
+      const inRun = rest.filter((row) => row.build > run.since);
+      redRuns.set(run.step, {
+        rows: [...(held?.rows ?? []), ...inRun],
+        run: held === undefined || run.builds > held.run.builds ? run : held.run,
+      });
+    } else if (flake !== null) {
       cases[`flake:${testId}`] = { ...newCase("flake", flake.state, [...rest, ...retriedRest], ctx.builds, options.baseBranch), rule: flake.rule };
     }
+  }
+
+  for (const [step, { rows, run }] of redRuns) {
+    cases[`infra:red-run:${step}`] = {
+      ...newCase("infra", "confirmed", rows, ctx.builds, options.baseBranch),
+      rule: redRunRule(run),
+      redRun: run,
+    };
   }
 
   // Infrastructure: one case per bootstrap signature, one for long waits to start.
@@ -471,12 +564,18 @@ export function mergeCases(store: CiHealthStore, next: Classification): void {
     // A doctor's rejection, while it stands, outranks whatever the rows now
     // propose — but not a later stage, so `MANAGED_STATES` stays first: a case
     // rejected and then filed belongs to the filing.
-    const stands = rejectionStands(prev, proposed.evidence);
+    const stands = rejectionStands(prev, proposed.evidence, store.builds);
+    // A confirmed flake is sticky — except against a red run (#57): the rows
+    // now say the step is red on every build, which is no flake to fix, and
+    // a sticky `confirmed` would keep the doctor on it for the whole outage.
+    // `redRun` itself comes from the proposal through the spread below, never
+    // from `prev`: a run that ended must not linger on the case.
+    const redRun = proposed.kind === "flake" && proposed.redRun != null;
     const state: CaseState = MANAGED_STATES.has(prev.state)
       ? prev.state
       : stands
         ? "retired"
-        : prev.state === "confirmed" && proposed.kind === "flake"
+        : prev.state === "confirmed" && proposed.kind === "flake" && !redRun
           ? "confirmed"
           : proposed.state;
     cases[key] = {
