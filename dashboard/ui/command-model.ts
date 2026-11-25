@@ -74,6 +74,7 @@ const DECLARED = [
   ["POST", "/api/lineup/updates/answer"],
   ["POST", "/api/jav/save"],
   ["POST", "/api/sleep"],
+  ["POST", "/api/claude-accounts"],
   ["POST", "/api/learnings/file"],
   ["POST", "/api/setup"],
   ["POST", "/api/setup/validate"],

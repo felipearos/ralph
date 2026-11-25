@@ -38,7 +38,7 @@ const COMMAND_MODULE = new Set(["command-model.ts", "command.tsx"]);
  */
 const IS_REMOTE_ALLOWED: Record<string, { count: number; why: string }> = {
   "command.tsx": { count: 2, why: "the command module: it is the one place a write is locked for the remote" },
-  "use-reads.ts": { count: 7, why: "read-side: picks the bridge-status target, skips reads the remote does not serve (the project sleep and the model-updates report among them), waits on the hosted versions instead of the stream (#731), and builds a hovered page's preload targets the same way (#739)" },
+  "use-reads.ts": { count: 8, why: "read-side: picks the bridge-status target, skips reads the remote does not serve (the project sleep, the Claude accounts and the model-updates report among them), waits on the hosted versions instead of the stream (#731), and builds a hovered page's preload targets the same way (#739)" },
   "app.tsx": { count: 3, why: "page shell: VerifierSheet and SentinelSheet visibility, and the BridgeBanner" },
   "labels.tsx": { count: 1, why: "read-side: the labels read is one the remote does not relay" },
   "lineup.tsx": { count: 2, why: "read-side: the harness catalog read and its refresh button" },

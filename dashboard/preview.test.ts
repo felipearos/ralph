@@ -88,6 +88,7 @@ const NOT_PREVIEWED: Record<string, string> = {
   "/api/agents/preflight": "part of the Add agent flow, local server only",
   "/api/agents/verifier": "the verifier role's config is read from a real checkout",
   "/api/jav": "the jav editor reads a real project's config",
+  "/api/claude-accounts": "the host's Claude accounts are read off the real machine",
   "/api/settings": "the Settings overview reads a real checkout's config and worktrees",
   "/api/settings/prompts": "the Prompts section reads a real checkout's fragments and renders its prompts",
   "/api/sentinel": "the Sentinel panel reads a real checkout's config and the sentinel's issue store",

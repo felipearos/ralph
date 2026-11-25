@@ -1141,6 +1141,82 @@ usage_limited() {
   return 1
 }
 
+# --- Which Claude account runs this loop (claude-account.ts) ----------------
+# A project may name the Claude accounts its loops run on (`claudeAccounts`
+# in .ralph/config.json, by the names the host registers in
+# ~/.config/ralph/claude-accounts.json) and what a loop does when the one it
+# runs on hits its usage limit: wait for the reset, move to the next account,
+# or stop. Asked at every checkpoint, so a loop goes back to its first choice
+# once that account resets. No rule, or any doubt, is `default`: the
+# environment's account, CLAUDE_CONFIG_DIR exactly as the loop was started.
+# Chosen per iteration, never inside one: a resumed session lives in the
+# account directory that started it.
+RALPH_INHERITED_CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR-}"
+RALPH_INHERITED_CLAUDE_CONFIG_DIR_SET="${CLAUDE_CONFIG_DIR+set}"
+# The account this iteration runs on; empty: the environment's.
+RALPH_CLAUDE_ACCOUNT=""
+RALPH_CLAUDE_ON_LIMIT=wait
+CLAUDE_ACCOUNT_VERDICT=default
+CLAUDE_ACCOUNT_NAME=""
+CLAUDE_ACCOUNT_DIR=""
+CLAUDE_ACCOUNT_SECONDS=0
+CLAUDE_ACCOUNT_DETAIL=""
+export RALPH_CLAUDE_ACCOUNT
+
+claude_account_pick() {
+  local out
+  out="$(bun "${RALPH_HOME}/claude-account.ts" pick --loop "$RALPH_LOOP_NAME" 2>> "$SUPERVISOR_LOG" | head -n 1)" || out=""
+  IFS=$'\t' read -r CLAUDE_ACCOUNT_VERDICT CLAUDE_ACCOUNT_NAME CLAUDE_ACCOUNT_DIR CLAUDE_ACCOUNT_SECONDS \
+    RALPH_CLAUDE_ON_LIMIT CLAUDE_ACCOUNT_DETAIL <<< "$out"
+  [ "$CLAUDE_ACCOUNT_NAME" = - ] && CLAUDE_ACCOUNT_NAME=""
+  [ "$CLAUDE_ACCOUNT_DIR" = - ] && CLAUDE_ACCOUNT_DIR=""
+  [[ "$CLAUDE_ACCOUNT_SECONDS" =~ ^[0-9]+$ ]] || CLAUDE_ACCOUNT_SECONDS=0
+  case "$RALPH_CLAUDE_ON_LIMIT" in wait|next|stop) ;; *) RALPH_CLAUDE_ON_LIMIT=wait ;; esac
+  case "$CLAUDE_ACCOUNT_VERDICT" in run|wait|stop) ;; *) CLAUDE_ACCOUNT_VERDICT=default ;; esac
+  # A verdict with no account to act on, or a wait of nothing, is a run on
+  # whatever it names — never a wait that cannot end.
+  if [ "$CLAUDE_ACCOUNT_VERDICT" != default ] && { [ -z "$CLAUDE_ACCOUNT_NAME" ] || [ -z "$CLAUDE_ACCOUNT_DIR" ]; }; then
+    CLAUDE_ACCOUNT_VERDICT=default
+  fi
+  if [ "$CLAUDE_ACCOUNT_VERDICT" = wait ] && [ "$CLAUDE_ACCOUNT_SECONDS" -eq 0 ]; then
+    CLAUDE_ACCOUNT_VERDICT=run
+  fi
+  return 0
+}
+
+# Points this loop's claude sessions (the orchestrator, its executors, the
+# inspector: all inherit the environment) at the picked account, and says so
+# when it changes.
+claude_account_apply() {
+  local next=""
+  if [ "$CLAUDE_ACCOUNT_VERDICT" = default ]; then
+    if [ -n "$RALPH_INHERITED_CLAUDE_CONFIG_DIR_SET" ]; then
+      export CLAUDE_CONFIG_DIR="$RALPH_INHERITED_CLAUDE_CONFIG_DIR"
+    else
+      unset CLAUDE_CONFIG_DIR
+    fi
+  else
+    export CLAUDE_CONFIG_DIR="$CLAUDE_ACCOUNT_DIR"
+    next="$CLAUDE_ACCOUNT_NAME"
+  fi
+  if [ "$next" != "$RALPH_CLAUDE_ACCOUNT" ]; then
+    say "${LOOP_DISPLAY}: ${CLAUDE_ACCOUNT_DETAIL}."
+    record --event account-switch --stage gate --detail "${next:-environment}: ${CLAUDE_ACCOUNT_DETAIL}"
+  fi
+  RALPH_CLAUDE_ACCOUNT="$next"
+}
+
+# The iteration's account hit its usage limit: mark it for every loop on the
+# host, and unless this loop waits for that account, drop the loop's own
+# wait, so the next checkpoint picks again (another account, or a wait for
+# the earliest reset, or a stop).
+claude_account_limited() {
+  [ -n "$RALPH_CLAUDE_ACCOUNT" ] || return 0
+  bun "${RALPH_HOME}/claude-account.ts" mark --account "$RALPH_CLAUDE_ACCOUNT" \
+    --state "$USAGE_WAIT_STATE" --loop "$RALPH_LOOP_NAME" 2>> "$SUPERVISOR_LOG" || return 0
+  [ "$RALPH_CLAUDE_ON_LIMIT" = wait ] || rm -f "$USAGE_WAIT_STATE"
+}
+
 # --- The plan usage stop (usage-stop.ts) -------------------------------------
 # A share of the account's plan, chosen per project or per loop, past which a
 # loop stops spending it: at `percent` it drains — no new ticket, the one it
@@ -2886,6 +2962,28 @@ while [ "$i" -lt "$MAX" ]; do
     [ "$CONTROL_STOP_KIND" = "failed" ] && exit 1
     exit 0
   fi
+  # The Claude account this iteration runs on. An account at its limit waits
+  # here like the usage wait below (the same event, so the dashboard shows the
+  # loop parked), or stops the loop when its rule says so.
+  claude_account_pick
+  case "$CLAUDE_ACCOUNT_VERDICT" in
+    stop)
+      say "${LOOP_DISPLAY}: ${CLAUDE_ACCOUNT_DETAIL} — stopping, claim kept; restart the loop to run again."
+      record --event usage-limit-stop --stop blocked --detail "$CLAUDE_ACCOUNT_DETAIL" \
+        --why "${CLAUDE_ACCOUNT_DETAIL}; restart the loop to run again"
+      exit 0
+      ;;
+    wait)
+      say "${LOOP_DISPLAY}: ${CLAUDE_ACCOUNT_DETAIL} (${CLAUDE_ACCOUNT_SECONDS}s)."
+      record --event usage-wait --stage gate --detail "${CLAUDE_ACCOUNT_DETAIL} (${CLAUDE_ACCOUNT_SECONDS}s left)"
+      renew_leases
+      # Back to the checkpoint either way: an operator command, or the reset,
+      # and the pick is asked again.
+      control_sleep "$CLAUDE_ACCOUNT_SECONDS" || continue
+      continue
+      ;;
+  esac
+  claude_account_apply
   # The last iteration was rejected by the usage limit: wait, with no model,
   # until the reset its state names. Cut short by an operator command, it goes
   # back to the checkpoint with the state kept, so the wait resumes after a
@@ -3505,6 +3603,7 @@ while [ "$i" -lt "$MAX" ]; do
   if ! any_sigil "$final" && usage_limited; then
     say "${LOOP_DISPLAY}: iteration ${i} hit the account's usage limit — ${USAGE_WAIT_SAID}; the claim is kept."
     record --event usage-wait --stage gate --detail "$USAGE_WAIT_SAID"
+    claude_account_limited
     # No settle runs for this iteration, so its blocker goes here: the retry
     # names its own or none. Its park hand-off likewise (#776).
     rm -f .ralph/logs/retry-blocker.json .ralph/logs/block-park.json

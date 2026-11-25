@@ -20,6 +20,7 @@ import * as javRoutes from "./jav-routes";
 import * as lifecycleRoutes from "./lifecycle-routes";
 import * as onboardingRoutes from "./onboarding-routes";
 import * as projectSleepRoutes from "./project-sleep-routes";
+import * as claudeAccountsRoutes from "./claude-accounts-routes";
 import * as recordsRoutes from "./records-routes";
 import { matchRoute, ROUTE_TABLE, type RouteMethod, type RouteRow } from "./route-table";
 import * as routes from "./routes";
@@ -95,6 +96,7 @@ function machine() {
     usage: vi.fn(async () => ({}) as never),
     intake: stub(),
     sleep: stub(),
+    claudeAccounts: stub(),
     learningsFile: stub(),
     evals: stub(),
     health: async () => ({}) as never,
@@ -192,6 +194,7 @@ const MODULES = {
   lifecycleRoutes,
   onboardingRoutes,
   projectSleepRoutes,
+  claudeAccountsRoutes,
   recordsRoutes,
   routes,
 };

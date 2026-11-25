@@ -34,6 +34,7 @@ import type {
   ProjectSettingsView,
   ProjectSetupView,
   ProjectSleepView,
+  ClaudeAccountsView,
   ProjectsHealthView,
   ProjectsView,
   ProjectUsageReport,
@@ -89,6 +90,7 @@ import {
   notificationsRead,
   projectSetupRead,
   projectSleepRead,
+  claudeAccountsRead,
   projectsHealthRead,
   projectsRead,
   type ReadTarget,
@@ -411,6 +413,8 @@ export const useProjectsHealth = (selected: string): Polled<ProjectsHealthView> 
 export const useProjectSetup = (project: string): Polled<ProjectSetupView> => usePolled(projectSetupRead(project));
 /** Local only: the remote page has no sleep route, so it reads nothing. */
 export const useProjectSleep = (project: string): Polled<ProjectSleepView> => usePolled(projectSleepRead(project, isRemote()));
+/** Local only: the accounts live on this machine, so the remote page reads nothing. */
+export const useClaudeAccounts = (project: string): Polled<ClaudeAccountsView> => usePolled(claudeAccountsRead(project, isRemote()));
 export const useBridgeStatus = (project: string): Polled<BridgeStatusView> => usePolled(bridgeStatusRead(project, isRemote()));
 export const useUsage = (): Polled<ProjectUsageReport> => usePolled(usageRead(shellProject()));
 /** The Sentinel panel's snapshot (#685); relayed, so the remote page polls it too. */

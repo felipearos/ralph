@@ -26,6 +26,7 @@ import type {
   ProjectSettingsView,
   ProjectSetupView,
   ProjectSleepView,
+  ClaudeAccountsView,
   ProjectsHealthView,
   ProjectsView,
   ProjectUsageReport,
@@ -127,6 +128,11 @@ export function bridgeStatusRead(project: string, remote: boolean): ReadTarget<B
  */
 export function projectSleepRead(project: string, remote: boolean): ReadTarget<ProjectSleepView> | null {
   return remote ? null : slow(apiPath(project, "/api/sleep"));
+}
+
+/** The host's Claude accounts and the project's choice of them; local only, like its route. */
+export function claudeAccountsRead(project: string, remote: boolean): ReadTarget<ClaudeAccountsView> | null {
+  return remote ? null : slow(apiPath(project, "/api/claude-accounts"));
 }
 
 export function usageRead(project: string | null): ReadTarget<ProjectUsageReport> {

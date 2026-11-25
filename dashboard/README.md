@@ -455,6 +455,18 @@ Paths below are shown unscoped; each is also served under `/api/p/:project`.
   cannot be seen (`running` lists them), and when `RALPH_DASHBOARD_ROOTS`
   makes the registry read-only. Served at the top level, not per project.
 
+- `GET /api/claude-accounts` — `ClaudeAccountsView`: the host's registered
+  Claude accounts (login, address, spent-limit time), the config directories
+  found but not registered, and the rule and current account of the project
+  and each loop. Local only; a CLI failure is a view with `problem`.
+- `POST /api/claude-accounts` — one of `{ action: "add", name, dir }`,
+  `{ action: "remove" | "clear-limit", name }`,
+  `{ action: "assign", target: "*" | <loop>, use, onLimit }`,
+  `{ action: "assign-env", target }`, `{ action: "unassign", target }` →
+  `{ ok, message, view }`; 400 on a malformed body. Each runs one verb of
+  `claude-account.ts`; the assignments are the host override loops read
+  before their next iteration. Local only.
+
 ### Agents
 
 - `GET /api/agents` — `{ project, baseBranch, pending, problem }`: the agents
