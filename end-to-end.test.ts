@@ -3393,9 +3393,12 @@ describe("a real ralph.sh iteration inside a trial sandbox", () => {
       writeFileSync(frontierCalls, "");
       writeFileSync(join(trial.harness, "frontier", "next.ts"), [
         'import { appendFileSync, readFileSync } from "node:fs";',
-        `appendFileSync(${JSON.stringify(frontierCalls)}, process.argv.slice(2).join(" ") + "\\n");`,
         `const ticket = Number(readFileSync(${JSON.stringify(answer)}, "utf8").trim());`,
-        'console.log(JSON.stringify({ ticket, title: `Ticket ${ticket}`, claimed: false, obstructed: [] }));',
+        // Like the real tool: a dry run offers the ticket, the gate's claim
+        // run (no --dry-run, #5) takes it. Logged with the ticket it answered.
+        `appendFileSync(${JSON.stringify(frontierCalls)}, process.argv.slice(2).join(" ") + " => #" + ticket + "\\n");`,
+        'const claimed = !process.argv.includes("--dry-run");',
+        'console.log(JSON.stringify({ ticket, title: `Ticket ${ticket}`, claimed, obstructed: [] }));',
         "",
       ].join("\n"));
 
@@ -3412,6 +3415,8 @@ describe("a real ralph.sh iteration inside a trial sandbox", () => {
       const said = (): string => (existsSync(out) ? readFileSync(out, "utf8") : "");
       const sessions = (): number => readFileSync(fx.argvLog, "utf8").split("\n").filter((line) => line.includes("--model fake-orchestrator-model")).length;
       const holdingPolls = (): number => said().split("\n").filter((line) => line.includes("holding on an unchanged verdict (frontier ticket #7")).length;
+      const frontierLines = (): string[] => readFileSync(frontierCalls, "utf8").split("\n").filter((line) => line !== "");
+      const claimRuns = (): string[] => frontierLines().filter((line) => !line.includes("--dry-run"));
 
       let runId: string | null = null;
       const fd = openSync(out, "a");
@@ -3429,6 +3434,8 @@ describe("a real ralph.sh iteration inside a trial sandbox", () => {
         expect(sessions(), said()).toBe(1);
         expect(said()).not.toContain("disagree persistently");
         expect(said()).not.toContain("iterations in a row found nothing");
+        // The one claim run is the first report's; the holding polls on #7 never claimed again.
+        expect(claimRuns(), said()).toEqual(["--take-one => #7"]);
 
         // The verdict changes: the next poll reports #8, and the loop spawns on it.
         writeFileSync(answer, "8\n");
@@ -3439,10 +3446,97 @@ describe("a real ralph.sh iteration inside a trial sandbox", () => {
         expect(readFileSync(join(state, "record-at-session-2"), "utf8").trim(), said()).toBe("none");
         expect(existsSync(record)).toBe(false);
         expect(said()).toContain("frontier ticket #8");
-        // Every frontier read was the gate's read-only probe.
-        const calls = readFileSync(frontierCalls, "utf8").split("\n").filter((line) => line !== "");
+        // Every other frontier read was the gate's read-only probe; the only
+        // claims were the two reports', #7 then #8 (#5).
+        const calls = frontierLines();
         expect(calls.length).toBeGreaterThanOrEqual(4);
-        expect(calls.every((line) => line.startsWith("--take-one --dry-run"))).toBe(true);
+        expect(calls.filter((line) => !line.startsWith("--take-one --dry-run"))).toEqual(["--take-one => #7", "--take-one => #8"]);
+        runId = /run (\S+-run-\S+) —/.exec(said())?.[1] ?? null;
+      } finally {
+        if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
+          try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+          await exited;
+        }
+        disposeTrial(trial);
+      }
+      expectNoLeaks(fx, trial, started, before.source, runId);
+    }, 180_000);
+  });
+
+  /**
+   * #5: the coder's gate claims the ticket it reports, and the session it
+   * spawns starts on that claim rather than racing for it.
+   *
+   * The same real path as the hold case above — real `ralph.sh`, real
+   * `frontier-gate.ts` under the supervisor's `--claim` — with only the
+   * frontier's answer scripted: a dry run offers #7 unclaimed, the claim run
+   * (no `--dry-run`) takes it. The session marks when it started in the same
+   * log, so the order of claim and spawn is read off one file. A cap of 1 ends
+   * the run once that session is DONE.
+   */
+  describe("a gated coder whose gate claims the ticket it reports", () => {
+    it("claims once with the dry run's fences before the session starts, and the session resumes that claim", async () => {
+      const fx = sandboxFixture();
+      const { state, source, home, scratch } = fx;
+      const frontierCalls = join(scratch, "frontier-calls.log");
+      writeClaude(fx, [
+        `echo SESSION >> ${JSON.stringify(frontierCalls)}`,
+        'printf "%s" "$RALPH_INTAKE_CASE" > "$st/intake-case"',
+        'emit "<ralph>DONE</ralph>"',
+      ]);
+
+      const started = Date.now();
+      const before = { source: leaseFacts(source) };
+      const trial = await buildTrial({ source, base: "main", home, scratchParent: scratch, ticket: TICKET, lineup: LINEUP });
+      writeFileSync(frontierCalls, "");
+      writeFileSync(join(trial.harness, "frontier", "next.ts"), [
+        'import { appendFileSync } from "node:fs";',
+        `appendFileSync(${JSON.stringify(frontierCalls)}, process.argv.slice(2).join(" ") + "\\n");`,
+        'const claimed = !process.argv.includes("--dry-run");',
+        'console.log(JSON.stringify({ ticket: 7, title: "Ticket 7", claimed, obstructed: [] }));',
+        "",
+      ].join("\n"));
+
+      const env: NodeJS.ProcessEnv = {
+        ...trialEnv(trial),
+        PATH: `${FAKE_GH_BIN}:${fx.bin}:${fx.verifierBin}:${process.env.PATH ?? ""}`,
+        RALPH_WAIT_FOR_WORK: "1",
+        RALPH_CONTROL_POLL_SECONDS: "1",
+      };
+      expect(trialPreflight(trial, env)).toMatchObject({ ok: true });
+
+      const out = join(scratch, "supervisor.out");
+      const said = (): string => (existsSync(out) ? readFileSync(out, "utf8") : "");
+
+      let runId: string | null = null;
+      const fd = openSync(out, "a");
+      const child = spawn("bash", [join(trial.harness, "ralph.sh"), "1"], { cwd: trial.work, env, detached: true, stdio: ["ignore", fd, fd] });
+      closeSync(fd);
+      supervisors.push(child);
+      if (child.pid !== undefined) rememberSupervisor(child.pid);
+      const exited = new Promise<number | null>((settle) => child.on("close", (code) => settle(code)));
+      try {
+        const code = await Promise.race([exited, new Promise<"timeout">((settle) => setTimeout(() => settle("timeout"), 60_000))]);
+        expect(code, said()).toBe(0);
+
+        // Exactly one claim run before the session, fenced like the dry run it followed.
+        const calls = readFileSync(frontierCalls, "utf8").split("\n").filter((line) => line !== "");
+        const session = calls.indexOf("SESSION");
+        expect(session, said()).toBeGreaterThan(0);
+        const beforeSession = calls.slice(0, session);
+        const claims = beforeSession.filter((line) => line.startsWith("--take-one") && !line.includes("--dry-run"));
+        expect(claims, said()).toHaveLength(1);
+        const dryRuns = beforeSession.filter((line) => line.startsWith("--take-one --dry-run"));
+        expect(dryRuns.length, said()).toBeGreaterThanOrEqual(1);
+        const fences = (line: string): string => line.split(" ").filter((arg) => arg !== "--dry-run").join(" ");
+        expect(fences(claims[0]!)).toBe(fences(dryRuns.at(-1)!));
+
+        // The session was handed the claimed ticket, and nothing checked for a lost race.
+        const intakeCase = readFileSync(join(state, "intake-case"), "utf8");
+        expect(intakeCase.startsWith("frontier ticket #7"), intakeCase).toBe(true);
+        expect(intakeCase).toContain("claim held by this loop");
+        expect(said()).not.toContain("claim-race");
+        expect(said()).not.toMatch(/lost the claim race|claim race lost/i);
         runId = /run (\S+-run-\S+) —/.exec(said())?.[1] ?? null;
       } finally {
         if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
