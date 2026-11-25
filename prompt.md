@@ -461,7 +461,9 @@ comment of this loop's yet:
   `.ralph/logs/` first, in a Bash call of its own, so the footer's newlines
   survive and the file exists when the post is judged; §5.3). A refusal of
   a body it "could not read" is that timing, not the path.
-- Create branch `$RALPH_LOOP_NAME/<n>-<slug>` from `origin/$RALPH_BASE_BRANCH`.
+- For a new ticket only, create branch `$RALPH_LOOP_NAME/<n>-<slug>` from
+  `origin/$RALPH_BASE_BRANCH`. A recovered claim continues on the branch §1
+  found or created for it: never create it a second time.
 
 ## 3. Implement — delegate the code, own the review
 
