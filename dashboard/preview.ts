@@ -1785,6 +1785,8 @@ export function previewServerDeps(): ServerDeps {
     },
     factories: {
       interrupt: unreachable("interrupt"),
+      // The preview's UsageBar refuses to run, so there is no reading to remember.
+      usagebarMemory: () => ({ load: () => null, save: () => {} }),
       // The server reads each loop's retry line off these, as a live project's.
       records: ({ root }) => cannedRecords(root),
       lineupHandler: () => async () => json({ error: "not found" }, 404),

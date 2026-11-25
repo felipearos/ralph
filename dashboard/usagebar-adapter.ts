@@ -15,6 +15,12 @@
  * endpoint does), so a page polling every few seconds must not become a
  * caller polling Anthropic every few seconds. A stale reading is answered at
  * once while the next one is fetched behind it.
+ *
+ * The last good reading also outlives the server when it is given a
+ * `memory`: UsageBar's tray keeps its last bars because it runs for days, but
+ * the dashboard restarts, and a restart inside one of Claude's rate-limit
+ * cooldowns (5 to 60 minutes, shared by every UsageBar process) would
+ * otherwise show a bare error until the cooldown lifts.
  */
 import type {
   DailySpendView,
@@ -271,6 +277,61 @@ function cachedCli<T>(
   };
 }
 
+/**
+ * Where the last good reading outlives the server. Both calls may fail
+ * silently: a lost memory only costs the stale bars after a restart.
+ */
+export interface UsageBarMemory {
+  load(): unknown;
+  save(view: UsageBarView): void;
+}
+
+/**
+ * A remembered reading, if it still is one: only providers with windows are
+ * kept, since only those can be carried. Pure.
+ */
+export function recalled(raw: unknown): UsageBarView | null {
+  const view = record(raw);
+  if (view?.state !== "read" || !Array.isArray(view.providers)) return null;
+  const readAt = text(view.readAt);
+  if (readAt === null) return null;
+  const providers = view.providers.flatMap((entry): UsageBarProviderView[] => {
+    const provider = record(entry);
+    const name = text(provider?.provider);
+    if (provider === null || name === null || !Array.isArray(provider.windows)) return [];
+    const windows = provider.windows.flatMap((item): UsageBarWindowView[] => {
+      const window = record(item);
+      const label = text(window?.label);
+      const used = finite(window?.usedPercent);
+      if (window === null || label === null || used === null) return [];
+      return [
+        {
+          label,
+          usedPercent: used,
+          windowMinutes: finite(window.windowMinutes),
+          resetsAt: text(window.resetsAt),
+          resetDescription: text(window.resetDescription),
+          pace: text(window.pace),
+        },
+      ];
+    });
+    if (windows.length === 0) return [];
+    return [
+      {
+        provider: name,
+        source: text(provider.source),
+        account: text(provider.account),
+        plan: text(provider.plan),
+        updatedAt: text(provider.updatedAt),
+        windows,
+        error: null,
+        stale: false,
+      },
+    ];
+  });
+  return providers.length === 0 ? null : { state: "read", readAt, providers };
+}
+
 export interface UsageBarAdapter {
   /** The providers' limit windows: `codexbar usage`, a second or two. */
   usage(): Promise<UsageBarView>;
@@ -299,6 +360,8 @@ export function createUsageBarAdapter(
      * the project's spend back with it.
      */
     firstWaitMs?: number;
+    /** Where the last good reading outlives a restart; none keeps it in memory only. */
+    memory?: UsageBarMemory;
     now?: () => number;
   } = {},
 ): UsageBarAdapter {
@@ -324,7 +387,20 @@ export function createUsageBarAdapter(
     return result.stdout.trim() === "" ? unavailable(readAt, whyFailed(result.stderr, result.status)) : narrow(result.stdout, readAt);
   };
 
+  const remember = (view: UsageBarView): void => {
+    if (view.state !== "read" || !view.providers.some((provider) => provider.windows.length > 0)) return;
+    try {
+      options.memory?.save(view);
+    } catch {
+      // A reading that is not remembered only costs its bars after a restart.
+    }
+  };
   let lastUsage: UsageBarView | null = null;
+  try {
+    lastUsage = recalled(options.memory?.load() ?? null);
+  } catch {
+    lastUsage = null;
+  }
   const usage = cachedCli(
     async () => {
       const fresh = await run(USAGEBAR_SURFACE.usage, timeoutMs, narrowUsageBar, (readAt, why): UsageBarView => ({
@@ -332,8 +408,13 @@ export function createUsageBarAdapter(
         readAt,
         why,
       }));
-      lastUsage = carryStale(lastUsage, fresh);
-      return lastUsage;
+      const merged = carryStale(lastUsage, fresh);
+      // A run that printed nothing keeps the reading to carry from.
+      if (merged.state === "read") {
+        lastUsage = merged;
+        remember(merged);
+      }
+      return merged;
     },
     options.ttlMs ?? 120_000,
     now,

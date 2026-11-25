@@ -242,6 +242,8 @@ function scriptedServer(
         usageSources.push(source);
         return source;
       },
+      // Never the operator's own cache file.
+      usagebarMemory: () => ({ load: () => null, save: () => {} }),
     },
   });
   const server: ScriptedServer = {

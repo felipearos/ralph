@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import type { ExecResult, Invocation } from "./executor";
-import { carryStale, createUsageBarAdapter, narrowUsageBar, narrowUsageBarCost, USAGEBAR_SURFACE } from "./usagebar-adapter";
+import type { UsageBarView } from "./contracts";
+import {
+  carryStale,
+  createUsageBarAdapter,
+  narrowUsageBar,
+  narrowUsageBarCost,
+  recalled,
+  USAGEBAR_SURFACE,
+} from "./usagebar-adapter";
 
 const AT = "2026-11-04T19:30:00.000Z";
 
@@ -119,6 +127,37 @@ describe("narrowUsageBar", () => {
     expect(carryStale(null, failed)).toMatchObject({ providers: [{ windows: [], stale: false }] });
   });
 
+  it("recalls only a remembered reading's providers that have bars, as fresh rows", () => {
+    expect(recalled(null)).toBeNull();
+    expect(recalled({ state: "unavailable", readAt: AT, why: "x" })).toBeNull();
+    expect(recalled({ state: "read", readAt: AT, providers: [{ provider: "gemini", windows: [] }] })).toBeNull();
+    expect(
+      recalled({
+        state: "read",
+        readAt: AT,
+        providers: [
+          { provider: "claude", plan: "max", error: "rate limited", stale: true, windows: [{ label: "Weekly", usedPercent: 40 }, { label: 3 }] },
+          { provider: "gemini", windows: [] },
+        ],
+      }),
+    ).toEqual({
+      state: "read",
+      readAt: AT,
+      providers: [
+        {
+          provider: "claude",
+          source: null,
+          account: null,
+          plan: "max",
+          updatedAt: null,
+          error: null,
+          stale: false,
+          windows: [{ label: "Weekly", usedPercent: 40, windowMinutes: null, resetsAt: null, resetDescription: null, pace: null }],
+        },
+      ],
+    });
+  });
+
   it("reads anything that is not a JSON array as unavailable", () => {
     expect(narrowUsageBar("not json", AT)).toEqual({ state: "unavailable", readAt: AT, why: "codexbar printed no JSON" });
     expect(narrowUsageBar("{}", AT)).toMatchObject({ state: "unavailable" });
@@ -173,6 +212,62 @@ describe("createUsageBarAdapter", () => {
     // The refresh runs behind the stale answer; one event-loop turn lands it.
     await new Promise((resolve) => setImmediate(resolve));
     expect(await read()).toMatchObject({ providers: [{ provider: "codex" }, { provider: "claude" }] });
+  });
+
+  it("remembers the last good reading, so a restart inside a rate-limit cooldown still shows the bars", async () => {
+    const GOOD = JSON.stringify([
+      { provider: "claude", source: "oauth", usage: { primary: { usedPercent: 40, windowMinutes: 300 }, loginMethod: "max" } },
+    ]);
+    const LIMITED = JSON.stringify([{ provider: "claude", source: "oauth", error: { message: "rate limited" } }]);
+    let saved: UsageBarView | null = null;
+    const memory = { load: () => (saved === null ? null : JSON.parse(JSON.stringify(saved))), save: (view: UsageBarView) => (saved = view) };
+
+    const first = createUsageBarAdapter({ exec: scripted([{ status: 0, stdout: GOOD, stderr: "" }]).exec, cwd: "/tmp", env: {}, memory });
+    await first.usage();
+    expect(saved).toMatchObject({ providers: [{ provider: "claude", windows: [{ usedPercent: 40 }] }] });
+
+    // The server restarts while Claude's endpoint is still cooling down.
+    const second = createUsageBarAdapter({ exec: scripted([{ status: 3, stdout: LIMITED, stderr: "" }]).exec, cwd: "/tmp", env: {}, memory });
+    expect(await second.usage()).toMatchObject({
+      providers: [{ provider: "claude", error: "rate limited", stale: true, plan: "max", windows: [{ usedPercent: 40 }] }],
+    });
+    // The carried reading is remembered as it stands; it carries again next time.
+    expect(saved).toMatchObject({ providers: [{ stale: true, windows: [{ usedPercent: 40 }] }] });
+  });
+
+  it("does not forget the reading over a run that printed nothing, nor remember one without bars", async () => {
+    const saves: UsageBarView[] = [];
+    const memory = { load: () => null, save: (view: UsageBarView) => void saves.push(view) };
+    let nowMs = 0;
+    const { exec } = scripted([
+      { status: 0, stdout: JSON.stringify([{ provider: "claude", usage: { primary: { usedPercent: 40, windowMinutes: 300 } } }]), stderr: "" },
+      { status: 1, stdout: "", stderr: "boom" },
+      { status: 3, stdout: JSON.stringify([{ provider: "claude", error: { message: "rate limited" } }]), stderr: "" },
+    ]);
+    const adapter = createUsageBarAdapter({ exec, cwd: "/tmp", env: {}, ttlMs: 1, now: () => nowMs, memory });
+    const settle = async () => {
+      nowMs += 10;
+      await adapter.usage();
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    await adapter.usage();
+    await settle();
+    await settle();
+    expect(await adapter.usage()).toMatchObject({ providers: [{ stale: true, windows: [{ usedPercent: 40 }] }] });
+    expect(saves).toHaveLength(2);
+  });
+
+  it("survives a memory that throws", async () => {
+    const memory = {
+      load: () => {
+        throw new Error("EACCES");
+      },
+      save: () => {
+        throw new Error("ENOSPC");
+      },
+    };
+    const adapter = createUsageBarAdapter({ exec: scripted([{ status: 0, stdout: PRINTED, stderr: "" }]).exec, cwd: "/tmp", env: {}, memory });
+    expect(await adapter.usage()).toMatchObject({ state: "read" });
   });
 
   it("answers reading rather than hold the route on a first limit read that hangs", async () => {

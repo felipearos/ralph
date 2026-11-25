@@ -104,6 +104,10 @@ const ALLOWED: Record<string, string[]> = {
   "usage-worker.ts": ["node:worker_threads", "./usage"],
   // UsageBar's reading: one read-only argv (`USAGEBAR_SURFACE`) over the executor port.
   "usagebar-adapter.ts": ["./contracts", "./executor"],
+  // Its last good reading, kept in the operator's cache directory so a restart
+  // during a Claude rate-limit cooldown still shows the bars. It writes that
+  // one file and reaches no ralph module.
+  "usagebar-memory.ts": ["node:fs", "node:os", "node:path", "./contracts"],
   "config.ts": ["node:path", "./contracts"],
   // The write-side sibling: it owns the control inbox and the durable records
   // dispatch reads, and can still reach no ralph TypeScript module.
@@ -197,6 +201,7 @@ const ALLOWED: Record<string, string[]> = {
     "./server",
     "./usage",
     "./usagebar-adapter",
+    "./usagebar-memory",
   ],
   // The route shapes the remote Vercel function shares with the server. It
   // must import nothing, or the function bundle would reach this graph.
