@@ -564,12 +564,14 @@ describe("a new agent: pending merge, then Start unlocks", () => {
     const refused = (await (await post(m, "/api/p/proj/agents/start", { name: "nova" })).json()) as StartResult;
     expect(refused).toMatchObject({ loop: "nova", outcome: "refused", pid: null, why: expect.stringContaining("pending merge") });
 
-    // The PR merges on GitHub. The page reads the base branch as last fetched.
+    // The PR merges on GitHub. With no loop running nothing else fetches, so
+    // the page fetches the base branch once itself, and the card unlocks.
     m.merge("ralph-roster/add-nova");
     m.prs([{ url: added.pr!.url, state: "MERGED", headRefName: "ralph-roster/add-nova" }]);
     const beforeFetch = m.gitCalls().length;
-    expect(((await (await get(m, "/api/p/proj/agents")).json()) as AgentsView).pending[0]!.status).toBe("pending-merge");
-    expect(writes(m.gitCalls().slice(beforeFetch))).toEqual([]);
+    expect(((await (await get(m, "/api/p/proj/agents")).json()) as AgentsView).pending[0]!.status).toBe("ready");
+    // A fetch moves origin/main alone: no checkout, no push, no commit.
+    expect(writes(m.gitCalls().slice(beforeFetch))).toEqual([expect.stringMatching(/^fetch .*main$/)]);
 
     // Start fetches, finds nova on the base branch, moves the clean checkout up to it, and starts.
     const started = (await (await post(m, "/api/p/proj/agents/start", { name: "nova" })).json()) as StartResult;
@@ -578,8 +580,10 @@ describe("a new agent: pending merge, then Start unlocks", () => {
     expect(JSON.parse(readFileSync(join(worktree, ".ralph", "config.json"), "utf8")).loops).toEqual(["ralph", "rafa", "nova"]);
     expect(readFileSync(join(worktree, ".ralph", "loop-name"), "utf8")).toBe("nova\n");
 
-    // With the base branch fetched, the card unlocks on its own.
+    // Still ready afterwards, and with the base listing it no fetch is made again.
+    const afterStart = m.gitCalls().length;
     expect(((await (await get(m, "/api/p/proj/agents")).json()) as AgentsView).pending[0]!.status).toBe("ready");
+    expect(writes(m.gitCalls().slice(afterStart))).toEqual([]);
   });
 
   it("drops a merged agent once its supervisor runs, though the main checkout's branch predates its entry", async () => {

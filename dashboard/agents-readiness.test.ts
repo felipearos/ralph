@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { agentGuide, agentPreflight, listPendingAgents, locatePendingAgent, type AgentsDeps } from "./agents";
+import { agentGuide, agentPreflight, listPendingAgents, locatePendingAgent, MERGED_FETCH_EVERY_MS, type AgentsDeps } from "./agents";
 import {
   parseAgentConfig,
   parseJavRoutes,
@@ -34,6 +34,12 @@ const READY = { name: "nova", worktree: WORKTREE, status: "ready" as const };
 interface Answers {
   /** The main checkout's config, and the roster at each ref that can be read. */
   config: Record<string, unknown>;
+  /** The refs a `git fetch` moves: read in place of `config`'s once one has run. */
+  fetched?: Record<string, unknown>;
+  /** What GitHub says of the roster PR; open when absent. */
+  prState?: "open" | "merged" | "closed";
+  /** `git fetch` fails. */
+  fetchFails?: boolean;
   /** `git rev-parse <rev>` in the agent's worktree. */
   revs?: Record<string, string>;
   /** A worktree whose every `git rev-parse` fails, so one agent's read can break alone. */
@@ -61,14 +67,19 @@ const failed = (value: unknown): value is { fail: string } =>
  * Just enough adapter to reach every item: each invocation carries the
  * question as its first argv word, and the fake answers that word.
  */
-function deps(answers: Answers): { deps: AgentsDeps; ran: () => string[][] } {
+function deps(answers: Answers, clock: { at: number } = { at: 0 }): { deps: AgentsDeps; ran: () => string[][] } {
   const ran: string[][] = [];
+  let fetched = false;
   const answer = (args: string[]): ExecResult => {
     const [what, first] = args;
     switch (what) {
+      case "fetch":
+        if (answers.fetchFails === true) return bad("fatal: unable to access the remote");
+        fetched = true;
+        return ok("");
       case "config": {
         const at = first!;
-        const value = answers.config[at];
+        const value = (fetched ? answers.fetched?.[at] : undefined) ?? answers.config[at];
         return value === undefined ? bad(`fatal: ambiguous argument '${at}'`) : ok(JSON.stringify(value));
       }
       case "worktree-list":
@@ -116,12 +127,16 @@ function deps(answers: Answers): { deps: AgentsDeps; ran: () => string[][] } {
     worktreeFor: (name: string) => `/ws/proj/${name}-loop`,
     worktreesDir: () => "/ws/proj",
     readConfig: ({ ref } = {} as { ref?: string }) => ask(["config", ref ?? "@work"], parseAgentConfig),
+    fetch: () => ask(["fetch"], (result) => (result.status === 0 ? { ok: true as const } : { ok: false as const, why: result.stderr })),
     listWorktrees: () => ask(["worktree-list"], parseWorktreeList),
     // The main checkout is no agent; each worktree is named after its loop.
     readLoopName: (path: string) => /^\/ws\/proj\/([a-z]+)-loop$/.exec(path)?.[1] ?? null,
     branchFor: (edit: string, name: string) => `ralph-roster/${edit}-${name}`,
     findPr: () =>
-      ask(["pr-list"], () => ({ ok: true, value: { url: "https://github.com/o/r/pull/7", branch: "ralph-roster/add-nova", state: "open" } })),
+      ask(["pr-list"], () => ({
+        ok: true,
+        value: { url: "https://github.com/o/r/pull/7", branch: "ralph-roster/add-nova", state: answers.prState ?? "open" },
+      })),
     supervisors: () => ask(["supervisors"], () => ({ ok: true, value: [] })),
     checkouts: () => ask(["checkouts"], () => ({ ok: true, value: { loops: [], orphaned: [], prunable: [] } })),
     revParse: (worktree: string, rev: string) =>
@@ -147,7 +162,8 @@ function deps(answers: Answers): { deps: AgentsDeps; ran: () => string[][] } {
     readProjectFile: () => ({ ok: false, missing: true, why: "not read in these tests" }),
     renderPrompt: async () => ({ ok: false, why: "not rendered in these tests" }),
   } as unknown as AgentsDeps["agents"];
-  return { deps: { agents }, ran: () => ran };
+  // A fresh throttle per fake, on a clock the test moves by hand.
+  return { deps: { agents, mergedFetches: { now: () => clock.at, last: new Map() } }, ran: () => ran };
 }
 
 const CONFIG = { repo: "o/r", baseBranch: "main", loops: [] as string[] };
@@ -334,6 +350,54 @@ describe("the node_modules item over worktreeSetup steps (#694)", () => {
     const agent = await only({ config: { "@work": withSetup(steps), "origin/main": onBase }, nodeModules: false, setup: record("failed", "codegen") });
     expect(itemOf(agent, "node-modules")).toMatchObject({ state: "fail" });
     expect(itemOf(agent, "node-modules")!.reason).toContain("run bun install there");
+  });
+});
+
+describe("a roster PR merged since the base branch was last fetched", () => {
+  it("fetches the base branch once and reads the agent as ready, so the card flips with no loop running", async () => {
+    const { deps: fake, ran } = deps({
+      config: { "@work": CONFIG, "origin/main": CONFIG, "origin/ralph-roster/add-nova": prBranch },
+      fetched: { "origin/main": onBase },
+      prState: "merged",
+    });
+    const view = await listPendingAgents(fake);
+    expect(view.pending[0]!.status).toBe("ready");
+    expect(ran().filter((args) => args[0] === "fetch")).toHaveLength(1);
+  });
+
+  it("fetches nothing while the PR is open, and stays pending when the fetch fails", async () => {
+    const open = deps({ config: { "@work": CONFIG, "origin/main": CONFIG, "origin/ralph-roster/add-nova": prBranch } });
+    expect((await listPendingAgents(open.deps)).pending[0]!.status).toBe("pending-merge");
+    expect(open.ran().some((args) => args[0] === "fetch")).toBe(false);
+
+    const offline = deps({
+      config: { "@work": CONFIG, "origin/main": CONFIG, "origin/ralph-roster/add-nova": prBranch },
+      prState: "merged",
+      fetchFails: true,
+    });
+    const view = await listPendingAgents(offline.deps);
+    expect(view.pending[0]!.status).toBe("pending-merge");
+    expect(view.problem).toBeNull();
+  });
+
+  it("does not fetch on every poll while the merged PR still leaves the agent off the base", async () => {
+    // Merged into another branch: a fetch succeeds and main still does not list it.
+    const clock = { at: 0 };
+    const { deps: fake, ran } = deps(
+      { config: { "@work": CONFIG, "origin/main": CONFIG, "origin/ralph-roster/add-nova": prBranch }, prState: "merged" },
+      clock,
+    );
+    const fetches = () => ran().filter((args) => args[0] === "fetch").length;
+    await listPendingAgents(fake);
+    expect(fetches()).toBe(1);
+    clock.at += 5_000;
+    await listPendingAgents(fake);
+    clock.at += MERGED_FETCH_EVERY_MS - 10_000;
+    await listPendingAgents(fake);
+    expect(fetches()).toBe(1);
+    clock.at += 5_000;
+    expect((await listPendingAgents(fake)).pending[0]!.status).toBe("pending-merge");
+    expect(fetches()).toBe(2);
   });
 });
 
