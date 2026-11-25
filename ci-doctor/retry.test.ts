@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { HelperError } from "../bk-log";
 
+import { classify } from "./classify";
 import { readStore, withStore, type BuildRecord, type Case, type CiHealthStore, type Failure } from "./store";
 import {
   HEAD_RETRY_KEEP_DAYS,
@@ -289,6 +290,36 @@ describe("eligible", () => {
     // `git ls-remote` leaves the machine; before the memo these two reds on
     // one branch asked twice, and a candidate with more asks once per red.
     expect(asked).toEqual(["feat/x"]);
+  });
+});
+
+describe("eligible and a continuous red run (#57)", () => {
+  /** `builds` and a red row for each failed one, with the cases `classify` proposes for them. */
+  const classified = (builds: BuildRecord[]): CiHealthStore => {
+    const store: CiHealthStore = {
+      ...emptyish(),
+      builds,
+      // One line per build, so the main reds are not one regression's run.
+      failures: builds
+        .filter((one) => one.state === "failed")
+        .map((one) => row({ testId: TEST_ID, build: one.number, job: `job-${one.number}`, commit: one.commit, line: `Test timed out in 5000ms (#${one.number})` })),
+    };
+    return { ...store, cases: classify(store, NOW).cases };
+  };
+  const green = (number: number): BuildRecord =>
+    build({ number, state: "passed", steps: { test: "passed" }, commit: `g${number}`, tree: "T" });
+  const red = (number: number, tree: string | null = null): BuildRecord => build({ number, commit: `r${number}`, tree });
+
+  it("never retries a flake that is red on every build since an older green of its tree", () => {
+    const store = classified([green(9), red(10, "T"), red(11), red(12)]);
+    expect(store.cases[`flake:${TEST_ID}`]).toMatchObject({ state: "retired", redRun: { since: 9, builds: 3 } });
+    expect(eligible(store, OPTIONS)).toEqual([]);
+  });
+
+  it("still retries a candidate flake with one red, as before", () => {
+    const store = classified([red(10)]);
+    expect(store.cases[`flake:${TEST_ID}`]?.state).toBe("candidate");
+    expect(eligible(store, OPTIONS)).toHaveLength(1);
   });
 });
 

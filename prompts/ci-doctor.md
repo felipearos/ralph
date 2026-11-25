@@ -292,8 +292,11 @@ required and may not be blank — it is the whole value of the record.
 The rejection is taken **as of the newest build the case has evidence for**,
 which the command prints. From then on the gate does not offer the case, and no
 scan moves it back: `mergeCases` holds it at `retired` and keeps the boundary.
-It comes back **only** on evidence from a build newer than that boundary — new
-reds, not the same ones re-read — and when it does it comes back clean, so a
+It comes back **only** when a build newer than that boundary fails with a
+DIFFERENT signature (kind and error line, with timestamps, ids and durations
+ignored), or once the step has gone green since — the same reds on new builds
+keep it rejected, so a step that is red on every build for one reason does not
+reopen it build after build. When it does come back it comes back clean, so a
 genuinely recurring failure is not buried by a rejection you took months ago.
 
 Then **journal the rejection and its reason** in the entry's `**Case:**` block,

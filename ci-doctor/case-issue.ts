@@ -52,7 +52,7 @@ import { takeCaseLease } from "./case-lease";
 import { CHECK_CASE_PREFIX } from "./classify";
 import { write } from "./gh";
 import type { Gh, Ran } from "./gate";
-import { readStore, storePathFromGit, subjectOf, withStore, type Case, type CiHealthStore } from "./store";
+import { failureSignature, readStore, storePathFromGit, subjectOf, withStore, type Case, type CiHealthStore } from "./store";
 
 /** The registry label every case issue carries — the list the gate reads. */
 export const CASE_LABEL = "ci-health";
@@ -626,16 +626,27 @@ const refuseUnrejectable = (key: string): void => {
 };
 
 /**
- * The case as a doctor's rejection leaves it: `retired`, with the boundary and
- * the reason. `retired` rather than a new state because `dashboard/contracts.ts`,
- * two exhaustive fences in `contract-parity.test.ts` and `known.ts`'s switch
- * all enumerate `CaseState`, and a rejection needs no new vocabulary — what it
+ * The case as a doctor's rejection leaves it: `retired`, with the boundary,
+ * the reason, and the distinct failure signatures of its evidence (#57).
+ * `retired` rather than a new state because `dashboard/contracts.ts`, two
+ * exhaustive fences in `contract-parity.test.ts` and `known.ts`'s switch all
+ * enumerate `CaseState`, and a rejection needs no new vocabulary — what it
  * needs is the mark `rejectedAt` provides.
+ *
+ * The signatures are what keeps the rejection standing past the boundary: a
+ * newer build failing with one of them is the same failure the doctor already
+ * turned down, and only a new signature, or the step going green since,
+ * overturns it (`rejectionStands`).
  */
 export const rejectedCase = (value: Case, reason: string, at: string): Case => ({
   ...value,
   state: "retired",
-  rejectedAt: { build: rejectedBuild(value), at, reason },
+  rejectedAt: {
+    build: rejectedBuild(value),
+    at,
+    reason,
+    signatures: [...new Set((value.evidence ?? []).map((seen) => failureSignature(seen.kind, seen.line)))],
+  },
 });
 
 /**

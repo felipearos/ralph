@@ -64,7 +64,7 @@ import {
 import { isRateLimited } from "../frontier/github-rate-limit";
 import { CHECK_CASE_PREFIX } from "./classify";
 import { takeCaseLease } from "./case-lease";
-import { emptyStore, readStore, withStore, type Case } from "./store";
+import { emptyStore, failureSignature, readStore, withStore, type Case } from "./store";
 import { buildTickets, classify, type RawIssue } from "../frontier/next-tasks";
 import type { Gh, Ran } from "./gate";
 
@@ -612,6 +612,26 @@ describe("the case transitions", () => {
     // overtaken would bury a case the next red build genuinely re-opens.
     expect(rejectedBuild(confirmed())).toBe(0);
     expect(rejectedCase(confirmed(), "why", "2026-10-07T08:00:00.000Z").rejectedAt).toMatchObject({ build: 0 });
+  });
+
+  it("records the DISTINCT failure signatures of its evidence (#57)", () => {
+    const row = (build: number, line: string): Case["evidence"][number] => ({ ...seen(build), line });
+    const before: Case = {
+      ...confirmed(),
+      evidence: [
+        // Two rows differing only in a timestamp: one signature.
+        row(101, "error: XX000 database unreachable at 2026-11-21T01:00:00.000Z"),
+        row(102, "error: XX000 database unreachable at 2026-11-22T03:15:42.000Z"),
+        // A different error code: a second one.
+        row(103, "error: 08006 connection reset"),
+      ],
+    };
+    const signatures = rejectedCase(before, "the database is down", "2026-11-22T08:00:00.000Z").rejectedAt?.signatures;
+    expect(signatures).toEqual([
+      failureSignature("assertion", "error: XX000 database unreachable at 2026-11-21T01:00:00.000Z"),
+      failureSignature("assertion", "error: 08006 connection reset"),
+    ]);
+    expect(rejectedCase(confirmed(), "why", "2026-10-07T08:00:00.000Z").rejectedAt?.signatures).toEqual([]);
   });
 });
 
