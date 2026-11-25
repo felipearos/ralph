@@ -1998,6 +1998,20 @@ describe('the gate as a process, holding on a refuted verdict (#771)', () => {
     expect(dryLines(run.argv).every((l) => !/ --exclude 42( |$)/.test(l))).toBe(true);
   });
 
+  it('reports a different kind of work on the held number unclaimed rather than fencing it off', async () => {
+    // A held closure on #42 whose parent is now an ordinary ticket: an
+    // `--exclude 42` claim would exclude the very work on offer and wait for ever.
+    const run = await pollGate(['1', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_42,
+      FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 42, title: 'Still offered', claimed: true })),
+      RALPH_GATE_VERDICT_STORE: record({ kind: 'closable-spec' }),
+    });
+    const out = run.lines.join('\n');
+    expect(out).toContain('work available — frontier ticket #42 — Still offered');
+    expect(out).not.toContain('claim held by this loop');
+    expect(claimLines(run.argv)).toEqual([]);
+  });
+
   it('leaves the claim argv as the dry run fenced it when the hold is released or absent', async () => {
     for (const store of [record({ released: true }), join(scratchDir('gate-verdict-'), 'absent.json')]) {
       const run = await pollGate(['1', '--claim'], { ...OFFERS_601_WON, RALPH_GATE_VERDICT_STORE: store });

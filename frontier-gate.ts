@@ -1549,7 +1549,14 @@ export async function runFrontierGate(argv: string[], hooks: FrontierGateHooks =
     const now = new Date();
     let decision = holdDecision(probed, held, now, holdBudget);
     let polled = probed;
-    if (decision === "report" && claiming && claim !== null) {
+    // A hold names a kind as well as a number. When the dry run offers another
+    // kind of work on the held number (a held closure whose parent is now an
+    // ordinary ticket), a number-fenced claim would exclude the very work on
+    // offer and wait on it for ever. Skip the claim: report the dry run's
+    // verdict unmarked and let the session claim, as it did before #5.
+    const sameNumberAsHeld =
+      held !== null && !held.released && verdictSubject(probed.why)?.ticket === held.ticket;
+    if (decision === "report" && claiming && claim !== null && !sameNumberAsHeld) {
       // The claim also fences off the subject an active hold keeps this loop
       // off: the dry run's ticket is not the held one ("report" says so), but
       // the real take-one may lose it to a sibling and walk onto the next,
