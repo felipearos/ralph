@@ -193,7 +193,11 @@ export function baselineOf(
     return true;
   });
   const providers = [...current, ...kept];
-  return providers.length === 0 ? previous : { state: "read", readAt: view.readAt, providers, seenAt };
+  if (providers.length === 0) return previous;
+  // The baseline's time is when its bars were measured: a reading that only
+  // carried old bars forward (all stale, or none of its own) keeps the old time.
+  const measured = current.some((provider) => !provider.stale);
+  return { state: "read", readAt: measured || previous === null ? view.readAt : previous.readAt, providers, seenAt };
 }
 
 /** What the CLI printed, or why it is not a reading. Pure. */

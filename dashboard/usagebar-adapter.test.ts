@@ -186,6 +186,13 @@ describe("narrowUsageBar", () => {
       new Date(Date.parse(AT) + 60 * 60_000).toISOString(),
     );
     expect(baselineOf(base, soon)?.providers.map((p) => p.provider)).toEqual(["codex", "claude"]);
+    // A reading with no bars of its own (empty, or only carried) keeps the bars' time.
+    const LATER = new Date(Date.parse(AT) + 60 * 60_000).toISOString();
+    expect(baselineOf(base, narrowUsageBar("[]", LATER))?.readAt).toBe(AT);
+    const carried = carryStale(base, narrowUsageBar(JSON.stringify([{ provider: "claude", error: { message: "rate limited" } }]), LATER));
+    const kept = baselineOf(base, carried)!;
+    expect(kept.readAt).toBe(AT);
+    expect(carryStale(kept, { state: "unavailable", readAt: LATER, why: "x" })).toMatchObject({ readAt: AT });
   });
 
   it("reads anything that is not a JSON array as unavailable", () => {
