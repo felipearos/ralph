@@ -562,7 +562,8 @@ export const ROLE_DESCRIPTORS: Readonly<Record<Role, RoleDescriptor>> = {
     stages: ["orchestrator", "mapper", "review.spec"],
     // The frontier gate plus the Jira handoff of to-person reports (#397): the
     // intake gate is the one place a gate secret like the Jira token reaches,
-    // and the frontier gate itself stays read-only for every coder.
+    // and the frontier gate itself writes only the one claim a coder's
+    // supervisor asks it for (`--claim`, #5).
     intakeGate: "triage/gate.ts",
     frontierBucket: "triage",
     javRouted: false,

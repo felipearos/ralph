@@ -2020,11 +2020,20 @@ BLOCKED_STREAK_LIMIT=2
 # spawned for anything else (a PR to shepherd, a claim to resume, a spec to
 # close). Set after every gate answer.
 GATE_TICKET=""
+# Whether the gate already claimed GATE_TICKET for this loop (`--claim`, #5):
+# its work line then ends `claim held by this loop`. Set after every gate answer.
+GATE_CLAIMED=""
 
 # The one disagreement that IS a race: the gate names ticket T from a dry run,
 # another loop claims T before this iteration's real take-one, and the
 # iteration comes back empty. That says nothing about the gate being wrong, and
 # counting it halted remo, rulo and rafa on 2026-09-26/27 (#1397, #1407).
+# Since #5 the coder's gate claims T itself when it reports it, so a session
+# that started holding its ticket cannot have lost it: its empty iteration is a
+# genuine disagreement and counts, without asking. The check now covers only
+# the one path that can still lose a race — the gate's unreadable-probe
+# fallback, where it probed read-only and the session claims — and any role
+# whose gate does not claim.
 # `claim-race.ts` asks whether T is now held by another loop, using the
 # frontier's own claim fence, and the answer is logged either way. Succeeds
 # when it was a lost race — and when GitHub could not be read, because a
@@ -2034,6 +2043,7 @@ GATE_TICKET=""
 lost_claim_race() {
   RACE_LINE=""
   [ -n "$GATE_TICKET" ] || return 1
+  [ -z "$GATE_CLAIMED" ] || return 1
   local line status
   line="$(bun "${RALPH_HOME}/claim-race.ts" "$GATE_TICKET" 2>> "$SUPERVISOR_LOG")"
   status=$?
@@ -2499,10 +2509,27 @@ reread_role_secrets() { # <stage: gate|iteration> [force]
 export_gate_secrets() {
   for gate_secret in ${RALPH_GATE_ENV[@]+"${RALPH_GATE_ENV[@]}"}; do export "$gate_secret"; done
 }
+# The coder's gate is asked to claim the ticket it reports (`--claim`, #5), so
+# the session it spawns starts already holding it and no other loop can take it
+# in between. Only here, the supervisor's call, under the lease this run writes
+# with RALPH_RUN_ID/RALPH_SUPERVISOR_PID and heartbeats: a hand-run `--once` is
+# an operator's check and must not claim. Every other role's gate gets the argv
+# it always got — they do not know the flag. Nor does a usage drain claim: it
+# spawns only on work the loop already holds and parks on a new frontier
+# ticket, so a claim taken then would sit fenced off from every sibling until
+# the window resets.
 run_intake_gate() { # <gate args...>
+  local claim=()
+  if [ "$INTAKE_GATE" = "frontier-gate.ts" ] && [ "${USAGE_DRAINING:-0}" != 1 ]; then
+    claim=(--claim)
+  fi
   (
     export_gate_secrets
-    exec bun "${RALPH_HOME}/${INTAKE_GATE}" "$@"
+    # The claim's speed event reads the iteration and session from the
+    # environment, and these still name the iteration before this one: the
+    # claim belongs to the session not yet started, so it carries neither.
+    [ -z "${claim[*]+set}" ] || unset RALPH_ITERATION RALPH_SESSION_ID
+    exec bun "${RALPH_HOME}/${INTAKE_GATE}" "$@" ${claim[@]+"${claim[@]}"}
   )
 }
 
@@ -3175,6 +3202,15 @@ while [ "$i" -lt "$MAX" ]; do
   # that lost #1400 to the other triager must be checked against #1400, and
   # nothing here has to know which bucket that came from.
   GATE_TICKET="$(printf '%s\n' "$INTAKE_CASE" | sed -nE 's/^frontier ticket #([0-9]+).*/\1/p')"
+  # And whether the gate claimed it already (#5), in which case no race can
+  # explain an empty iteration. Absent on the gate's unreadable-probe fallback.
+  # Set on the marker alone, whether or not GATE_TICKET was parsed: a claimed
+  # closure parent is held too, but its line reads `spec #N has no open
+  # children left …`, not `frontier ticket #N`, because the #771 hold record
+  # keys that wording as a closable spec. With no GATE_TICKET,
+  # lost_claim_race returns before it reads this flag.
+  GATE_CLAIMED=""
+  case "$INTAKE_CASE" in *" — claim held by this loop") GATE_CLAIMED=1 ;; esac
   # The case itself reaches the session, so a role whose work is not a ticket
   # number — a doctor's red build — has something to start from. A coder's
   # prompt reads the backlog and ignores it.

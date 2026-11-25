@@ -296,8 +296,11 @@ If the done label is absent, resume step 7's post-merge cleanup before detaching
      `git ls-remote --heads origin {{RALPH_ROSTER_BRANCH_GLOBS}}`.
      Fetch and continue the branch that carries the unfinished work.
    - Only if no local or remote branch exists may you create
-     `$RALPH_LOOP_NAME/<n>-<slug>` from `origin/$RALPH_BASE_BRANCH`. This means the previous
-     iteration died after claiming but before it wrote any work.
+     `$RALPH_LOOP_NAME/<n>-<slug>` from `origin/$RALPH_BASE_BRANCH`. This means the
+     supervisor's gate claimed the ticket for this session (the usual case:
+     its verdict, `frontier ticket #<n> — … — claim held by this loop`, is in
+     `$RALPH_INTAKE_CASE`), or the previous iteration died after claiming but
+     before it wrote any work. Either way §2 decides whether to announce it.
 
    A claim is **adopted** when its own open PR (stamped by this loop, head
    branch `$RALPH_LOOP_NAME/<n>-*`) carries another loop's `-wip` label: that
@@ -437,11 +440,17 @@ other loop's stamped PR as someone else's work and leave them alone.
 
 ## 2. Claim
 
-If §1 recovered an existing claim, skip this section and continue with §3 on
-the recovered branch. Do not repeat the claim comment or create the branch
-again.
+If §1 recovered an existing claim, do not claim it again, and do not create
+the branch again when §1 found one: continue with §3 on the recovered branch.
+The supervisor's gate now claims a frontier ticket before it starts this
+session, so a recovered claim is usually one no iteration has announced yet.
+Read the issue's comments (`bun "$RALPH_HOME/tracker.ts" view <n>`): if none of
+them is this loop's claim comment ("$RALPH_LOOP_NAME loop starting on this."),
+post it as below; if one is there, post nothing. That rule covers a gate claim
+and a crash recovery alike, and never comments twice.
 
-For a new ticket selected by the frontier:
+For a new ticket selected by the frontier, or a recovered one with no claim
+comment of this loop's yet:
 
 - The frontier already added `$RALPH_LOOP_NAME-wip` atomically. Do **not** add
   it again or remove it to reconsider the decision.
@@ -452,7 +461,9 @@ For a new ticket selected by the frontier:
   `.ralph/logs/` first, in a Bash call of its own, so the footer's newlines
   survive and the file exists when the post is judged; §5.3). A refusal of
   a body it "could not read" is that timing, not the path.
-- Create branch `$RALPH_LOOP_NAME/<n>-<slug>` from `origin/$RALPH_BASE_BRANCH`.
+- For a new ticket only, create branch `$RALPH_LOOP_NAME/<n>-<slug>` from
+  `origin/$RALPH_BASE_BRANCH`. A recovered claim continues on the branch §1
+  found or created for it: never create it a second time.
 
 ## 3. Implement — delegate the code, own the review
 

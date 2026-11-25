@@ -4,12 +4,14 @@
  *
  * Three properties are worth pinning, and they fail in different ways:
  *
- *   1. *It never writes.* The gate runs before an iteration exists, so a claim
- *      made here belongs to nobody — and is lost outright if the supervisor
- *      dies before spawning. `--dry-run` on the frontier call is the whole of
- *      that guarantee, and it is one word away from being absent. The
- *      subprocess test records every argv the gate issues and asserts on it,
- *      because that is where the guarantee actually lives.
+ *   1. *It claims only when the supervisor asks, and only at report time.*
+ *      Every poll asks the frontier with `--dry-run`, and a hand-run `--once`
+ *      writes nothing at all. With `--claim`, a coder's frontier ticket is
+ *      claimed by one real `--take-one` (same fences as the dry run) right
+ *      before the gate reports it, and is reported only if the claim was won —
+ *      never for a triager, a closure pick, or a poll whose pull request or
+ *      claim list was unreadable. The subprocess tests record every argv the
+ *      gate issues and assert on it, because that is where the rule lives.
  *   2. *It counts a shepherdable pull request as work.* `prompt.md` §1 puts
  *      shepherding ahead of the frontier, so a gate that asked the frontier
  *      alone would park a supervisor forever beside its own open pull request
@@ -32,6 +34,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 import {
   adoptedBy,
+  CLAIM_HELD_NOTE,
+  claimVerdict,
   closableParent,
   decide,
   formatDuration,
@@ -479,6 +483,91 @@ describe('decide', () => {
       'ralph',
     );
     expect(verdict.work).toBe(true);
+  });
+});
+
+describe('claimVerdict', () => {
+  const context = {
+    probes: { prs: [], pick: null, claims: [], localRecovery: CLEAN },
+    loop: 'rafa' as const,
+    offered: 601,
+  };
+
+  it('reports a won claim as work naming the claimed ticket, marked held', () => {
+    const verdict = claimVerdict(
+      { pick: pick({ ticket: 602, title: 'Next', claimed: true, obstructed: [{ number: 601, reason: 'raced' }] }), rateLimit: null },
+      context,
+    );
+    expect(verdict).toEqual({ work: true, why: `frontier ticket #602 — Next${CLAIM_HELD_NOTE}` });
+    expect(verdict.why).toMatch(/^frontier ticket #([0-9]+)/);
+    expect(CLAIM_HELD_NOTE).toContain('claim held by this loop');
+  });
+
+  it('words a claimed closure parent as the closure task, still held', () => {
+    const verdict = claimVerdict(
+      { pick: pick({ ticket: 50, title: 'Spec', claimed: true, closure: true }), rateLimit: null },
+      context,
+    );
+    expect(verdict).toEqual({
+      work: true,
+      why: `spec #50 has no open children left — closing it is the task${CLAIM_HELD_NOTE}`,
+    });
+    expect(verdict.why).not.toMatch(/^frontier ticket #/);
+  });
+
+  it('pins the claimed closure line exactly, an exception to the frontier-ticket shape', () => {
+    const verdict = claimVerdict(
+      { pick: pick({ ticket: 50, title: 'Spec', claimed: true, closure: true }), rateLimit: null },
+      context,
+    );
+    expect(verdict.why).toBe('spec #50 has no open children left — closing it is the task — claim held by this loop');
+  });
+
+  it('words a won ticket as decide words the offered one, plan-violation note included, then the marker', () => {
+    // The coder's checkout is not read-only, so a stray one is recovery work
+    // there rather than a note: the note is empty for every coder claim, and
+    // what this pins is that the won line carries whatever decide carries.
+    const offered = decide({ ...context.probes, pick: pick({ ticket: 602, title: 'Next' }) }, 'rafa');
+    const won = claimVerdict({ pick: pick({ ticket: 602, title: 'Next', claimed: true }), rateLimit: null }, context);
+    expect(won.why).toBe(offered.why + CLAIM_HELD_NOTE);
+  });
+
+  it('never lets an unclaimed title fake the claim marker', () => {
+    const unclaimed = decide(
+      { prs: [], pick: pick({ ticket: 601, title: 'Fix x — claim held by this loop' }), claims: [], localRecovery: CLEAN },
+      'rafa',
+    );
+    expect(unclaimed.work).toBe(true);
+    expect(unclaimed.why.endsWith(CLAIM_HELD_NOTE)).toBe(false);
+    expect(unclaimed.why).toBe('frontier ticket #601 — "Fix x — claim held by this loop"');
+    const won = claimVerdict(
+      { pick: pick({ ticket: 601, title: 'Fix x — claim held by this loop', claimed: true }), rateLimit: null },
+      context,
+    );
+    expect(won.why.endsWith(CLAIM_HELD_NOTE)).toBe(true);
+  });
+
+  it('reports a lost race through decide, as held or empty', () => {
+    const held = claimVerdict(
+      { pick: pick({ claimed: false, obstructed: [{ number: 601, reason: 'labeled rafa-wip' }] }), rateLimit: null },
+      context,
+    );
+    expect(held).toEqual({ work: false, why: 'claim race lost for #601 — every frontier candidate is held (#601)' });
+    const empty = claimVerdict({ pick: pick({ claimed: false }), rateLimit: null }, context);
+    expect(empty).toEqual({ work: false, why: 'claim race lost for #601 — the frontier is empty' });
+  });
+
+  it('never reports an unclaimed ticket as work', () => {
+    const verdict = claimVerdict({ pick: pick({ ticket: 601, title: 'X', claimed: false }), rateLimit: null }, context);
+    expect(verdict.work).toBe(false);
+  });
+
+  it('waits undetermined on an unreadable or throttled claim run', () => {
+    const unreadable = claimVerdict({ pick: null, rateLimit: null }, context);
+    expect(unreadable).toMatchObject({ work: false, undetermined: true });
+    expect(unreadable.why).toContain('the frontier could not be read');
+    const throttled = claimVerdict({ pick: null, rateLimit: { retryAfterSeconds: 30 } }, context);
+    expect(throttled).toMatchObject({ work: false, undetermined: true, rateLimited: true, retryAfterSeconds: 30 });
   });
 });
 
@@ -954,8 +1043,9 @@ describe('formatDuration', () => {
 
 /**
  * The subprocess tests. A scratch PATH holds fakes for the only two commands
- * the gate runs; both record their argv so the read-only promise can be
- * asserted on rather than assumed.
+ * the gate runs; both record their argv so the claim rule (dry run on every
+ * poll, one real take-one only under `--claim`) can be asserted on rather than
+ * assumed.
  */
 const REAL_BUN = execFileSync('which', ['bun'], { encoding: 'utf8' }).trim();
 const fakeBinDir = mkdtempSync(join(tmpdir(), 'loggd-gate-fakes-'));
@@ -974,6 +1064,8 @@ writeFake('bun', [
   'printf \'%s\\n\' "bun $*" >> "$FAKE_ARGV_FILE"',
   // The park sweep (#775) answers for itself, so a test can fail it alone.
   'case "$*" in *"park-probe.ts sweep"*) printf \'%s\\n\' "park-probe: swept"; exit ${FAKE_SWEEP_STATUS:-0};; esac',
+  // A frontier call without `--dry-run` is the gate's claim: it answers on its own when a test supplies one.
+  'case "$*" in *"frontier/next.ts"*) case "$*" in *--dry-run*) ;; *) printf \'%s\\n\' "${FAKE_CLAIM_JSON:-$FAKE_FRONTIER_JSON}"; exit ${FAKE_CLAIM_STATUS:-0};; esac;; esac',
   'printf \'%s\\n\' "$FAKE_FRONTIER_JSON"',
   'exit ${FAKE_FRONTIER_STATUS:-0}',
 ]);
@@ -981,7 +1073,8 @@ writeFake('gh', [
   'printf \'%s\\n\' "gh $*" >> "$FAKE_ARGV_FILE"',
   'case "$*" in',
   '  *"pr list --state merged"*) printf \'%s\\n\' "${FAKE_MERGED_PR_JSON:-[]}";;',
-  '  *--label*) printf \'%s\\n\' "${FAKE_CLAIMS_JSON:-[]}";;',
+  // The claim list fails on its own when a test asks (FAKE_CLAIMS_STATUS).
+  '  *--label*) printf \'%s\\n\' "${FAKE_CLAIMS_JSON:-[]}"; exit ${FAKE_CLAIMS_STATUS:-${FAKE_GH_STATUS:-0}};;',
   // The census, answered on its own when a test supplies it (#810).
   '  *"issue list"*"--json number,body,labels,assignees"*) printf \'%s\\n\' "${FAKE_ISSUES_JSON:-$FAKE_PR_JSON}";;',
   '  *) printf \'%s\\n\' "$FAKE_PR_JSON";;',
@@ -1040,6 +1133,40 @@ const runGate = (args: string[], over: Record<string, string> = {}): GateRun => 
     stdout: result.stdout,
     argv: readFileSync(argvFile, 'utf8').split('\n').filter(Boolean),
   };
+};
+
+/**
+ * The waiting gate, run until it exits or prints `waits` waiting lines. Async
+ * and killed afterwards, so a gate that waits where it should report fails its
+ * assertions rather than hanging the run.
+ */
+const pollGate = async (
+  args: string[],
+  over: Record<string, string>,
+  waits = 2,
+): Promise<{ lines: string[]; argv: string[] }> => {
+  const argvFile = join(fakeBinDir, `argv-poll-${Math.random().toString(36).slice(2)}`);
+  writeFileSync(argvFile, '');
+  const child = spawn(REAL_BUN, [GATE, ...args], {
+    cwd: REPO_ROOT,
+    env: gateEnv({ FAKE_ARGV_FILE: argvFile, ...over }),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const lines: string[] = [];
+  child.stdout.setEncoding('utf8');
+  const done = new Promise<void>((resolve) => {
+    child.stdout.on('data', (chunk: string) => {
+      lines.push(...chunk.split('\n').filter(Boolean));
+      if (lines.filter((l) => l.includes('waiting')).length >= waits) resolve();
+    });
+    child.on('close', () => resolve());
+  });
+  try {
+    await done;
+  } finally {
+    child.kill('SIGKILL');
+  }
+  return { lines, argv: readFileSync(argvFile, 'utf8').split('\n').filter(Boolean) };
 };
 
 describe('the gate as a process', () => {
@@ -1595,10 +1722,13 @@ describe('the gate as a process', () => {
   });
 
   // The blocking gate, run until it has reported two polls, then killed.
-  const twoPolls = async (over: Record<string, string>): Promise<{ lines: string[]; argv: string[] }> => {
+  const twoPolls = async (
+    over: Record<string, string>,
+    args: string[] = ['1'],
+  ): Promise<{ lines: string[]; argv: string[] }> => {
     const argvFile = join(fakeBinDir, `argv-sweep-${Math.random().toString(36).slice(2)}`);
     writeFileSync(argvFile, '');
-    const child = spawn(REAL_BUN, [GATE, '1'], {
+    const child = spawn(REAL_BUN, [GATE, ...args], {
       cwd: REPO_ROOT,
       env: gateEnv({ FAKE_ARGV_FILE: argvFile, RALPH_PARK_SWEEP_IN_GATE: '', ...over }),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1610,6 +1740,8 @@ describe('the gate as a process', () => {
         lines.push(...chunk.split('\n').filter(Boolean));
         if (lines.filter((l) => l.includes('waiting')).length >= 2) resolve();
       });
+      // Exiting early is a failure, not a hang: resolve and let the assertions say so.
+      child.on('close', () => resolve());
     });
     try {
       await sawTwoPolls;
@@ -1644,6 +1776,25 @@ describe('the gate as a process', () => {
     expect(bunCalls(run.argv).filter((call) => call === 'probe').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('--claim keeps waiting when the claim race is lost, and never reports work', async () => {
+    const run = await twoPolls(
+      {
+        FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 601, title: 'Do the thing' })),
+        FAKE_CLAIM_JSON: JSON.stringify(
+          pick({ ticket: null, claimed: false, obstructed: [{ number: 601, reason: 'labeled rafa-wip' }] }),
+        ),
+      },
+      ['1', '--claim'],
+    );
+    expect(run.lines.join('\n')).not.toContain('work available');
+    const waits = run.lines.filter((l) => l.includes('waiting'));
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toContain('claim race lost for #601');
+    expect(waits[0]).toContain('poll 1');
+    // A claim attempt on every poll that would have reported work.
+    expect(run.argv.filter((l) => l.includes('frontier/next.ts') && !l.includes('--dry-run')).length).toBeGreaterThanOrEqual(2);
+  });
+
   it('exits as soon as a poll finds work, without waiting out the interval', async () => {
     // The gate must not sleep through work that appeared while it was idle;
     // with a 3600s interval, finishing at all proves it re-checked and left.
@@ -1673,6 +1824,149 @@ describe('the gate as a process', () => {
   });
 });
 
+describe('the gate as a process, claiming for the supervisor (--claim)', () => {
+  const OFFERS_601 = JSON.stringify(pick({ ticket: 601, title: 'Do the thing' }));
+  const frontierCalls = (run: GateRun): string[] => run.argv.filter((line) => line.includes('frontier/next.ts'));
+  const claimCalls = (run: GateRun): string[] => frontierCalls(run).filter((line) => !line.includes('--dry-run'));
+  const excludesOf = (line: string): string[] => line.match(/--exclude \d+/g) ?? [];
+
+  it('a hand-run --once claims nothing, even with a ticket on the frontier', () => {
+    const run = runGate(['--once'], { FAKE_FRONTIER_JSON: OFFERS_601 });
+    expect(run.status).toBe(0);
+    expect(frontierCalls(run)).toHaveLength(1);
+    expect(claimCalls(run)).toEqual([]);
+    expect(run.stdout).not.toContain('claim held by this loop');
+  });
+
+  it('claims the ticket with the same fences as the dry run, then reports it held', () => {
+    const run = runGate(['--once', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_601,
+      FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 601, title: 'Do the thing', claimed: true })),
+    });
+    expect(run.status).toBe(0);
+    const [dry, claim] = frontierCalls(run);
+    expect(frontierCalls(run)).toHaveLength(2);
+    expect(dry).toMatch(/^bun \/\S+\/frontier\/next\.ts --take-one --dry-run( --exclude \d+)*$/);
+    expect(claim).toMatch(/^bun \/\S+\/frontier\/next\.ts --take-one( --exclude \d+)*$/);
+    expect(excludesOf(claim!)).toEqual(excludesOf(dry!));
+    expect(run.stdout).toMatch(/work available — frontier ticket #601/);
+    expect(run.stdout).toContain('claim held by this loop');
+  });
+
+  it('names the ticket it actually claimed, not the one it lost on the way', () => {
+    const run = runGate(['--once', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_601,
+      FAKE_CLAIM_JSON: JSON.stringify(
+        pick({ ticket: 602, title: 'The next one', claimed: true, obstructed: [{ number: 601, reason: 'labeled rafa-wip' }] }),
+      ),
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/work available — frontier ticket #602 — The next one — claim held by this loop/);
+  });
+
+  const LOST = JSON.stringify(pick({ ticket: null, claimed: false, obstructed: [{ number: 601, reason: 'labeled rafa-wip' }] }));
+
+  it('--once --claim exits 1 when the claim race is lost', () => {
+    const run = runGate(['--once', '--claim'], { FAKE_FRONTIER_JSON: OFFERS_601, FAKE_CLAIM_JSON: LOST });
+    expect(run.status).toBe(1);
+    expect(run.stdout).not.toContain('work available');
+    expect(run.stdout).toContain('claim race lost for #601');
+    expect(run.stdout).toContain('every frontier candidate is held (#601)');
+  });
+
+  it('--once --claim falls back to the dry run on an unreadable claim run, so the session claims', () => {
+    // Exit 1 would stop an ungated run as completed beside an available
+    // ticket; a claim run that could not answer is not a lost race.
+    const run = runGate(['--once', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_601,
+      FAKE_CLAIM_JSON: 'not json',
+      FAKE_CLAIM_STATUS: '1',
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/work available — frontier ticket #601 — Do the thing$/m);
+    expect(run.stdout).not.toContain('claim held by this loop');
+  });
+
+  it('a waiting --claim falls back to the dry run on an unreadable claim run, so the session claims', async () => {
+    // Waiting on it instead would wait forever if the claim run kept failing
+    // while the dry run kept offering the ticket: a stuck loop.
+    const run = await pollGate(['1', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_601,
+      FAKE_CLAIM_JSON: 'not json',
+      FAKE_CLAIM_STATUS: '1',
+    });
+    expect(run.lines).toContain('frontier-gate: work available — frontier ticket #601 — Do the thing');
+    expect(run.lines.join('\n')).not.toContain('claim held by this loop');
+    expect(run.lines.filter((l) => l.includes('waiting'))).toEqual([]);
+  });
+
+  it('a waiting --claim waits out a rate-limited claim run rather than reporting work', async () => {
+    const run = await pollGate(
+      ['1', '--claim'],
+      {
+        FAKE_FRONTIER_JSON: OFFERS_601,
+        FAKE_CLAIM_JSON: JSON.stringify({ ...pick(), error: 'GitHub rate limit', rateLimited: true, retryAfterSeconds: 1 }),
+        FAKE_CLAIM_STATUS: '1',
+      },
+      1,
+    );
+    expect(run.lines.join('\n')).not.toContain('work available');
+    const waits = run.lines.filter((l) => l.includes('waiting'));
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toContain('rate-limited');
+  });
+
+  it('leaves a triager byte-identical: dry run with its role, no claim', () => {
+    const ROLES_PROJECT = scratchProject('gate-claim-roles', ['codo', { name: 'tria', role: 'triager' }]);
+    const run = runGate(['--once', '--claim'], {
+      RALPH_PROJECT: ROLES_PROJECT,
+      RALPH_LOOP_NAME: 'tria',
+      FAKE_FRONTIER_JSON: OFFERS_601,
+      FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 601, title: 'Do the thing', claimed: true })),
+    });
+    expect(frontierCalls(run)).toHaveLength(1);
+    expect(frontierCalls(run)[0]).toMatch(/^bun \/\S+\/frontier\/next\.ts --take-one --dry-run( --exclude \d+)* --role triager$/);
+    expect(claimCalls(run)).toEqual([]);
+  });
+
+  it('leaves the claim to the session when the pull request list is unreadable', () => {
+    const run = runGate(['--once', '--claim'], { FAKE_FRONTIER_JSON: OFFERS_601, FAKE_PR_JSON: 'not json at all' });
+    expect(run.status).toBe(0);
+    expect(claimCalls(run)).toEqual([]);
+    expect(run.stdout).toContain('(open PRs unreadable; the iteration re-checks)');
+  });
+
+  it("leaves the claim to the session when this loop's claim list is unreadable", () => {
+    const run = runGate(['--once', '--claim'], { FAKE_FRONTIER_JSON: OFFERS_601, FAKE_CLAIMS_STATUS: '1' });
+    expect(run.argv.some((line) => line.includes('--label ralph-wip'))).toBe(true);
+    expect(run.status).toBe(0);
+    expect(claimCalls(run)).toEqual([]);
+    expect(run.stdout).toMatch(/work available — frontier ticket #601/);
+  });
+
+  it('resumes its own gate claim whose session never started, claiming nothing more (#5)', () => {
+    // The gate claimed #601 and the supervisor died before the model session
+    // began: #601 still carries this loop's `-wip`. The next gate must hand
+    // #601 back as the resumable claim, never claim #602 on top of it.
+    const run = runGate(['--once', '--claim'], {
+      FAKE_CLAIMS_JSON: '[{"number":601}]',
+      FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 602, title: 'The next one' })),
+      FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 602, title: 'The next one', claimed: true })),
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("issue #601 carries this loop's unfinished claim");
+    expect(frontierCalls(run)).toEqual([]);
+  });
+
+  it('never claims a closure pick', () => {
+    const run = runGate(['--once', '--claim'], {
+      FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 50, title: 'Spec', closure: true })),
+    });
+    expect(run.status).toBe(0);
+    expect(claimCalls(run)).toEqual([]);
+  });
+});
+
 describe('the gate as a process, holding on a refuted verdict (#771)', () => {
   // The record lives in a scratch file named by RALPH_GATE_VERDICT_STORE, never this checkout's `.ralph/`.
   const record = (over: Partial<HeldVerdict> = {}): string => {
@@ -1686,6 +1980,79 @@ describe('the gate as a process, holding on a refuted verdict (#771)', () => {
     return path;
   };
   const OFFERS_42 = JSON.stringify(pick({ ticket: 42, title: 'Still offered' }));
+  const claimLines = (argv: string[]): string[] =>
+    argv.filter((l) => l.includes('frontier/next.ts') && !l.includes('--dry-run'));
+  const dryLines = (argv: string[]): string[] => argv.filter((l) => l.includes('frontier/next.ts') && l.includes('--dry-run'));
+  const OFFERS_601_WON = {
+    FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 601, title: 'Other' })),
+    FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 601, title: 'Other', claimed: true })),
+  };
+
+  it('fences the held subject off the claim run, never the dry run', async () => {
+    // Losing #601 to a sibling, the real take-one could otherwise walk onto
+    // #42, the very subject this hold keeps the loop off.
+    const run = await pollGate(['1', '--claim'], { ...OFFERS_601_WON, RALPH_GATE_VERDICT_STORE: record() });
+    expect(run.lines.join('\n')).toContain('work available — frontier ticket #601 — Other — claim held by this loop');
+    const [claim] = claimLines(run.argv);
+    expect(claim).toMatch(/ --exclude 42( |$)/);
+    expect(dryLines(run.argv).every((l) => !/ --exclude 42( |$)/.test(l))).toBe(true);
+  });
+
+  it('reports a different kind of work on the held number unclaimed rather than fencing it off', async () => {
+    // A held closure on #42 whose parent is now an ordinary ticket: an
+    // `--exclude 42` claim would exclude the very work on offer and wait for ever.
+    const run = await pollGate(['1', '--claim'], {
+      FAKE_FRONTIER_JSON: OFFERS_42,
+      FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 42, title: 'Still offered', claimed: true })),
+      RALPH_GATE_VERDICT_STORE: record({ kind: 'closable-spec' }),
+    });
+    const out = run.lines.join('\n');
+    expect(out).toContain('work available — frontier ticket #42 — Still offered');
+    expect(out).not.toContain('claim held by this loop');
+    expect(claimLines(run.argv)).toEqual([]);
+  });
+
+  it('leaves the claim argv as the dry run fenced it when the hold is released or absent', async () => {
+    for (const store of [record({ released: true }), join(scratchDir('gate-verdict-'), 'absent.json')]) {
+      const run = await pollGate(['1', '--claim'], { ...OFFERS_601_WON, RALPH_GATE_VERDICT_STORE: store });
+      const [dry] = dryLines(run.argv);
+      const [claim] = claimLines(run.argv);
+      expect(claim).toBe(dry!.replace(' --dry-run', ''));
+    }
+  });
+
+  it('never claims a held subject under --claim', async () => {
+    const argvFile = join(fakeBinDir, `argv-hold-claim-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(argvFile, '');
+    const child = spawn(REAL_BUN, [GATE, '1', '--claim'], {
+      cwd: REPO_ROOT,
+      env: gateEnv({
+        FAKE_ARGV_FILE: argvFile,
+        FAKE_FRONTIER_JSON: OFFERS_42,
+        FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 42, title: 'Still offered', claimed: true })),
+        RALPH_GATE_VERDICT_STORE: record(),
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const lines: string[] = [];
+    child.stdout.setEncoding('utf8');
+    const sawTwoPolls = new Promise<void>((resolve) => {
+      child.stdout.on('data', (chunk: string) => {
+        lines.push(...chunk.split('\n').filter(Boolean));
+        if (lines.filter((l) => l.includes('waiting')).length >= 2) resolve();
+      });
+      child.on('close', () => resolve());
+    });
+    try {
+      await sawTwoPolls;
+    } finally {
+      child.kill('SIGKILL');
+    }
+    expect(lines.join('\n')).not.toContain('work available');
+    expect(lines.filter((l) => l.includes('holding on an unchanged verdict'))).toHaveLength(2);
+    const argv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean);
+    expect(argv.filter((l) => l.includes('frontier/next.ts') && !l.includes('--dry-run'))).toEqual([]);
+  });
 
   it('holds instead of reporting the same ticket as work', async () => {
     const argvFile = join(fakeBinDir, 'argv-hold');

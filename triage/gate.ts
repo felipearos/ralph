@@ -7,8 +7,9 @@
  * by `triage/handoff.ts`, and that move needs `RALPH_CLERK_JIRA_TOKEN`. The
  * token is a gate secret: `ralph.sh`'s `run_intake_gate` exports it to the
  * role's intake gate only, never to a model session. So the move happens
- * here. `frontier-gate.ts` stays read-only for every coder; this file is the
- * one place the triager's gate writes.
+ * here. `frontier-gate.ts` writes only when the supervisor runs it with
+ * `--claim`, and then only to claim the one ticket it reports (#5); this file
+ * remains the one place the triager's gate writes.
  *
  * With no `triage.jira` block, or on a GitHub tracker, this is the frontier
  * gate and nothing else.

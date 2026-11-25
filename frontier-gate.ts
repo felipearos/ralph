@@ -10,11 +10,25 @@
  * empty and it would spin down instantly, every time, until the backlog widens.
  *
  * So the supervisor asks first, and waits rather than spawning. This file is
- * that question. It is READ-ONLY by construction: the frontier is consulted
- * through `--take-one --dry-run`, which keeps every live re-read and skips only
- * the claim, and the pull requests through `gh pr list`. Nothing here writes,
- * because a gate that claimed a ticket would hand it to a process that has not
- * started yet — and would lose it outright if the supervisor then died.
+ * that question. Its polls are READ-ONLY: the frontier is consulted through
+ * `--take-one --dry-run`, which keeps every live re-read and skips only the
+ * claim, and the pull requests through `gh pr list`. An idle loop polls for
+ * hours, and a claim taken on a poll it then did not act on (a held verdict,
+ * a pending control) would fence a ticket off from every sibling for nothing.
+ *
+ * The one write is the supervisor's gate (`--claim`), and only at the moment
+ * it reports a frontier ticket as work: it claims that ticket with a real
+ * `--take-one` and reports work only if the claim was won. Without it the
+ * spawned session ran its own `--take-one` and often found the ticket already
+ * taken by a sibling loop — a whole session spent learning that. The claim is
+ * safe to take before the session exists because `next.ts` writes its lease
+ * under `RALPH_RUN_ID` and `RALPH_SUPERVISOR_PID`, which `ralph.sh` exports
+ * (and heartbeats with `claim-lease.ts heartbeat --watch` for the run): a live
+ * supervisor's lease reads `slow`, never `expired`; a supervisor that dies
+ * leaves an expired lease the frontier's expired-lease reclaim releases; and a
+ * spawn that never starts leaves this loop's own `-wip`, which the next poll
+ * reports as "this loop's unfinished claim". A hand-run `--once` without
+ * `--claim` is an operator's check and never claims.
  *
  * It does READ one local record: the verdict this loop's supervisor is
  * holding on (`gate-verdict-store.ts`, #771), written after an iteration
@@ -40,8 +54,10 @@
  * dead network.
  *
  * Usage:
- *   ralph/frontier-gate.ts <poll-seconds>   wait until there is work, then exit 0
- *   ralph/frontier-gate.ts --once           report the verdict now; 0 work, 1 none
+ *   ralph/frontier-gate.ts <poll-seconds>           wait until there is work, then exit 0
+ *   ralph/frontier-gate.ts --once                   report the verdict now; 0 work, 1 none
+ *   ralph/frontier-gate.ts <poll-seconds> --claim   as above, claiming a frontier ticket before reporting it
+ *   ralph/frontier-gate.ts --once --claim           (the supervisor's gate; never pass it by hand)
  */
 
 import { execFile, spawnSync } from "node:child_process";
@@ -468,7 +484,13 @@ export function decide(probes: Probes, loop: LoopName = "ralph", role: Role = DE
         why: `spec #${pick.ticket} has no open children left — closing it is the task${notes}`,
       };
     }
-    const named = `frontier ticket #${pick.ticket} — ${pick.title ?? ""}`.trimEnd();
+    const title = pick.title ?? "";
+    let named = `frontier ticket #${pick.ticket} — ${title}`.trimEnd();
+    // `ralph.sh` reads a work line ending in `CLAIM_HELD_NOTE` as already
+    // claimed and skips its race check. This pick is NOT claimed, so a title
+    // that happens to end in those words is quoted to break the suffix; every
+    // other title is left exactly as it was.
+    if ((named + notes).endsWith(CLAIM_HELD_NOTE)) named = `frontier ticket #${pick.ticket} — "${title}"`;
     return { work: true, why: named + notes };
   }
 
@@ -685,14 +707,15 @@ export function frontierOutcome(
   return { pick: null, rateLimit: null };
 }
 
-async function probeFrontier(
-  fences: PlanFences,
-  role: Role = DEFAULT_ROLE,
-): Promise<{ pick: TakeOnePick | null; rateLimit: FrontierRateLimit | null }> {
-  // `--dry-run` is what makes this read-only, and it is not an optimisation:
-  // without it the gate would claim the ticket for a process that does not
-  // exist yet. Never remove it from this call site.
-  const args = [join(RALPH_HOME, "frontier", "next.ts"), "--take-one", "--dry-run"];
+/**
+ * The frontier's argv, built in one place for the dry-run probe and the claim
+ * alike: a claim run that fenced differently from the probe it follows could
+ * claim a ticket the probe never offered, or one the iteration's own
+ * `--exclude` refuses.
+ */
+function frontierArgs(fences: PlanFences, role: Role, dryRun: boolean, exclude: readonly number[] = []): string[] {
+  const args = [join(RALPH_HOME, "frontier", "next.ts"), "--take-one"];
+  if (dryRun) args.push("--dry-run");
   // The one fence §1 passes by hand — a durable local list. The rescue limit
   // used to be a second one, counted from the journal, and the gate could not
   // see it: on 2026-09-22 the iterations kept excluding #1099 over rescues the
@@ -703,6 +726,9 @@ async function probeFrontier(
   // iteration refuses, spending an Opus turn per cycle learning that — the
   // exact waste it exists to prevent.
   for (const number of fences.outOfScope) args.push("--exclude", String(number));
+  // The claim's own extra fence (`ClaimContext.exclude`): empty for every dry
+  // run and for a claim with no active hold, so those argv stay as they were.
+  for (const number of exclude) args.push("--exclude", String(number));
   // The closure list is a fence for a TRIAGER and a task for a coder, so it is
   // passed for one and not the other. Closing a drained spec is `prompt.md`
   // §1's maintenance job, reached only when the coder's frontier is empty;
@@ -719,8 +745,111 @@ async function probeFrontier(
   // gate sends before that payload knows it would fail every coder's probe. A
   // role that could send it cannot exist until the roster names one.
   if (role !== DEFAULT_ROLE) args.push("--role", role);
-  const { ok, stdout } = await run("bun", args);
+  return args;
+}
+
+async function probeFrontier(
+  fences: PlanFences,
+  role: Role = DEFAULT_ROLE,
+): Promise<{ pick: TakeOnePick | null; rateLimit: FrontierRateLimit | null }> {
+  // `--dry-run` is what keeps every poll read-only, and it is not an
+  // optimisation: without it each poll would claim a ticket the supervisor may
+  // never spawn for. Never remove it from this call site — the one claim the
+  // gate takes is `claimFrontier`'s, at report time, under `--claim` only.
+  const { ok, stdout } = await run("bun", frontierArgs(fences, role, true));
   return frontierOutcome(ok, stdout);
+}
+
+/**
+ * The marker a won claim adds to the "frontier ticket #N — title" verdict, so
+ * the supervisor can tell a ticket this gate already holds from one the
+ * session still has to claim. `ralph.sh` matches this exact text as the
+ * suffix of the work line (`GATE_CLAIMED`): change both together. Appended after the title, so the verdict still
+ * matches `^frontier ticket #([0-9]+)`, which `ralph.sh` parses — except on a
+ * claimed closure parent, worded `spec #N has no open children left …` on
+ * purpose (see `claimVerdict`), which `ralph.sh` marks claimed all the same.
+ */
+export const CLAIM_HELD_NOTE = " — claim held by this loop";
+
+/**
+ * Everything a claim needs from the poll that reported the ticket: the fences
+ * the dry run was asked with (the claim must ask the same) and the probes its
+ * verdict was formed from (a lost claim is re-read through `decide`).
+ */
+export interface ClaimContext {
+  fences: PlanFences;
+  probes: Probes;
+  loop: LoopName;
+  /** The ticket the dry run offered, named in a lost race. */
+  offered: number;
+  /**
+   * Tickets the claim run alone also excludes: the subject of an active #771
+   * hold, which the claim could otherwise walk onto after losing `offered` to
+   * a sibling. Never passed to the dry run, whose pick the hold is judged on.
+   */
+  exclude?: number[];
+}
+
+/**
+ * The verdict a real `--take-one` produced. Pure, so every outcome is pinned
+ * without a process.
+ *
+ * Won is `claimed` with a ticket, whatever `obstructed` holds: the claim may
+ * lose the offered ticket to a sibling and take the next one, and the verdict
+ * must name the ticket now HELD, never the one that slipped away. Anything
+ * else is not work: a readable loss reads as `decide` would read an empty or
+ * held pick, and an unreadable or throttled run is undetermined — a wait, so
+ * a flaky claim can never spawn a session onto a ticket nobody holds.
+ */
+export function claimVerdict(
+  outcome: { pick: TakeOnePick | null; rateLimit: FrontierRateLimit | null },
+  context: Omit<ClaimContext, "fences">,
+): Verdict {
+  const { pick, rateLimit } = outcome;
+  if (pick !== null && pick.claimed === true && pick.ticket !== null) {
+    // The real take-one can hand out a drained closure parent (#810) when the
+    // offered ticket went to a sibling. It is held all the same, but it is
+    // maintenance, not a frontier ticket: worded as `decide` words one, so
+    // `ralph.sh` does not read it as a ticket the session must work.
+    // The deliberate exception to the `^frontier ticket #` shape
+    // `CLAIM_HELD_NOTE` describes: `gate-verdict-store.ts`'s `verdictSubject`
+    // reads this wording as a `closable-spec` subject, which the #771 hold
+    // record keys on, and §1 treats it as maintenance. It still ends with the
+    // marker, and `ralph.sh` sets `GATE_CLAIMED` on the marker alone for it.
+    // The plan-violation note rides along as `decide` carries it, ahead of the
+    // marker so the line still ends with it.
+    const violation = violationNote(context.probes.localRecovery, DEFAULT_ROLE);
+    if (pick.closure === true) {
+      return {
+        work: true,
+        why: `spec #${pick.ticket} has no open children left — closing it is the task${violation}${CLAIM_HELD_NOTE}`,
+      };
+    }
+    const named = `frontier ticket #${pick.ticket} — ${pick.title ?? ""}`.trimEnd();
+    return { work: true, why: named + violation + CLAIM_HELD_NOTE };
+  }
+  const race = `claim race lost for #${context.offered}`;
+  if (pick === null) {
+    const verdict = decide({ ...context.probes, pick: null, frontierRateLimit: rateLimit }, context.loop, DEFAULT_ROLE);
+    return { ...verdict, work: false, why: `${verdict.why} (claim run for #${context.offered})` };
+  }
+  // Ticket and closure normalised away, so `decide` gives its own empty or
+  // all-held verdict rather than reporting the unclaimed ticket as work.
+  const verdict = decide(
+    { ...context.probes, pick: { ...pick, ticket: null, closure: undefined }, frontierRateLimit: null },
+    context.loop,
+    DEFAULT_ROLE,
+  );
+  return { ...verdict, work: false, why: `${race} — ${verdict.why}` } as Verdict;
+}
+
+/**
+ * Claim the ticket the dry run offered. Never throws: `run` does not, and a
+ * failed run is `claimVerdict`'s undetermined wait.
+ */
+async function claimFrontier(context: ClaimContext): Promise<Verdict> {
+  const { ok, stdout } = await run("bun", frontierArgs(context.fences, DEFAULT_ROLE, false, context.exclude ?? []));
+  return claimVerdict(frontierOutcome(ok, stdout), context);
 }
 
 /**
@@ -1027,8 +1156,8 @@ async function probePullRequests(): Promise<PullRequest[] | null> {
  *
  * A name the roster does not carry cannot reach here: `currentLoopName` refuses
  * it first. So the fallbacks cover an unreadable roster, where the coder's
- * bucket is the answer that changes nothing — the gate stays read-only either
- * way, and `probeFrontier` sends no `--role` for it.
+ * bucket is the answer that changes nothing — `probeFrontier` sends no
+ * `--role` for it.
  */
 export function intakeRole(loop: LoopName): Role {
   try {
@@ -1039,6 +1168,19 @@ export function intakeRole(loop: LoopName): Role {
 }
 
 export async function probe(role: Role = intakeRole(currentLoopName())): Promise<Verdict> {
+  return (await probeForClaim(role)).verdict;
+}
+
+/**
+ * `probe`, plus what a claim would need when its verdict is one the gate may
+ * claim. `claim` is set ONLY for a coder's frontier ticket formed with both
+ * the pull request list and the loop's claim list readable: an unreadable one
+ * could be hiding work the session must see first, so the gate keeps today's
+ * verdict (and caveat) and leaves the claim to the session. A shepherd, an
+ * own-claim, a local-recovery, a closure or a census verdict is never claimed.
+ */
+async function probeForClaim(role: Role): Promise<{ verdict: Verdict; claim: ClaimContext | null }> {
+  const plain = (verdict: Verdict) => ({ verdict, claim: null });
   const loop = currentLoopName();
   // Not asked at all for a role that opens no pull request: the API call would
   // be spent, every poll, to learn that a thing which cannot exist does not.
@@ -1047,7 +1189,7 @@ export async function probe(role: Role = intakeRole(currentLoopName())): Promise
   const prs = asks ? await probePullRequests() : null;
   if (asks) {
     const shepherd = shepherdVerdict(prs, loop);
-    if (shepherd !== null) return shepherd;
+    if (shepherd !== null) return plain(shepherd);
   }
 
   // A Linear or Jira project whose tracker this host cannot reach (no
@@ -1055,7 +1197,7 @@ export async function probe(role: Role = intakeRole(currentLoopName())): Promise
   // why and wait: the operator reconnects it from the dashboard, and a halt
   // here would stop the loop overnight over a fix nothing in it can make.
   const unavailable = trackerUnavailableReason();
-  if (unavailable !== null) return { work: false, undetermined: true, why: unavailable };
+  if (unavailable !== null) return plain({ work: false, undetermined: true, why: unavailable });
 
   // Recovery second, also one API call: when it answers, the frontier cannot
   // express that work (it excludes claimed tickets by design), so the
@@ -1065,38 +1207,42 @@ export async function probe(role: Role = intakeRole(currentLoopName())): Promise
   // Claims whose pull request another loop adopted (#424) are not this loop's
   // work: only live ones short-circuit, the rest fall through to the frontier.
   const claims = liveClaims(await probeOpenClaims(loop), prs, loop) ?? null;
-  if (claims !== null && claims.length > 0) return decide({ prs, pick: null, claims }, loop, role);
+  if (claims !== null && claims.length > 0) return plain(decide({ prs, pick: null, claims }, loop, role));
 
   // A power cut can leave the only copy of work in this checkout, before a
   // claim or branch was pushed. Wake an iteration for it before asking the
   // frontier for anything new. If Git cannot describe the checkout, wait: a
   // new claim is the unsafe answer to an unreadable recovery state.
   const localRecovery = await probeLocalRecovery(loop);
-  if (localRecovery === null) return decide({ prs, pick: null, claims, localRecovery }, loop, role);
+  if (localRecovery === null) return plain(decide({ prs, pick: null, claims, localRecovery }, loop, role));
   const localVerdict = decide({ prs, pick: null, claims, localRecovery }, loop, role);
-  if (localVerdict.work) return localVerdict;
+  if (localVerdict.work) return plain(localVerdict);
 
   const fences = await readPlanFences();
   const { pick, rateLimit: frontierRateLimit } = await probeFrontier(fences, role);
   if (frontierRateLimit !== null) {
-    return decide({ prs, pick, claims, localRecovery, frontierRateLimit }, loop, role);
+    return plain(decide({ prs, pick, claims, localRecovery, frontierRateLimit }, loop, role));
   }
   if (pick !== null && pick.ticket !== null) {
-    return decide({ prs, pick, claims, localRecovery }, loop, role);
+    const probes: Probes = { prs, pick, claims, localRecovery };
+    const verdict = decide(probes, loop, role);
+    const claimable =
+      verdict.work && role === DEFAULT_ROLE && prs !== null && claims !== null && pick.closure !== true;
+    return { verdict, claim: claimable ? { fences, probes, loop, offered: pick.ticket } : null };
   }
 
   // Only a frontier that came back definitively empty makes §1's maintenance
   // question live, and only then is the census worth its API call.
   const frontierIsEmpty = pick !== null && pick.obstructed.length === 0;
   if (!frontierIsEmpty || fences.closureParents.length === 0) {
-    return decide({ prs, pick, claims, localRecovery }, loop, role);
+    return plain(decide({ prs, pick, claims, localRecovery }, loop, role));
   }
 
   const open = await probeOpenIssues();
   if (open === null) {
-    return { work: false, undetermined: true, why: "the open-issue census could not be read" };
+    return plain({ work: false, undetermined: true, why: "the open-issue census could not be read" });
   }
-  return decide(
+  return plain(decide(
     {
       prs,
       pick,
@@ -1112,7 +1258,7 @@ export async function probe(role: Role = intakeRole(currentLoopName())): Promise
     },
     loop,
     role,
-  );
+  ));
 }
 
 /**
@@ -1362,9 +1508,18 @@ export async function runFrontierGate(argv: string[], hooks: FrontierGateHooks =
   // same words an empty frontier gets — for what is really a broken probe.
   process.chdir(projectRoot());
 
+  // Only the supervisor passes it: a hand-run gate is a check and must never claim.
+  const claiming = argv.includes("--claim");
+
   if (argv.includes("--once")) {
     await beforePoll(hooks);
-    const verdict = await probe();
+    const probed = await probeForClaim(intakeRole(currentLoopName()));
+    let verdict = claiming && probed.claim !== null ? await claimFrontier(probed.claim) : probed.verdict;
+    // A claim run that could not answer (the claim lock busy, a throttle, bad
+    // output) is not "nothing to do": `--once`'s exit 1 stops an ungated run as
+    // completed. Fall back to the dry run's verdict and let the session claim,
+    // as it did before #5. Only a lost race is a definite no.
+    if (!verdict.work && "undetermined" in verdict && verdict.undetermined) verdict = probed.verdict;
     console.log(`frontier-gate: ${verdict.work ? "work available" : "nothing to do"} — ${verdict.why}`);
     process.exitCode = verdict.work ? 0 : 1;
     return;
@@ -1385,13 +1540,48 @@ export async function runFrontierGate(argv: string[], hooks: FrontierGateHooks =
   for (let poll = firstPoll; ; poll++) {
     parkSweep(process.env, root);
     await beforePoll(hooks);
-    const probed = await probe(role);
-    // Re-read every poll: the supervisor releases, clears or replaces the record between gates.
+    // Re-read every poll: the supervisor releases, clears or replaces the record
+    // between gates. Read before the probe so the hold decision is made before
+    // any claim: a held subject must not be claimed, which is why the claim
+    // waits for a "report" rather than riding on every poll.
     const held = readHeld(gateVerdictPath(process.env, root));
+    const { verdict: probed, claim } = await probeForClaim(role);
     const now = new Date();
-    const decision = holdDecision(probed, held, now, holdBudget);
+    let decision = holdDecision(probed, held, now, holdBudget);
+    let polled = probed;
+    // A hold names a kind as well as a number. When the dry run offers another
+    // kind of work on the held number (a held closure whose parent is now an
+    // ordinary ticket), a number-fenced claim would exclude the very work on
+    // offer and wait on it for ever. Skip the claim: report the dry run's
+    // verdict unmarked and let the session claim, as it did before #5.
+    const sameNumberAsHeld =
+      held !== null && !held.released && verdictSubject(probed.why)?.ticket === held.ticket;
+    if (decision === "report" && claiming && claim !== null && !sameNumberAsHeld) {
+      // The claim also fences off the subject an active hold keeps this loop
+      // off: the dry run's ticket is not the held one ("report" says so), but
+      // the real take-one may lose it to a sibling and walk onto the next,
+      // which can be. Only the claim run is fenced; the dry run must still see
+      // the held subject, or the hold would read as released.
+      const fenced = held !== null && !held.released ? { ...claim, exclude: [held.ticket] } : claim;
+      polled = await claimFrontier(fenced);
+      if (!polled.work) {
+        // A claim run that could not answer (non-zero exit, unreadable output,
+        // the claim lock busy) is not a lost race. Waiting on it would wait
+        // forever if it kept failing while the dry run kept offering work — a
+        // stuck loop. Report the dry run's verdict instead, unmarked, so the
+        // session claims as it did before #5 and `ralph.sh`'s
+        // `lost_claim_race` covers it, as `--once` does. A throttled claim
+        // run and a definite lost race are no-work polls: wait the usual
+        // interval (or the throttle backoff) and ask again. Never a release,
+        // though — neither says whether a held subject went away.
+        const undetermined = "undetermined" in polled && polled.undetermined;
+        const throttled = "rateLimited" in polled && polled.rateLimited === true;
+        if (undetermined && !throttled) polled = probed;
+        else decision = "wait";
+      }
+    }
     if (decision === "report") {
-      console.log(`frontier-gate: work available — ${probed.why}`);
+      console.log(`frontier-gate: work available — ${polled.why}`);
       return;
     }
     if (decision === "budget" && held !== null) {
@@ -1403,7 +1593,7 @@ export async function runFrontierGate(argv: string[], hooks: FrontierGateHooks =
       return;
     }
     // A hold is a no-work poll in every other respect: same wait, same wakes.
-    const verdict = decision === "hold" && held !== null ? holdingVerdict(probed, held) : probed;
+    const verdict = decision === "hold" && held !== null ? holdingVerdict(probed, held) : polled;
     const throttled = "rateLimited" in verdict && verdict.rateLimited === true;
     throttledStreak = throttled ? throttledStreak + 1 : 0;
     const wait = throttled

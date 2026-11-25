@@ -25,7 +25,10 @@ describe('restart recovery order', () => {
     expect(ownClaim).toBeGreaterThan(-1);
     expect(ownClaim).toBeLessThan(frontierSelection);
     expect(prompt).toContain('Do not call the frontier');
-    expect(prompt).toContain('skip this section and continue with §3');
+    // A recovered claim is not claimed again; §2 only decides whether to
+    // announce it (#5), so the session still goes on to §3.
+    expect(prompt).toContain('do not claim it again');
+    expect(prompt).toContain('continue with §3 on the recovered branch');
   });
 
   it('protects local-only and uncommitted work from branch replacement', () => {
