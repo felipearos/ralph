@@ -1625,6 +1625,20 @@ describe('the gated supervisor', () => {
     expect(run.argv.filter((l) => l.includes('claim-race.ts'))).toHaveLength(0);
   });
 
+  it('still asks about a race when only the title mentions the held-claim marker (#5)', () => {
+    // The marker is the gate's suffix, never a substring of the title: a
+    // fallback verdict whose title quotes it must still be checked for a race.
+    const run = runSupervisor(scratchWorktree(), ['3'], {
+      RALPH_WAIT_FOR_WORK: '1',
+      FAKE_SIGIL: '<ralph>ALL_BLOCKED</ralph>',
+      FAKE_CLAIM_RACE: '0',
+      FAKE_GATE_OUTPUT: 'frontier-gate: work available — frontier ticket #1 — Document the "claim held by this loop" marker',
+    });
+    expect(run.status).toBe(0);
+    expect(run.argv.filter((l) => l.includes('claim-race.ts'))).not.toHaveLength(0);
+    expect(run.stdout).not.toContain('disagree persistently');
+  }, 30_000);
+
   it("asks the coder's gate to claim, both waiting and ungated (#5)", () => {
     const waiting = runSupervisor(scratchWorktree(), ['1'], {
       RALPH_WAIT_FOR_WORK: '1',
@@ -2265,7 +2279,8 @@ describe('the park sweep before the gate', () => {
 });
 
 /**
- * The ungated supervisor asks the same read-only question the gated one does —
+ * The ungated supervisor asks the same question the gated one does (`--once`,
+ * claiming the ticket it reports for a coder, #5) —
  * once, before each spawn — so an empty frontier costs `gh` calls, not a
  * fresh-context turn. The gate itself is pinned by `frontier-gate.test.ts`;
  * what matters here is that the ask happens by default and that each answer

@@ -25,8 +25,8 @@
  *    the spec gives it none. Those are pushed once per signature as
  *    `ci-incident` and recorded in the store, and the gate keeps waiting.
  *
- * READ-ONLY of GitHub and of the repository, like the coder's gate, with one
- * exception: the retry (`retry.ts`) re-runs one flaky failed job — on
+ * READ-ONLY of GitHub and of the repository, as the coder's gate's polls are
+ * (it claims only the ticket it reports, #5), with one exception: the retry (`retry.ts`) re-runs one flaky failed job — on
  * Buildkite with the retry token, on a GitHub Actions project (#52) through
  * gh's own auth (`repos/<repo>/actions/jobs/<id>/rerun`), under the same
  * `ciDoctor.retry` ceilings either way. It does write the store — the lease, the scan and the budget are all store writes —

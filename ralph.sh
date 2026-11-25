@@ -2525,6 +2525,10 @@ run_intake_gate() { # <gate args...>
   fi
   (
     export_gate_secrets
+    # The claim's speed event reads the iteration and session from the
+    # environment, and these still name the iteration before this one: the
+    # claim belongs to the session not yet started, so it carries neither.
+    [ -z "${claim[*]+set}" ] || unset RALPH_ITERATION RALPH_SESSION_ID
     exec bun "${RALPH_HOME}/${INTAKE_GATE}" "$@" ${claim[@]+"${claim[@]}"}
   )
 }
@@ -3201,7 +3205,7 @@ while [ "$i" -lt "$MAX" ]; do
   # And whether the gate claimed it already (#5), in which case no race can
   # explain an empty iteration. Absent on the gate's unreadable-probe fallback.
   GATE_CLAIMED=""
-  case "$INTAKE_CASE" in *"claim held by this loop"*) [ -n "$GATE_TICKET" ] && GATE_CLAIMED=1 ;; esac
+  case "$INTAKE_CASE" in *" — claim held by this loop") [ -n "$GATE_TICKET" ] && GATE_CLAIMED=1 ;; esac
   # The case itself reaches the session, so a role whose work is not a ticket
   # number — a doctor's red build — has something to start from. A coder's
   # prompt reads the backlog and ignores it.

@@ -1011,8 +1011,9 @@ describe('formatDuration', () => {
 
 /**
  * The subprocess tests. A scratch PATH holds fakes for the only two commands
- * the gate runs; both record their argv so the read-only promise can be
- * asserted on rather than assumed.
+ * the gate runs; both record their argv so the claim rule (dry run on every
+ * poll, one real take-one only under `--claim`) can be asserted on rather than
+ * assumed.
  */
 const REAL_BUN = execFileSync('which', ['bun'], { encoding: 'utf8' }).trim();
 const fakeBinDir = mkdtempSync(join(tmpdir(), 'loggd-gate-fakes-'));
@@ -1807,15 +1808,17 @@ describe('the gate as a process, claiming for the supervisor (--claim)', () => {
     expect(run.stdout).toContain('every frontier candidate is held (#601)');
   });
 
-  it('--once --claim waits on an unreadable claim run instead of reporting work', () => {
+  it('--once --claim falls back to the dry run on an unreadable claim run, so the session claims', () => {
+    // Exit 1 would stop an ungated run as completed beside an available
+    // ticket; a claim run that could not answer is not a lost race.
     const run = runGate(['--once', '--claim'], {
       FAKE_FRONTIER_JSON: OFFERS_601,
       FAKE_CLAIM_JSON: 'not json',
       FAKE_CLAIM_STATUS: '1',
     });
-    expect(run.status).toBe(1);
-    expect(run.stdout).not.toContain('work available');
-    expect(run.stdout).toContain('the frontier could not be read');
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/work available — frontier ticket #601 — Do the thing$/m);
+    expect(run.stdout).not.toContain('claim held by this loop');
   });
 
   it('leaves a triager byte-identical: dry run with its role, no claim', () => {
@@ -1846,7 +1849,7 @@ describe('the gate as a process, claiming for the supervisor (--claim)', () => {
     expect(run.stdout).toMatch(/work available — frontier ticket #601/);
   });
 
-  it("resumes its own gate claim whose session never started, claiming nothing more (#5)", () => {
+  it('resumes its own gate claim whose session never started, claiming nothing more (#5)', () => {
     // The gate claimed #601 and the supervisor died before the model session
     // began: #601 still carries this loop's `-wip`. The next gate must hand
     // #601 back as the resumable claim, never claim #602 on top of it.

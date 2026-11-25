@@ -754,7 +754,8 @@ async function probeFrontier(
 /**
  * The marker a won claim adds to the "frontier ticket #N — title" verdict, so
  * the supervisor can tell a ticket this gate already holds from one the
- * session still has to claim. Appended after the title, so the verdict still
+ * session still has to claim. `ralph.sh` matches this exact text as the
+ * suffix of the work line (`GATE_CLAIMED`): change both together. Appended after the title, so the verdict still
  * matches `^frontier ticket #([0-9]+)`, which `ralph.sh` parses.
  */
 export const CLAIM_HELD_NOTE = " — claim held by this loop";
@@ -1127,8 +1128,8 @@ async function probePullRequests(): Promise<PullRequest[] | null> {
  *
  * A name the roster does not carry cannot reach here: `currentLoopName` refuses
  * it first. So the fallbacks cover an unreadable roster, where the coder's
- * bucket is the answer that changes nothing — the gate stays read-only either
- * way, and `probeFrontier` sends no `--role` for it.
+ * bucket is the answer that changes nothing — `probeFrontier` sends no
+ * `--role` for it.
  */
 export function intakeRole(loop: LoopName): Role {
   try {
@@ -1485,7 +1486,12 @@ export async function runFrontierGate(argv: string[], hooks: FrontierGateHooks =
   if (argv.includes("--once")) {
     await beforePoll(hooks);
     const probed = await probeForClaim(intakeRole(currentLoopName()));
-    const verdict = claiming && probed.claim !== null ? await claimFrontier(probed.claim) : probed.verdict;
+    let verdict = claiming && probed.claim !== null ? await claimFrontier(probed.claim) : probed.verdict;
+    // A claim run that could not answer (the claim lock busy, a throttle, bad
+    // output) is not "nothing to do": `--once`'s exit 1 stops an ungated run as
+    // completed. Fall back to the dry run's verdict and let the session claim,
+    // as it did before #5. Only a lost race is a definite no.
+    if (!verdict.work && "undetermined" in verdict && verdict.undetermined) verdict = probed.verdict;
     console.log(`frontier-gate: ${verdict.work ? "work available" : "nothing to do"} — ${verdict.why}`);
     process.exitCode = verdict.work ? 0 : 1;
     return;
