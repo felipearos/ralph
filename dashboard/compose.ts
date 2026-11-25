@@ -55,7 +55,8 @@ import {
 } from "./reconcile";
 import { createHandler, type ProjectScope, type SnapshotStreamOptions } from "./server";
 import { createUsageSource } from "./usage";
-import { createUsageBarAdapter } from "./usagebar-adapter";
+import { createUsageBarAdapter, type UsageBarMemory } from "./usagebar-adapter";
+import { createUsageBarFileMemory } from "./usagebar-memory";
 import { createHandler as createLineupHandler } from "../lineup/server";
 
 
@@ -73,6 +74,8 @@ export interface ExecFreeFactories {
   usage: typeof createUsageSource;
   lineupHandler: typeof createLineupHandler;
   interrupt: typeof createInterruptAdapter;
+  /** Where the UsageBar reading outlives a restart: a file in the operator's cache. */
+  usagebarMemory: () => UsageBarMemory;
 }
 
 /** The real exec-free factories, as `main()` wires them. */
@@ -84,6 +87,7 @@ export const processFactories: ExecFreeFactories = {
   usage: createUsageSource,
   lineupHandler: createLineupHandler,
   interrupt: createInterruptAdapter,
+  usagebarMemory: () => createUsageBarFileMemory(),
 };
 
 export interface ServerDeps {
@@ -334,9 +338,15 @@ export function composeServer(deps: ServerDeps): ComposedServer {
     factories.follower({ worktree, redactor, emit });
   const records = (worktree: string) => factories.records({ root: worktree });
   // One UsageBar reader for the whole server: the reading is the machine's,
-  // not a project's, and it is cached so every page shares one CLI call.
+  // not a project's, and it is cached so every page shares one CLI call. Its
+  // last good reading is remembered on disk, so a restart during Claude's
+  // rate-limit cooldown still shows the last bars, marked stale.
   const usagebarExecutor = deps.executor(20_000);
-  const usagebar = createUsageBarAdapter({ exec: usagebarExecutor, cwd: harness });
+  const usagebar = createUsageBarAdapter({
+    exec: usagebarExecutor,
+    cwd: harness,
+    memory: factories.usagebarMemory(),
+  });
   const fetch = createHandler({
     projects: () => scopesFor(registry.list()),
     shell: deps.shell.html,

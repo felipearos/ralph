@@ -15,6 +15,12 @@
  * endpoint does), so a page polling every few seconds must not become a
  * caller polling Anthropic every few seconds. A stale reading is answered at
  * once while the next one is fetched behind it.
+ *
+ * The last good reading also outlives the server when it is given a
+ * `memory`: UsageBar's tray keeps its last bars because it runs for days, but
+ * the dashboard restarts, and a restart inside one of Claude's rate-limit
+ * cooldowns (5 to 60 minutes, shared by every UsageBar process) would
+ * otherwise show a bare error until the cooldown lifts.
  */
 import type {
   DailySpendView,
@@ -115,9 +121,22 @@ function providerView(value: unknown): UsageBarProviderView | null {
  * A failed provider's last good windows, carried into a fresh reading and
  * marked stale (UsageBar's `mergeStale`): a provider whose usage endpoint
  * rate-limits keeps the bars it last showed instead of blanking to an error.
+ * A run that printed nothing at all keeps every bar it can, each provider
+ * stale and carrying why the run failed.
  */
 export function carryStale(previous: UsageBarView | null, fresh: UsageBarView): UsageBarView {
-  if (previous?.state !== "read" || fresh.state !== "read") return fresh;
+  if (previous?.state !== "read") return fresh;
+  if (fresh.state === "unavailable") {
+    const carried = previous.providers.filter((provider) => provider.windows.length > 0);
+    if (carried.length === 0) return fresh;
+    // The bars were measured then, not now: the run that failed measured nothing.
+    return {
+      state: "read",
+      readAt: previous.readAt,
+      providers: carried.map((provider) => ({ ...provider, error: fresh.why, stale: true })),
+    };
+  }
+  if (fresh.state !== "read") return fresh;
   return {
     ...fresh,
     providers: fresh.providers.map((provider) => {
@@ -134,6 +153,51 @@ export function carryStale(previous: UsageBarView | null, fresh: UsageBarView): 
       };
     }),
   };
+}
+
+/**
+ * The bars carried from: a reading of every provider with windows, and when
+ * each was last named by a run. Saved as is, so the rule holds after a restart.
+ */
+export type UsageBarBaseline = Extract<UsageBarView, { state: "read" }> & { seenAt: Record<string, string> };
+
+/**
+ * How long a provider a reading leaves out keeps its bars. `codexbar` names
+ * every enabled provider, failed or not, so a long absence means it was
+ * disabled; a short one is a partial read the bars should outlast.
+ */
+export const OMITTED_KEEP_MS = 6 * 60 * 60_000;
+
+/**
+ * The bars to carry from next time: every provider with windows in this
+ * reading, and every one the reading left out kept from before while it was
+ * named within `keepMs`, so a partial read never forgets a provider it did
+ * not mention, and a disabled one does not come back. Pure.
+ */
+export function baselineOf(
+  previous: UsageBarBaseline | null,
+  view: UsageBarView,
+  keepMs: number = OMITTED_KEEP_MS,
+): UsageBarBaseline | null {
+  if (view.state !== "read") return previous;
+  const at = Date.parse(view.readAt);
+  const current = view.providers.filter((provider) => provider.windows.length > 0);
+  const named = new Set(view.providers.map((provider) => provider.provider));
+  const seenAt: Record<string, string> = {};
+  for (const provider of current) seenAt[provider.provider] = view.readAt;
+  const kept = (previous?.providers ?? []).filter((provider) => {
+    if (provider.windows.length === 0 || named.has(provider.provider)) return false;
+    const seen = previous!.seenAt[provider.provider] ?? previous!.readAt;
+    if (!(at - Date.parse(seen) < keepMs)) return false;
+    seenAt[provider.provider] = seen;
+    return true;
+  });
+  const providers = [...current, ...kept];
+  if (providers.length === 0) return previous;
+  // The baseline's time is when its bars were measured: a reading that only
+  // carried old bars forward (all stale, or none of its own) keeps the old time.
+  const measured = current.some((provider) => !provider.stale);
+  return { state: "read", readAt: measured || previous === null ? view.readAt : previous.readAt, providers, seenAt };
 }
 
 /** What the CLI printed, or why it is not a reading. Pure. */
@@ -271,6 +335,65 @@ function cachedCli<T>(
   };
 }
 
+/**
+ * Where the last good reading outlives the server. Both calls may fail
+ * silently: a lost memory only costs the stale bars after a restart.
+ */
+export interface UsageBarMemory {
+  load(): unknown;
+  save(view: UsageBarView): void;
+}
+
+/**
+ * A remembered reading, if it still is one: only providers with windows are
+ * kept, since only those can be carried. Pure.
+ */
+export function recalled(raw: unknown): UsageBarBaseline | null {
+  const view = record(raw);
+  if (view?.state !== "read" || !Array.isArray(view.providers)) return null;
+  const readAt = text(view.readAt);
+  if (readAt === null) return null;
+  const providers = view.providers.flatMap((entry): UsageBarProviderView[] => {
+    const provider = record(entry);
+    const name = text(provider?.provider);
+    if (provider === null || name === null || !Array.isArray(provider.windows)) return [];
+    const windows = provider.windows.flatMap((item): UsageBarWindowView[] => {
+      const window = record(item);
+      const label = text(window?.label);
+      const used = finite(window?.usedPercent);
+      if (window === null || label === null || used === null) return [];
+      return [
+        {
+          label,
+          usedPercent: used,
+          windowMinutes: finite(window.windowMinutes),
+          resetsAt: text(window.resetsAt),
+          resetDescription: text(window.resetDescription),
+          pace: text(window.pace),
+        },
+      ];
+    });
+    if (windows.length === 0) return [];
+    return [
+      {
+        provider: name,
+        source: text(provider.source),
+        account: text(provider.account),
+        plan: text(provider.plan),
+        updatedAt: text(provider.updatedAt),
+        windows,
+        error: null,
+        stale: false,
+      },
+    ];
+  });
+  if (providers.length === 0) return null;
+  const seen = record(view.seenAt) ?? {};
+  const seenAt: Record<string, string> = {};
+  for (const provider of providers) seenAt[provider.provider] = text(seen[provider.provider]) ?? readAt;
+  return { state: "read", readAt, providers, seenAt };
+}
+
 export interface UsageBarAdapter {
   /** The providers' limit windows: `codexbar usage`, a second or two. */
   usage(): Promise<UsageBarView>;
@@ -299,6 +422,8 @@ export function createUsageBarAdapter(
      * the project's spend back with it.
      */
     firstWaitMs?: number;
+    /** Where the last good reading outlives a restart; none keeps it in memory only. */
+    memory?: UsageBarMemory;
     now?: () => number;
   } = {},
 ): UsageBarAdapter {
@@ -324,7 +449,19 @@ export function createUsageBarAdapter(
     return result.stdout.trim() === "" ? unavailable(readAt, whyFailed(result.stderr, result.status)) : narrow(result.stdout, readAt);
   };
 
-  let lastUsage: UsageBarView | null = null;
+  const remember = (view: UsageBarView): void => {
+    try {
+      options.memory?.save(view);
+    } catch {
+      // A reading that is not remembered only costs its bars after a restart.
+    }
+  };
+  let lastUsage: UsageBarBaseline | null = null;
+  try {
+    lastUsage = recalled(options.memory?.load() ?? null);
+  } catch {
+    lastUsage = null;
+  }
   const usage = cachedCli(
     async () => {
       const fresh = await run(USAGEBAR_SURFACE.usage, timeoutMs, narrowUsageBar, (readAt, why): UsageBarView => ({
@@ -332,8 +469,14 @@ export function createUsageBarAdapter(
         readAt,
         why,
       }));
-      lastUsage = carryStale(lastUsage, fresh);
-      return lastUsage;
+      const merged = carryStale(lastUsage, fresh);
+      // A run that printed nothing teaches nothing new: the baseline stands.
+      const next = fresh.state === "read" ? baselineOf(lastUsage, merged) : lastUsage;
+      if (next !== null && next !== lastUsage) {
+        lastUsage = next;
+        remember(next);
+      }
+      return merged;
     },
     options.ttlMs ?? 120_000,
     now,

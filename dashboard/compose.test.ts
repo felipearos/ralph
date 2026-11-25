@@ -125,6 +125,7 @@ function compose(entries: ProjectEntry[], worktree = tempDir("wt")) {
   };
   const factories: Factories = {
     interrupt: () => ({}) as unknown as ReturnType<Factories["interrupt"]>,
+    usagebarMemory: () => ({ load: () => null, save: () => {} }),
     records: () => ({ readFeed: () => ({ feed: [] }) }) as unknown as ReturnType<Factories["records"]>,
     lineupHandler: (config) => {
       lineupHandlers.push(config);

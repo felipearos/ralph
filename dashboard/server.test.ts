@@ -25,7 +25,11 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { bunPath, cleanupFixtures, createFixture, writeLoopState, type Fixture } from "./fixtures";
 import { subprocessSuite } from "../test-timeouts";
-import { scratchDir } from "../test-scratch";
+import { fileScratchDir, scratchDir } from "../test-scratch";
+
+// Every server this suite boots remembers its UsageBar reading under the XDG
+// cache home: point it at a scratch directory, never the operator's own.
+const CACHE_HOME = fileScratchDir("ralph-test-cache-");
 
 subprocessSuite("starts the dashboard server under bun");
 
@@ -53,7 +57,7 @@ function startServer(env: Record<string, string | undefined>): Promise<RunningSe
       // case asks for it: left on, its startup pass would read these fixture
       // worktrees — whose records name no `stopReason` and whose supervisors
       // do not exist — as dead loops, and run the real `start.sh` on them.
-      env: { ...process.env, RALPH_DASHBOARD_RECONCILE_MS: "0", ...env },
+      env: { ...process.env, XDG_CACHE_HOME: CACHE_HOME, RALPH_DASHBOARD_RECONCILE_MS: "0", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(child);
