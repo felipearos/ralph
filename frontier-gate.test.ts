@@ -1846,6 +1846,20 @@ describe('the gate as a process, claiming for the supervisor (--claim)', () => {
     expect(run.stdout).toMatch(/work available — frontier ticket #601/);
   });
 
+  it("resumes its own gate claim whose session never started, claiming nothing more (#5)", () => {
+    // The gate claimed #601 and the supervisor died before the model session
+    // began: #601 still carries this loop's `-wip`. The next gate must hand
+    // #601 back as the resumable claim, never claim #602 on top of it.
+    const run = runGate(['--once', '--claim'], {
+      FAKE_CLAIMS_JSON: '[{"number":601}]',
+      FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 602, title: 'The next one' })),
+      FAKE_CLAIM_JSON: JSON.stringify(pick({ ticket: 602, title: 'The next one', claimed: true })),
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("issue #601 carries this loop's unfinished claim");
+    expect(frontierCalls(run)).toEqual([]);
+  });
+
   it('never claims a closure pick', () => {
     const run = runGate(['--once', '--claim'], {
       FAKE_FRONTIER_JSON: JSON.stringify(pick({ ticket: 50, title: 'Spec', closure: true })),

@@ -7,7 +7,7 @@
  * thing a human would see.
  */
 
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -23,10 +23,18 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { type BlockReason } from '../block-reason';
-import { claimLease, writeLeaseStore, type LeaseStore } from '../claim-lease';
+import {
+  claimLease,
+  DEFAULT_LEASE_SECONDS,
+  leaseStatus,
+  readLeaseStore,
+  RECONNECT_GRACE_SECONDS,
+  writeLeaseStore,
+  type LeaseStore,
+} from '../claim-lease';
 import { DEFAULT_JAV, routeByDifficulty, type JavConfig } from '../jav';
 import { cleanupFixtures, scratchProject, writeProjectConfig } from '../dashboard/fixtures';
 
@@ -3940,6 +3948,95 @@ describe('reclaiming an expired lease', () => {
     expect(out.status, out.stderr).toBe(0);
     expect(f.removed()).toEqual([]);
     expect(f.tracker()[7]!.labels.sort()).toEqual(['ready-for-agent', 'rulo-wip']);
+  });
+
+  describe("a gate's claim made for its supervisor (#5)", () => {
+    // The coder gate runs the real `--take-one` before the model session
+    // exists, with ralph.sh's RALPH_RUN_ID and RALPH_SUPERVISOR_PID. The lease
+    // must name the supervisor, not the short-lived next-tasks process, or it
+    // would read as dead the moment the gate exits.
+    const standIns: ChildProcess[] = [];
+    afterEach(() => {
+      for (const child of standIns.splice(0)) child.kill('SIGKILL');
+    });
+    const standIn = (): number => {
+      const child = spawn('sleep', ['600'], { stdio: 'ignore' });
+      standIns.push(child);
+      return child.pid!;
+    };
+    const supervisorEnv = (loop: string, pid: number): Record<string, string> => ({
+      RALPH_RUN_ID: `${loop}-run-1`,
+      RALPH_SUPERVISOR_PID: String(pid),
+    });
+    const leaseOf = (f: ReturnType<typeof fixture>, issue: number) =>
+      readLeaseStore(join(f.common, 'ralph-claim-leases.json')).leases[String(issue)]!;
+    const gone = async (pid: number): Promise<void> => {
+      await vi.waitFor(() => {
+        expect(() => process.kill(pid, 0)).toThrow();
+      }, { timeout: 10_000, interval: 20 });
+    };
+
+    it("names the supervisor's run and pid, stays slow past expiry while it lives, and renews", () => {
+      const f = fixture({ 7: { labels: ['ready-for-agent'], assignees: [] } });
+      const pid = standIn();
+
+      const out = f.run(['--take-one'], 'rafa', supervisorEnv('rafa', pid));
+
+      expect(out.status, out.stderr).toBe(0);
+      expect(JSON.parse(out.stdout)).toMatchObject({ ticket: 7, claimed: true });
+      expect(f.tracker()[7]!.labels).toContain('rafa-wip');
+      const lease = leaseOf(f, 7);
+      expect(lease).toMatchObject({ run: 'rafa-run-1', loop: 'rafa', pid });
+
+      // Long past expiry and the reconnect grace: the supervisor still runs,
+      // so nobody may take it.
+      const late = Date.now() + (DEFAULT_LEASE_SECONDS + RECONNECT_GRACE_SECONDS + 60) * 1000;
+      expect(leaseStatus(lease, { nowMs: late })).toBe('slow');
+
+      // The supervisor's heartbeat, one pulse, resolving the same store.
+      const beat = spawnSync(bun, [join(__dirname, '..', 'claim-lease.ts'), 'heartbeat'], {
+        encoding: 'utf8',
+        cwd: f.root,
+        env: {
+          ...process.env,
+          PATH: `${f.bin}:${process.env.PATH ?? ''}`,
+          RALPH_LOOP_NAME: 'rafa',
+          RALPH_PROJECT: f.root,
+          ...supervisorEnv('rafa', pid),
+        },
+      });
+      expect(beat.status, beat.stderr).toBe(0);
+      const renewed = leaseOf(f, 7);
+      expect(Date.parse(renewed.expiresAt)).toBeGreaterThan(Date.parse(lease.expiresAt));
+      expect(Date.parse(renewed.heartbeatAt)).toBeGreaterThan(Date.parse(lease.heartbeatAt));
+      expect(renewed.pid).toBe(pid);
+    });
+
+    it('is reclaimed by another loop once the supervisor is gone and the lease lapsed', async () => {
+      const f = fixture({ 7: { labels: ['ready-for-agent'], assignees: [] } });
+      const pid = standIn();
+      const first = f.run(['--take-one'], 'rafa', supervisorEnv('rafa', pid));
+      expect(first.status, first.stderr).toBe(0);
+      expect(f.tracker()[7]!.labels).toContain('rafa-wip');
+
+      standIns.splice(standIns.findIndex((child) => child.pid === pid), 1)[0]!.kill('SIGKILL');
+      await gone(pid);
+      // Past expiry, as `expiredLease` leaves it: an hour old.
+      const path = join(f.common, 'ralph-claim-leases.json');
+      const store = readLeaseStore(path);
+      const hourAgo = Date.now() - 60 * 60 * 1000;
+      store.leases['7']!.heartbeatAt = new Date(hourAgo).toISOString();
+      store.leases['7']!.expiresAt = new Date(hourAgo + DEFAULT_LEASE_SECONDS * 1000).toISOString();
+      writeLeaseStore(path, store);
+
+      const out = f.run(['--take-one'], 'ralph', { RALPH_RUN_ID: 'ralph-run-1', RALPH_SUPERVISOR_PID: '' });
+
+      expect(out.status, out.stderr).toBe(0);
+      expect(JSON.parse(out.stdout)).toMatchObject({ ticket: 7, claimed: true });
+      expect(f.removed()).toContain('rafa-wip');
+      expect(f.tracker()[7]!.labels.sort()).toEqual(['ralph-wip', 'ready-for-agent']);
+      expect(leaseOf(f, 7)).toMatchObject({ run: 'ralph-run-1', loop: 'ralph' });
+    });
   });
 
   describe('UNTRIAGED on the dry-run report', () => {
