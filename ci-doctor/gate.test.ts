@@ -38,8 +38,8 @@ import {
   type Verdict,
 } from "./gate";
 import { supervisorGone, supervisorPidFrom } from "../frontier-gate";
-import { emptyStore, type Case, type CiHealthStore, type Evidence } from "./store";
-import { checkIncidents } from "./classify";
+import { emptyStore, failureSignature, type BuildRecord, type Case, type CiHealthStore, type Evidence } from "./store";
+import { checkIncidents, classify, mergeCases } from "./classify";
 
 // The provenance regex and the `<loop>-wip` labels come from the project's roster.
 process.env.RALPH_PROJECT = join(__dirname, "..", "fixtures", "loggd");
@@ -515,4 +515,105 @@ describe("small pieces", () => {
     expect(source).not.toContain("const supervisorPid = process.ppid;");
   });
 
+});
+
+describe("a red run and a rejection keyed on the failure signature (#57)", () => {
+  const STEP = "production-migrations";
+  const RUN_RULE = `red on every build of ${STEP} since #41 (20 builds)`;
+  const outage = (build: number): Evidence =>
+    seen(build, { kind: "assertion", step: STEP, line: `error: XX000 database unreachable at 2026-09-${10 + (build % 20)}T01:00:00Z` });
+  const signatures = [failureSignature("assertion", outage(2600).line)];
+  const rejectedAt = { build: 2600, at: "2026-09-30T08:00:00.000Z", reason: "the database is down", signatures };
+  const record = (number: number, steps: Record<string, string>, over: Partial<BuildRecord> = {}): BuildRecord => ({
+    number,
+    branch: "main",
+    commit: `c${number}`,
+    state: Object.values(steps).every((state) => state === "passed") ? "passed" : "failed",
+    source: "webhook",
+    createdAt: "2026-09-30T09:00:00.000Z",
+    startedAt: "2026-09-30T09:00:00.000Z",
+    finishedAt: "2026-09-30T09:10:00.000Z",
+    pr: null,
+    prs: [],
+    steps,
+    tree: null,
+    parent: null,
+    sincePrevious: null,
+    changedFiles: null,
+    branchPaths: null,
+    ...over,
+  });
+  /** A rejected flake case folded against a proposal carrying `evidence`, as a scan would. */
+  const folded = (evidence: Evidence[]): CiHealthStore => {
+    const key = `flake:${FLAKE}`;
+    const store = storeWith({ [key]: caseOf({ state: "retired", evidence: [outage(2600)], rejectedAt }) });
+    store.builds = evidence.map((one) => record(one.build, { [STEP]: "failed" }));
+    mergeCases(store, { cases: { [key]: caseOf({ evidence }) }, main: emptyStore().main });
+    return store;
+  };
+
+  it("names a red run's step and length when it is the only thing red", () => {
+    const run = caseOf({ kind: "infra", rule: RUN_RULE, redRun: { step: STEP, since: 41, builds: 20 } });
+    const verdict = decide(probes({ store: storeWith({ [`infra:red-run:${STEP}`]: run }) }));
+    expect(verdict.work).toBe(false);
+    expect(verdict.why).toContain(`infra:red-run:${STEP} (${RUN_RULE})`);
+  });
+
+  it("pages a red run with its rule, under the same occurrence key", () => {
+    const run = caseOf({ kind: "infra", evidence: [outage(42)], rule: RUN_RULE, redRun: { step: STEP, since: 41, builds: 20 } });
+    const [raised] = incidents(storeWith({ [`infra:red-run:${STEP}`]: run }));
+    expect(raised!.occurrence).toBe(`ci-incident:red-run:${STEP}:42`);
+    expect(raised!.body).toContain(`\n${RUN_RULE}\n`);
+  });
+
+  it("does not offer a rejected flake whose newer reds carry the same signature", () => {
+    const store = folded([outage(2600), outage(2601), outage(2602)]);
+    expect(store.cases[`flake:${FLAKE}`]).toMatchObject({ state: "retired", rejectedAt: { build: 2600 } });
+    const verdict = decide(probes({ store }));
+    expect(verdict.work).toBe(false);
+    expect(verdict.why).not.toContain("confirmed flake");
+  });
+
+  it("offers it again once a newer red carries a new signature", () => {
+    const store = folded([outage(2600), { ...outage(2601), line: "error: 08006 connection reset" }]);
+    expect(store.cases[`flake:${FLAKE}`]?.rejectedAt).toBeNull();
+    expect(decide(probes({ store })).why).toBe(`confirmed flake ${FLAKE} — 72h cost 1`);
+  });
+
+  it("names a rejected infra case again once its step passed on a tested build since the boundary", () => {
+    const held = caseOf({ kind: "infra", state: "retired", evidence: [outage(2600), outage(2610)], rejectedAt });
+    const store = storeWith({ "infra:agent-lost": held });
+    store.builds = [record(2605, { [STEP]: "failed" })];
+    expect(decide(probes({ store })).why).not.toContain("infra:agent-lost");
+    // A scheduled run is not a tested build: it lifts nothing.
+    store.builds = [record(2605, { [STEP]: "passed" }, { source: "schedule" })];
+    expect(decide(probes({ store })).why).not.toContain("infra:agent-lost");
+    store.builds = [record(2605, { [STEP]: "passed" })];
+    expect(decide(probes({ store })).why).toContain("infra:agent-lost");
+  });
+
+  it("still offers an alternating flake confirmed as today", () => {
+    // Green, red, green, red on one tree: both colours, and no red run.
+    const store = emptyStore();
+    store.builds = [2600, 2601, 2602, 2603].map((number) =>
+      record(number, { [STEP]: number % 2 === 0 ? "passed" : "failed" }, { tree: "T" }),
+    );
+    store.failures = [2601, 2603].map((number) => ({
+      testId: FLAKE,
+      file: "src/a.test.ts",
+      build: number,
+      branch: "main",
+      commit: `c${number}`,
+      job: `j${number}`,
+      step: STEP,
+      kind: "timeout",
+      line: "FAIL src/a.test.ts > flaps — Error: Test timed out in 5000ms",
+      finishedAt: "2026-09-30T09:10:00.000Z",
+      retried: false,
+    }));
+    mergeCases(store, classify(store, NOW));
+    expect(store.cases[`flake:${FLAKE}`]).toMatchObject({ state: "confirmed" });
+    expect(store.cases[`flake:${FLAKE}`]?.rule).toContain("same tree, both colours");
+    expect(decide(probes({ store })).why.startsWith(`confirmed flake ${FLAKE} — `)).toBe(true);
+  });
 });

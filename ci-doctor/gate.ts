@@ -328,15 +328,20 @@ export function decide(probes: Probes): Verdict {
   // idle doctor should not be told it is sitting out an incident its own
   // doctor turned down (#240).
   const infra = casesOf(store, "infra").filter(
-    ([, value]) => !MANAGED_STATES.has(value.state) && !rejectionStands(value, value.evidence),
+    // `store.builds` so a step gone green since the boundary lifts the
+    // rejection here too, not only at the next scan's fold (#57).
+    ([, value]) => !MANAGED_STATES.has(value.state) && !rejectionStands(value, value.evidence, store.builds),
   );
   const note = caveats.length > 0 ? ` (${caveats.join("; ")})` : "";
   if (infra.length > 0) {
     // Named rather than counted: the one thing an operator reading an idle
-    // doctor's log needs is WHICH incident it is sitting out.
+    // doctor's log needs is WHICH incident it is sitting out. A red run also
+    // carries its rule, which names the step and how long it has been red
+    // (#57) — the two things that say whether to go and look.
+    const named = infra.map(([key, value]) => (value.redRun != null && value.rule ? `${key} (${value.rule})` : key));
     return {
       work: false,
-      why: `CI is red on infrastructure this loop cannot fix — ${infra.map(([key]) => key).join(", ")}${note}`,
+      why: `CI is red on infrastructure this loop cannot fix — ${named.join(", ")}${note}`,
       key: null,
     };
   }
@@ -386,7 +391,7 @@ export function incidents(store: CiHealthStore): Incident[] {
     // case out of the verdict, and paging an operator about an incident the
     // doctor itself turned down would say the opposite of the verdict in the
     // same poll.
-    if (rejectionStands(value, value.evidence)) continue;
+    if (rejectionStands(value, value.evidence, store.builds)) continue;
     const first = value.evidence.reduce<number | null>(
       (low, seen) => (low === null || seen.build < low ? seen.build : low),
       null,
@@ -400,6 +405,9 @@ export function incidents(store: CiHealthStore): Incident[] {
       body:
         `${value.evidence.length} red build(s) since build ${first ?? "?"}. ` +
         `This loop has no operator token and cannot fix it.` +
+        // A red run's rule is its step and length (#57): what an operator
+        // paged about a dead step needs before the error line.
+        (value.redRun != null && value.rule ? `\n${value.rule}` : "") +
         (line === "" ? "" : `\n${line}`),
     });
   }
