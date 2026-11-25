@@ -81,7 +81,25 @@ import { start, type LifecycleDeps } from "./lifecycle";
 
 export interface AgentsDeps {
   agents: AgentsAdapter;
+  /** When the agents read last fetched for each merged roster PR; the module's own when absent. */
+  mergedFetches?: MergedFetches;
 }
+
+/**
+ * The last time `listPendingAgents` fetched the base branch for a merged
+ * roster PR, by base ref and PR. A PR merged into another branch, or a fetch
+ * that keeps failing, leaves the agent off the base however often it is
+ * fetched: without this the page's 5 s poll would run `git fetch` every time.
+ */
+export interface MergedFetches {
+  now(): number;
+  readonly last: Map<string, number>;
+}
+
+/** How long a merged PR's fetch is not repeated: well past the poll, well short of a wait. */
+export const MERGED_FETCH_EVERY_MS = 60_000;
+
+const moduleMergedFetches: MergedFetches = { now: () => Date.now(), last: new Map() };
 
 /** A change to the registry, as the remove and worktrees-folder routes hand it over. */
 export interface ProjectRegistryWrite {
@@ -617,7 +635,12 @@ export async function listPendingAgents(deps: AgentsDeps): Promise<AgentsView> {
   for (const { name } of candidates) {
     if (!onBase(name)) waiting.set(name, await findPr(deps, config.value.repo, "add", name));
   }
-  if ([...waiting.values()].some((pr) => pr?.state === "merged")) {
+  const merged = [...waiting.values()].flatMap((pr) => (pr?.state === "merged" ? [`${baseRef(config.value)} ${pr.url}`] : []));
+  const fetches = deps.mergedFetches ?? moduleMergedFetches;
+  const now = fetches.now();
+  // The first read after a merge always fetches; a repeat waits out the interval.
+  if (merged.some((key) => now - (fetches.last.get(key) ?? -Infinity) >= MERGED_FETCH_EVERY_MS)) {
+    for (const key of merged) fetches.last.set(key, now);
     // A failed fetch keeps the read already made: the card says pending, as before.
     const fresh = await readBaseConfig(deps, config.value);
     if (fresh.ok) base = fresh;

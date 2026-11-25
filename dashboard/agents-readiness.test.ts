@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { agentGuide, agentPreflight, listPendingAgents, locatePendingAgent, type AgentsDeps } from "./agents";
+import { agentGuide, agentPreflight, listPendingAgents, locatePendingAgent, MERGED_FETCH_EVERY_MS, type AgentsDeps } from "./agents";
 import {
   parseAgentConfig,
   parseJavRoutes,
@@ -67,7 +67,7 @@ const failed = (value: unknown): value is { fail: string } =>
  * Just enough adapter to reach every item: each invocation carries the
  * question as its first argv word, and the fake answers that word.
  */
-function deps(answers: Answers): { deps: AgentsDeps; ran: () => string[][] } {
+function deps(answers: Answers, clock: { at: number } = { at: 0 }): { deps: AgentsDeps; ran: () => string[][] } {
   const ran: string[][] = [];
   let fetched = false;
   const answer = (args: string[]): ExecResult => {
@@ -162,7 +162,8 @@ function deps(answers: Answers): { deps: AgentsDeps; ran: () => string[][] } {
     readProjectFile: () => ({ ok: false, missing: true, why: "not read in these tests" }),
     renderPrompt: async () => ({ ok: false, why: "not rendered in these tests" }),
   } as unknown as AgentsDeps["agents"];
-  return { deps: { agents }, ran: () => ran };
+  // A fresh throttle per fake, on a clock the test moves by hand.
+  return { deps: { agents, mergedFetches: { now: () => clock.at, last: new Map() } }, ran: () => ran };
 }
 
 const CONFIG = { repo: "o/r", baseBranch: "main", loops: [] as string[] };
@@ -377,6 +378,26 @@ describe("a roster PR merged since the base branch was last fetched", () => {
     const view = await listPendingAgents(offline.deps);
     expect(view.pending[0]!.status).toBe("pending-merge");
     expect(view.problem).toBeNull();
+  });
+
+  it("does not fetch on every poll while the merged PR still leaves the agent off the base", async () => {
+    // Merged into another branch: a fetch succeeds and main still does not list it.
+    const clock = { at: 0 };
+    const { deps: fake, ran } = deps(
+      { config: { "@work": CONFIG, "origin/main": CONFIG, "origin/ralph-roster/add-nova": prBranch }, prState: "merged" },
+      clock,
+    );
+    const fetches = () => ran().filter((args) => args[0] === "fetch").length;
+    await listPendingAgents(fake);
+    expect(fetches()).toBe(1);
+    clock.at += 5_000;
+    await listPendingAgents(fake);
+    clock.at += MERGED_FETCH_EVERY_MS - 10_000;
+    await listPendingAgents(fake);
+    expect(fetches()).toBe(1);
+    clock.at += 5_000;
+    expect((await listPendingAgents(fake)).pending[0]!.status).toBe("pending-merge");
+    expect(fetches()).toBe(2);
   });
 });
 
