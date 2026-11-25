@@ -42,6 +42,7 @@ import {
   findLoopNameFile,
   classifyDependencyFailure,
   issueRefsUnderHeading,
+  readRefsUnderHeading,
   useOwnRepository,
   useReferenceKey,
   leaseHeldReason,
@@ -252,6 +253,65 @@ describe('cross-repository references (#22)', () => {
     } finally {
       useReferenceKey(null);
     }
+  });
+
+  // #45: a dropped blocker makes a ticket look unblocked, so the report must
+  // carry it; stderr says it once per process and the dashboard never reads it.
+  it('returns the dropped slug with its heading and reason, on every call', () => {
+    withRepository('acme/widgets', () => {
+      const first = readRefsUnderHeading(body, 'Blocked by');
+      expect(first).toEqual({
+        refs: [12, 13, 14],
+        dropped: [
+          { heading: 'Blocked by', reference: 'acme/widgets-archive#171', reason: 'not an issue of acme/widgets' },
+          { heading: 'Blocked by', reference: 'example-org/other#15', reason: 'not an issue of acme/widgets' },
+        ],
+      });
+      expect(readRefsUnderHeading(body, 'Blocked by')).toEqual(first);
+    });
+  });
+
+  it('drops nothing while the own repository is unknown', () => {
+    withRepository(null, () => {
+      expect(readRefsUnderHeading(body, 'Blocked by')).toEqual({ refs: [12, 13, 14, 171, 15], dropped: [] });
+    });
+  });
+
+  it('returns another tracker\'s key as dropped, once per section', () => {
+    useReferenceKey('AND');
+    try {
+      withRepository('acme/widgets', () => {
+        const keyed = '## Blocked by\n\n- AND-7\n- OTHER-12\n- OTHER-12\n';
+        const expected = {
+          refs: [7],
+          dropped: [{ heading: 'Blocked by', reference: 'OTHER-12', reason: 'not a ticket of AND' }],
+        };
+        expect(readRefsUnderHeading(keyed, 'Blocked by')).toEqual(expected);
+        expect(readRefsUnderHeading(keyed, 'Blocked by')).toEqual(expected);
+      });
+    } finally {
+      useReferenceKey(null);
+    }
+  });
+
+  it('puts the drops on the ticket and in the JSON report', () => {
+    withRepository('acme/widgets', () => {
+      const raw = [
+        issue(1, 'moved', '## Parent\n\nexample-org/other#40\n\n## Blocked by\n\n- #2\n- example-org/other#41\n'),
+        issue(2, 'clean', '## Blocked by\n\n- acme/widgets#3\n'),
+        issue(3, 'plain', '## What to build\n\nIt.\n'),
+      ];
+      const tickets = buildTickets(raw, raw.map(() => []));
+      const references = [
+        { heading: 'Blocked by', reference: 'example-org/other#41', reason: 'not an issue of acme/widgets' },
+        { heading: 'Parent', reference: 'example-org/other#40', reason: 'not an issue of acme/widgets' },
+      ];
+      expect(tickets.get(1)!.droppedReferences).toEqual(references);
+      expect(tickets.get(2)!.droppedReferences).toEqual([]);
+      expect(frontierReport(tickets, classify(tickets, []), []).dropped).toEqual([
+        { number: 1, title: 'moved', references },
+      ]);
+    });
   });
 });
 
