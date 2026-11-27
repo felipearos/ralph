@@ -5,6 +5,14 @@ split.
 
 ## Open: fix these
 
+### start-prod-dev.test.ts fails on EADDRINUSE in the concurrent Doppler block (2026-11-27)
+<!-- learning: start-prod-dev-test-port-collision -->
+- **Seen:** merge-queue build 5408 (PR #3914, 2026-11-27): `scripts/start-prod-dev.test.ts > start-prod-dev.sh default (Doppler) mode > takes the Doppler path when LOGGD_MOBILE_SKIP_DOPPLER="0"` — the stub `server.js` died with `Failed to start server. Is port 35143 in use?` (EADDRINUSE); passes 20/20 locally on the same head. The diff never touched scripts/.
+- **Workaround:** treat as a flake not caused by the diff: confirm the log line says EADDRINUSE, run the file locally, then `@mergifyio requeue` once.
+- **Fix:** https://github.com/felipearos/loggd/issues/3922
+- **Change:** in scripts/start-prod-dev.test.ts, let the stub server bind port 0 (or retry on EADDRINUSE) and report the bound port back, instead of picking a random port the concurrent cases and the CI host can race for.
+- **Verify:** run `bun run test scripts/start-prod-dev.test.ts` 50 times in a loop alongside a second instance; zero EADDRINUSE failures.
+
 ### Mobile jest suites time out at 5000ms in quality when the CI host is loaded (2026-11-27)
 <!-- learning: mobile-jest-timeouts-busy-ci-host -->
 - **Seen:** PR #3853 build 5302 (7 failures in 4 untouched suites) and queue build 5312 (6 failures in 5 untouched suites: profile-index-block-gate, hooks/useSettings, book-search-log-save, book-series-viewer-state, hooks/useActivity), almost all 5000ms timeouts. The same files passed 42/42 locally on the PR head. The suites failing change from build to build, so no single test is the cause.
