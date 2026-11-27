@@ -5,6 +5,12 @@ split.
 
 ## Open: fix these
 
+### Mobile jest suites time out at 5000ms in quality when the CI host is loaded (2026-11-27)
+<!-- learning: mobile-jest-timeouts-busy-ci-host -->
+- **Seen:** PR #3853 build 5302 (7 failures in 4 untouched suites) and queue build 5312 (6 failures in 5 untouched suites: profile-index-block-gate, hooks/useSettings, book-search-log-save, book-series-viewer-state, hooks/useActivity), almost all 5000ms timeouts. The same files passed 42/42 locally on the PR head. The suites failing change from build to build, so no single test is the cause.
+- **Workaround:** a red quality/mobile-jest job whose failures are timeouts in suites the diff doesn't touch is a flake, not a strike. Re-run CI once. If it goes red again, end RETRY_LATER with key ci:buildkite/loggd:quality. Before a `@mergifyio requeue`, run the failing files locally, and only while Buildkite is idle.
+- **Fix:** https://github.com/felipearos/loggd/issues/3863
+
 ### Mobile jest DiaryTab Books empty-state test flakes in quality (2026-11-23)
 <!-- learning: diarytab-books-empty-state-flake -->
 - **Seen:** PR #3746 builds 5100 and 5103 (2026-11-23), also builds 5102, 5101, 5099, 5097 (incl. merge-queue branches): quality job, `components/__tests__/DiaryTab.test.tsx` › "names Book Logs and offers a book to log in Books mode" fails `expect(instance).toBeOnTheScreen()`; bk-log marks it confirmed flake.
