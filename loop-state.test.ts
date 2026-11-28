@@ -15,8 +15,17 @@
  * subprocess seam, so a fake binary tests the seam where a mock would test the
  * mock; nothing here touches this repository's own git metadata.
  */
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -28,10 +37,14 @@ import {
   classifyLoop,
   classifyWorktree,
   DEFAULT_UNATTENDED_AFTER_MS,
+  findSupervisor,
+  lazyScan,
   lastLedgerStep,
   LEDGER_RELATIVE_PATH,
   parseLoopState,
   parseWorktreeRegistry,
+  scanSupervisors,
+  snapshot,
   STATE_RELATIVE_PATH,
   supervisorPidMatches,
   type Clock,
@@ -39,6 +52,7 @@ import {
   type LoopState,
   type RegistryEntry,
   type Snapshot,
+  type SupervisorScan,
   type UnattendedLoop,
   unattendedLoops,
 } from "./loop-state";
@@ -1365,5 +1379,176 @@ describe("supervisorPidMatches against a process that vanishes mid-read", () => 
   it("still reads a matching cwd as alive", () => {
     const { proc, worktree } = fakeProc("worktree");
     expect(supervisorPidMatches(4242, worktree, proc)).toBe("alive");
+  });
+});
+
+describe("one /proc scan answers every worktree (#64)", () => {
+  // The panel used to walk the whole process table once per idle worktree;
+  // these pin that one shared scan gives the same verdicts the per-pid check
+  // does, and that a snapshot takes it at most once.
+  const made: string[] = [];
+  afterAll(() => made.forEach((root) => rmSync(root, { recursive: true, force: true })));
+
+  /** A fake `/proc` with worktrees A and B, and the processes named. */
+  const fakeHost = (): {
+    proc: string;
+    a: string;
+    b: string;
+    addProcess: (pid: number, argv: string[], cwd: string) => void;
+  } => {
+    const root = mkdtempSync(join(tmpdir(), "ralph-fake-host-"));
+    made.push(root);
+    const a = join(root, "a");
+    const b = join(root, "b");
+    mkdirSync(a);
+    mkdirSync(b);
+    const proc = join(root, "proc");
+    mkdirSync(proc);
+    const addProcess = (pid: number, argv: string[], cwd: string): void => {
+      mkdirSync(join(proc, String(pid)));
+      writeFileSync(join(proc, String(pid), "cmdline"), `${argv.join("\0")}\0`);
+      symlinkSync(cwd, join(proc, String(pid), "cwd"));
+    };
+    return { proc, a, b, addProcess };
+  };
+
+  const populated = (): ReturnType<typeof fakeHost> => {
+    const host = fakeHost();
+    host.addProcess(100, ["bash", "/home/x/ralph/ralph.sh", "50"], host.a);
+    // Exited between the cmdline and cwd reads: dead, not a supervisor of anything.
+    host.addProcess(101, ["bash", "/home/x/ralph/ralph.sh"], join(host.a, "..", "gone"));
+    // The status panel's own parent shell mentions ralph.sh but is not one.
+    host.addProcess(102, ["bash", "-c", "x=$(/home/x/ralph/ralph.sh status)"], host.b);
+    host.addProcess(103, ["vim", "notes.md"], host.b);
+    mkdirSync(join(host.proc, "self"));
+    return host;
+  };
+
+  it("finds the supervisor in A and none in B", () => {
+    const host = populated();
+    const scan = scanSupervisors(host.proc);
+    expect(scan?.sawUnknown).toBe(false);
+    expect(findSupervisor(host.a, scan)).toBe("alive");
+    expect(findSupervisor(host.b, scan)).toBe("dead");
+  });
+
+  it("reads B as unknown when some process could not be judged, while A stays alive", () => {
+    const host = populated();
+    // A `cmdline` that is a directory fails with EISDIR: unreadable, not gone.
+    mkdirSync(join(host.proc, "104", "cmdline"), { recursive: true });
+    const scan = scanSupervisors(host.proc);
+    expect(scan?.sawUnknown).toBe(true);
+    expect(findSupervisor(host.b, scan)).toBe("unknown");
+    expect(findSupervisor(host.a, scan)).toBe("alive");
+  });
+
+  it("reads an unlistable /proc as unknown", () => {
+    const host = fakeHost();
+    expect(scanSupervisors(join(host.proc, "missing"))).toBeNull();
+    expect(findSupervisor(host.a, null)).toBe("unknown");
+  });
+
+  it("agrees with the per-pid check for each single process", () => {
+    const cases: Array<(host: ReturnType<typeof fakeHost>) => void> = [
+      (host) => host.addProcess(100, ["bash", "/home/x/ralph/ralph.sh"], host.a),
+      (host) => host.addProcess(100, ["bash", "/home/x/ralph/ralph.sh"], join(host.a, "..", "gone")),
+      (host) => host.addProcess(100, ["bash", "-c", "ralph.sh"], host.a),
+      (host) => host.addProcess(100, ["vim"], host.a),
+      (host) => mkdirSync(join(host.proc, "100", "cmdline"), { recursive: true }),
+    ];
+    for (const make of cases) {
+      const host = fakeHost();
+      make(host);
+      const scan = scanSupervisors(host.proc);
+      for (const worktree of [host.a, host.b]) {
+        expect(findSupervisor(worktree, scan)).toBe(supervisorPidMatches(100, worktree, host.proc));
+      }
+    }
+  });
+
+  it("calls the underlying scan at most once, and not at all if never asked", () => {
+    let calls = 0;
+    const never = lazyScan(() => {
+      calls += 1;
+      return null;
+    });
+    expect(calls).toBe(0);
+    expect(typeof never).toBe("function");
+    const scan = lazyScan(() => {
+      calls += 1;
+      return null;
+    });
+    for (let i = 0; i < 5; i += 1) expect(scan()).toBeNull();
+    expect(calls).toBe(1);
+  });
+
+  it("takes one scan for a snapshot of several worktrees", () => {
+    const root = mkdtempSync(join(tmpdir(), "ralph-scan-once-"));
+    made.push(root);
+    const main = join(root, "main");
+    mkdirSync(main);
+    const run = (args: string[], cwd: string): void => {
+      execFileSync("git", args, { cwd, stdio: "ignore" });
+    };
+    run(["init", "-q", "-b", "main"], main);
+    run(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "--allow-empty", "-m", "init"], main);
+    const worktrees = ["w1", "w2", "w3"].map((name) => join(root, name));
+    worktrees.forEach((path, i) => run(["worktree", "add", "-q", "-b", `b${i}`, path], main));
+    let calls = 0;
+    const fixed: SupervisorScan = { cwds: new Set([realpathSync(worktrees[1]!)]), sawUnknown: false };
+    const snap = snapshot(main, clock, {
+      scan: () => {
+        calls += 1;
+        return fixed;
+      },
+    });
+    expect(calls).toBe(1);
+    const verdict = (path: string): string | undefined =>
+      snap.loops.find((l) => realpathSync(l.worktree) === realpathSync(path))?.supervisor;
+    expect(snap.loops).toHaveLength(4);
+    expect(verdict(main)).toBe("dead");
+    expect(verdict(worktrees[0]!)).toBe("dead");
+    expect(verdict(worktrees[1]!)).toBe("alive");
+    expect(verdict(worktrees[2]!)).toBe("dead");
+  });
+
+  it("takes no scan when every worktree's recorded pid is a live supervisor", async () => {
+    // The fast path the scan must never cost: a panel whose loops are all
+    // running answers from the recorded pids alone.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ralph-scan-none-")));
+    made.push(root);
+    const main = join(root, "main");
+    mkdirSync(main);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: main, stdio: "ignore" });
+    // A real `bash …/ralph.sh` with the worktree as cwd, which is what
+    // `supervisorPidMatches` reads from `/proc`. It blocks on stdin, so it
+    // lives until the test closes the pipe — no sleep to outlast.
+    writeFileSync(join(root, "ralph.sh"), "read -r _\n");
+    const child = spawn("bash", [join(root, "ralph.sh")], { cwd: main, stdio: ["pipe", "ignore", "ignore"] });
+    try {
+      const pid = child.pid!;
+      const deadline = Date.now() + 20_000;
+      while (supervisorPidMatches(pid, main) !== "alive" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(supervisorPidMatches(pid, main)).toBe("alive");
+      mkdirSync(join(main, STATE_RELATIVE_PATH, ".."), { recursive: true });
+      writeFileSync(
+        join(main, STATE_RELATIVE_PATH),
+        JSON.stringify(state({ worktree: main, owner: { loop: "ralph", pid, host: "desktop" } })),
+      );
+      let calls = 0;
+      const snap = snapshot(main, clock, {
+        scan: () => {
+          calls += 1;
+          return null;
+        },
+      });
+      expect(snap.loops.map((l) => l.supervisor)).toEqual(["alive"]);
+      expect(calls).toBe(0);
+    } finally {
+      child.stdin!.end();
+      child.kill();
+    }
   });
 });

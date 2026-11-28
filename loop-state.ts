@@ -653,17 +653,15 @@ export function classifyLoop(observation: LoopObservation, clock: Clock): LoopSt
  * The world: process table, disk, git.
  * ----------------------------------------------------------------------- */
 
+/** What one `/proc` entry is, judged once and compared against any worktree. */
+type ProcessJudgement = { kind: "supervisor"; cwd: string } | "not-supervisor" | "dead" | "unknown";
+
 /**
- * Is this pid a Ralph supervisor running in this worktree?
- *
- * Both halves are load-bearing. Pids are reused, so a state file naming a pid
- * that now belongs to somebody's editor must not read as a running loop —
- * hence the argv check. And `pgrep -f ralph/ralph.sh` is machine-wide, so with
- * two loops running it would report the OTHER worktree's supervisor as this
- * one's — hence the cwd check, resolved on both sides because `/proc/<pid>/cwd`
- * is always fully resolved while a worktree reached through a symlink is not.
+ * Judge one pid: a Ralph supervisor (with its resolved cwd), something else,
+ * gone, or unreadable. Shared by `supervisorPidMatches` and `scanSupervisors`
+ * so a recorded pid and a `/proc` scan can never disagree about a process.
  */
-export function supervisorPidMatches(pid: number, worktree: string, proc = "/proc"): Liveness {
+function judgeProcess(pid: number, proc: string): ProcessJudgement {
   const procDir = join(proc, String(pid));
   let argv: string;
   try {
@@ -677,16 +675,15 @@ export function supervisorPidMatches(pid: number, worktree: string, proc = "/pro
   // A supervisor is `bash …/ralph/ralph.sh N`. A shell running `-c` whose
   // command line merely mentions the path — routinely, the status panel's own
   // parent — is not.
-  if (args.includes("-c")) return "dead";
+  if (args.includes("-c")) return "not-supervisor";
   // Every loop on a machine runs the SAME shared `$RALPH_HOME/ralph.sh`, so
-  // the script path alone names no worktree; the cwd check below is what
-  // does. The basename is matched rather than the exact harness path so a
-  // supervisor started from an older in-repo copy (`<worktree>/ralph/ralph.sh`)
-  // still reads as the live loop it is.
-  if (!args.some((arg) => arg === "ralph.sh" || arg.endsWith("/ralph.sh"))) return "dead";
-  let cwd: string;
+  // the script path alone names no worktree; the cwd check is what does. The
+  // basename is matched rather than the exact harness path so a supervisor
+  // started from an older in-repo copy (`<worktree>/ralph/ralph.sh`) still
+  // reads as the live loop it is.
+  if (!args.some((arg) => arg === "ralph.sh" || arg.endsWith("/ralph.sh"))) return "not-supervisor";
   try {
-    cwd = realpathSync(join(procDir, "cwd"));
+    return { kind: "supervisor", cwd: realpathSync(join(procDir, "cwd")) };
   } catch (error) {
     // ENOENT is the process exiting between the two reads — routine on a host
     // with live loops, whose `$(…)` subshells carry `ralph.sh` in argv and
@@ -695,7 +692,68 @@ export function supervisorPidMatches(pid: number, worktree: string, proc = "/pro
     // mark every dead loop as running. A permission wall stays unknown.
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? "dead" : "unknown";
   }
-  return cwd === resolved(worktree) ? "alive" : "dead";
+}
+
+/**
+ * Is this pid a Ralph supervisor running in this worktree?
+ *
+ * Both halves are load-bearing. Pids are reused, so a state file naming a pid
+ * that now belongs to somebody's editor must not read as a running loop —
+ * hence the argv check. And `pgrep -f ralph/ralph.sh` is machine-wide, so with
+ * two loops running it would report the OTHER worktree's supervisor as this
+ * one's — hence the cwd check, resolved on both sides because `/proc/<pid>/cwd`
+ * is always fully resolved while a worktree reached through a symlink is not.
+ */
+export function supervisorPidMatches(pid: number, worktree: string, proc = "/proc"): Liveness {
+  const judgement = judgeProcess(pid, proc);
+  if (judgement === "unknown") return "unknown";
+  if (judgement === "dead" || judgement === "not-supervisor") return "dead";
+  return judgement.cwd === resolved(worktree) ? "alive" : "dead";
+}
+
+/**
+ * Every supervisor on the host, from one pass over `/proc`: the resolved cwds
+ * they run in, and whether any process could not be judged. `null` is a
+ * `/proc` that cannot be listed at all.
+ */
+export type SupervisorScan = { cwds: ReadonlySet<string>; sawUnknown: boolean } | null;
+
+/**
+ * Scan `/proc` once. A panel with forty idle worktrees used to walk the whole
+ * process table once per worktree (#64); one scan answers them all.
+ */
+export function scanSupervisors(proc = "/proc"): SupervisorScan {
+  let pids: string[];
+  try {
+    pids = readdirSync(proc).filter((name) => /^\d+$/.test(name));
+  } catch {
+    return null;
+  }
+  const cwds = new Set<string>();
+  let sawUnknown = false;
+  for (const pid of pids) {
+    const judgement = judgeProcess(Number(pid), proc);
+    if (judgement === "unknown") sawUnknown = true;
+    else if (typeof judgement === "object") cwds.add(judgement.cwd);
+  }
+  return { cwds, sawUnknown };
+}
+
+/**
+ * Memoise a scan so one panel read walks `/proc` at most once, and not at all
+ * when every recorded pid checks out. A `null` (unreadable `/proc`) is
+ * remembered too: retrying it per worktree would cost the same walk again.
+ */
+export function lazyScan(scan: () => SupervisorScan = scanSupervisors): () => SupervisorScan {
+  let done = false;
+  let result: SupervisorScan = null;
+  return () => {
+    if (!done) {
+      result = scan();
+      done = true;
+    }
+    return result;
+  };
 }
 
 /**
@@ -703,33 +761,24 @@ export function supervisorPidMatches(pid: number, worktree: string, proc = "/pro
  *
  * This is the fallback path — what the panel had before there were records —
  * and it is also the check that keeps a record honest. `/proc` unreadable is
- * `unknown`, never `dead`.
+ * `unknown`, never `dead`; a supervisor found here wins over any process that
+ * could not be judged.
  */
-export function findSupervisor(worktree: string): Liveness {
-  let pids: string[];
-  try {
-    pids = readdirSync("/proc").filter((name) => /^\d+$/.test(name));
-  } catch {
-    return "unknown";
-  }
-  let sawUnknown = false;
-  for (const pid of pids) {
-    const verdict = supervisorPidMatches(Number(pid), worktree);
-    if (verdict === "alive") return "alive";
-    if (verdict === "unknown") sawUnknown = true;
-  }
-  return sawUnknown ? "unknown" : "dead";
+export function findSupervisor(worktree: string, scan: SupervisorScan = scanSupervisors()): Liveness {
+  if (scan === null) return "unknown";
+  if (scan.cwds.has(resolved(worktree))) return "alive";
+  return scan.sawUnknown ? "unknown" : "dead";
 }
 
 /** Liveness for a worktree, preferring the recorded pid and verifying it. */
-function livenessFor(worktree: string, recordedPid: number | null): Liveness {
+function livenessFor(worktree: string, recordedPid: number | null, scan: () => SupervisorScan): Liveness {
   if (recordedPid !== null) {
     const verdict = supervisorPidMatches(recordedPid, worktree);
     // A recorded pid that is dead does not end the question: the operator may
     // have restarted the loop by hand, and that supervisor is the live one.
     if (verdict === "alive") return verdict;
   }
-  return findSupervisor(worktree);
+  return findSupervisor(worktree, scan());
 }
 
 function git(args: string[], cwd: string): string | null {
@@ -853,13 +902,21 @@ function worktreeRegistry(root: string): { self: string; entries: RegistryEntry[
 }
 
 /** Read one registered worktree using the same reconciliation as the full panel. */
-export function worktreeReport(root: string, clock: Clock): { report: LoopReport; timeline: TimelineRead } | null {
+export function worktreeReport(
+  root: string,
+  clock: Clock,
+  options: { scan?: () => SupervisorScan } = {},
+): { report: LoopReport; timeline: TimelineRead } | null {
   const { self, entries } = worktreeRegistry(root);
   const entry = entries.find((entry) => !entry.bare && resolved(entry.path) === self);
-  return entry ? reportForEntry(entry, clock) : null;
+  return entry ? reportForEntry(entry, clock, lazyScan(options.scan)) : null;
 }
 
-function reportForEntry(entry: RegistryEntry, clock: Clock): { report: LoopReport; timeline: TimelineRead } {
+function reportForEntry(
+  entry: RegistryEntry,
+  clock: Clock,
+  scan: () => SupervisorScan,
+): { report: LoopReport; timeline: TimelineRead } {
   const directoryExists = existsSync(entry.path);
   // A worktree that is gone has no record to have a problem with: its row is
   // about the missing directory, and "no state file" underneath it would be
@@ -868,7 +925,7 @@ function reportForEntry(entry: RegistryEntry, clock: Clock): { report: LoopRepor
     ? readState(entry.path)
     : { state: null, problem: null };
   const supervisor = directoryExists
-    ? livenessFor(entry.path, state?.owner.pid ?? null)
+    ? livenessFor(entry.path, state?.owner.pid ?? null, scan)
     : // A worktree that is gone cannot be hosting a supervisor whose cwd is
       // inside it, and `findSupervisor` would answer `dead` for the right
       // reason anyway. Said explicitly so the orphan path never depends on
@@ -921,9 +978,11 @@ function reportForEntry(entry: RegistryEntry, clock: Clock): { report: LoopRepor
 }
 
 /** Reconcile all non-bare worktrees in the Git registry. */
-export function snapshot(root: string, clock: Clock): Snapshot {
+export function snapshot(root: string, clock: Clock, options: { scan?: () => SupervisorScan } = {}): Snapshot {
   const { self, entries } = worktreeRegistry(root);
-  const loops = entries.filter((entry) => !entry.bare).map((entry) => reportForEntry(entry, clock).report);
+  // One scan for the whole panel, taken only if some worktree needs it.
+  const scan = lazyScan(options.scan);
+  const loops = entries.filter((entry) => !entry.bare).map((entry) => reportForEntry(entry, clock, scan).report);
   return {
     self,
     loops,
