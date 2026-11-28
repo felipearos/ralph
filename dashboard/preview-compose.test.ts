@@ -2,9 +2,9 @@
 /**
  * The design preview's loop reads, through the real server's composition.
  *
- * The preview answers `/api/loops` and a loop's panel by composing the server
- * over a canned runtime snapshot, so the page shows what `aggregateDashboard`
- * derives rather than a hand-written `Dashboard`. These tests pin that: the
+ * The preview answers `/api/dashboard`, its `/api/loops` overview and a
+ * loop's panel by composing the server over a canned runtime snapshot, so
+ * the page shows what `aggregateDashboard` derives rather than a hand-written `Dashboard`. These tests pin that: the
  * composed read is a well-formed `Dashboard` holding every canned loop and
  * every derived state the preview exists to draw, the control buttons still
  * act on the in-memory loops that read sees, and the reads never call the
@@ -109,7 +109,7 @@ function expectDashboard(value: unknown): asserts value is Dashboard {
 }
 
 async function readDashboard(get: (path: string) => Promise<Response>): Promise<Dashboard> {
-  const response = await get("/api/loops");
+  const response = await get("/api/dashboard");
   expect(response.status).toBe(200);
   const body: unknown = await response.json();
   expectDashboard(body);
@@ -131,6 +131,15 @@ describe("the preview's composed loop read", () => {
   it("answers the same through the preview's router", async () => {
     const dashboard = await readDashboard(routerGet);
     expect(dashboard.loops.map((panel) => panel.loop)).toEqual(ROSTER.map(([loop]) => loop));
+  });
+
+  it("answers /api/loops through the router as the overview: every loop, without the heavy lists", async () => {
+    const response = await routerGet("/api/loops");
+    expect(response.status).toBe(200);
+    const overview = (await response.json()) as Record<string, unknown> & { loops: { loop: string }[] };
+    expect(overview.loops.map((panel) => panel.loop)).toEqual(ROSTER.map(([loop]) => loop));
+    expect(overview).not.toHaveProperty("ciHealth");
+    expect(overview).not.toHaveProperty("learnings");
   });
 
   it("derives the states the preview exists to show", async () => {

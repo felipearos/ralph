@@ -579,7 +579,7 @@ describe("the remote dashboard, end to end", () => {
     expect(await refused.json()).toMatchObject({ error: "BridgeNotLive" });
 
     const last = await row("dashboard");
-    const read = await get("/api/p/fixture/loops");
+    const read = await get("/api/p/fixture/dashboard");
     expect(read.status).toBe(200);
     expect(read.headers.get("content-encoding")).toBe("gzip");
     expect(read.headers.get("x-ralph-snapshot-at")).toBe(new Date(last.pushed_at).toISOString());

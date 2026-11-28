@@ -8,8 +8,9 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { overviewOf } from "../overview";
 import { bucketTone, triagePanel, triageWaiting } from "./triage-model";
-import type { Dashboard, DashboardLoop, FrontierView, LoopRole, TriageActivityView } from "../contracts";
+import type { Dashboard, DashboardLoop, DashboardOverview, FrontierView, LoopRole, TriageActivityView } from "../contracts";
 
 const frontier = (over: Partial<FrontierView> = {}): FrontierView => ({
   ready: [],
@@ -74,7 +75,7 @@ const loop = (name: string, role: LoopRole, triage: TriageActivityView | null = 
   triage,
 });
 
-const dashboard = (loops: DashboardLoop[], view: FrontierView | null = frontier()): Dashboard => ({
+const fullDashboard = (loops: DashboardLoop[], view: FrontierView | null = frontier()): Dashboard => ({
   generatedAt: "2026-09-30T12:00:00.000Z",
   loops,
   reconciliation: { orphaned: [], prunable: [] },
@@ -89,6 +90,10 @@ const dashboard = (loops: DashboardLoop[], view: FrontierView | null = frontier(
   following: null,
   learnings: null,
 });
+
+// The panel reads the overview (#67): the full body, projected the way `GET /api/loops` answers it.
+const dashboard = (loops: DashboardLoop[], view: FrontierView | null = frontier()): DashboardOverview =>
+  overviewOf(fullDashboard(loops, view));
 
 describe("the triage panel", () => {
   it("is absent for a project that staffs no triager", () => {

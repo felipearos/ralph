@@ -298,11 +298,25 @@ describe("the dashboard over HTTP", () => {
     try {
       const response = await server.fetch(`/api/loops`);
       expect(response.status).toBe(200);
-      const body = (await response.json()) as {
+      // The overview (#67) is sent compact, and without the views that read the full body.
+      const text = await response.text();
+      expect(text).not.toContain("\n");
+      const body = JSON.parse(text) as {
         generatedAt: string;
         loops: { loop: string; role: string; present: boolean; loopStatus: string; worktreeStatus: string }[];
         reconciliation: { orphaned: string[]; prunable: string[] };
       };
+      expect(body).not.toHaveProperty("ciHealth");
+      expect(body).not.toHaveProperty("learnings");
+      // The full dashboard is its own read, keeping every field and its readable format.
+      const full = await server.fetch(`/api/dashboard`);
+      expect(full.status).toBe(200);
+      const fullText = await full.text();
+      expect(fullText).toContain("\n  ");
+      const fullBody = JSON.parse(fullText) as typeof body;
+      expect(fullBody).toHaveProperty("ciHealth");
+      expect(fullBody).toHaveProperty("learnings");
+      expect(fullBody.loops.map((loop) => loop.loop)).toEqual(body.loops.map((loop) => loop.loop));
       expect(body.loops.map((loop) => loop.loop)).toEqual(["ralph", "rafa", "remo", "rulo"]);
       expect(body.loops.find((loop) => loop.loop === "ralph")).toMatchObject({
         present: true,

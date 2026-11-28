@@ -388,8 +388,13 @@ const getOnly = (): Response => new Response("method not allowed", { status: 405
  */
 const hostFromUrl = (url: string): string | null => (URL.canParse(url) ? new URL(url).host : null);
 
-const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body, null, 2), {
+/**
+ * `compact` drops the indentation: the overview (`/api/loops`, #67) is the
+ * page's most frequent read, and on a busy project indentation alone is a
+ * large share of its bytes. Every other route keeps its readable format.
+ */
+const json = (body: unknown, status = 200, compact = false): Response =>
+  new Response(compact ? JSON.stringify(body) : JSON.stringify(body, null, 2), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
@@ -713,7 +718,9 @@ function createProjectHandler({
         if (row.kind === "derived" && row.source === "dashboard") {
           const loop = loopOf(row, params, search);
           const projected = PROJECTIONS[row.projection](await dashboard(), { loop, search });
-          return projected.found ? json(projected.body) : json({ error: `no loop '${loop}'` }, 404);
+          return projected.found
+            ? json(projected.body, 200, row.projection === "overview")
+            : json({ error: `no loop '${loop}'` }, 404);
         }
         if (row.kind === "stream" && stream !== undefined) {
           try {

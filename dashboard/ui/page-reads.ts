@@ -16,10 +16,13 @@ import {
   bridgeStatusRead,
   controlsRead,
   dashboardRead,
+  frontierRead,
+  fullDashboardRead,
   intakeRead,
   labelsRead,
   loopHistoryRead,
   loopNotificationsRead,
+  loopPanelRead,
   notificationsRead,
   projectSetupRead,
   projectSleepRead,
@@ -54,7 +57,20 @@ function bodyReads(screen: Screen, project: string, remote: boolean): ReadTarget
     case "agents":
       return [agentsRead(project), sentinelRead(project)];
     case "loop":
-      return [usageRead(project), loopNotificationsRead(project, screen.name), loopHistoryRead(project, screen.name)];
+      return [
+        usageRead(project),
+        loopNotificationsRead(project, screen.name),
+        loopHistoryRead(project, screen.name),
+        // The activity feed's full rows (#67): the overview caps them.
+        loopPanelRead(project, screen.name),
+      ];
+    case "backlog":
+      // The tree and the PRs the overview leaves out (#67).
+      return [frontierRead(project)];
+    case "ci":
+    case "learnings":
+      // The CI health and the learnings the overview leaves out (#67).
+      return [fullDashboardRead(project)];
     case "notifications":
       return [notificationsRead(project)];
     case "usage":

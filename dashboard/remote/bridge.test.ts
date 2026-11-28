@@ -234,7 +234,7 @@ function fakeStreams() {
 const FULL = [
   "/api/projects",
   "/api/projects/health",
-  "/api/p/fixture/loops",
+  "/api/p/fixture/dashboard",
   "/api/p/fixture/controls",
   "/api/p/fixture/loops/ralph/control",
   "/api/p/fixture/loops/ralph/checkout",
@@ -488,7 +488,7 @@ describe("snapshots", () => {
     const r = await rig();
     await r.run(20 * MINUTE, 5 * SECOND);
     const at = (path: string) => r.m.local.calls.filter((call) => call.path === path).map((call) => call.at);
-    const dashboard = at("/api/p/fixture/loops");
+    const dashboard = at("/api/p/fixture/dashboard");
     expect(dashboard).toHaveLength(5);
     for (let i = 1; i < dashboard.length; i++) expect(dashboard[i]! - dashboard[i - 1]!).toBeGreaterThanOrEqual(5 * MINUTE);
     const health = at("/api/projects/health");
@@ -503,7 +503,7 @@ describe("snapshots", () => {
     // Hot: every key is read again and again, each with a fresh generatedAt.
     r.bridge.markHot("fixture", "viewer");
     await r.run(2 * MINUTE);
-    expect(r.callsSince(clock.t - MINUTE).filter((path) => path === "/api/p/fixture/loops").length).toBeGreaterThan(5);
+    expect(r.callsSince(clock.t - MINUTE).filter((path) => path === "/api/p/fixture/dashboard").length).toBeGreaterThan(5);
     expect(await r.versions()).toEqual(before);
 
     r.m.local.cost = 2.5;
@@ -545,7 +545,7 @@ describe("snapshots", () => {
       const before = r.m.local.calls.length;
       clock.t += SECOND;
       await bridge.tick();
-      if (r.m.local.calls.slice(before).some((call) => call.path === "/api/p/fixture/loops")) dashboardAt.push(clock.t);
+      if (r.m.local.calls.slice(before).some((call) => call.path === "/api/p/fixture/dashboard")) dashboardAt.push(clock.t);
     }
     expect(reads).toBeGreaterThan(0);
     // Hot is 5 s, but a read that took 20 s waits at least 40 s.
@@ -595,7 +595,7 @@ describe("hot", () => {
     expect(Object.keys(r.bridge.state().hot)).toEqual(["fixture"]);
     // Hot: dashboard every 5 s.
     await r.run(30 * SECOND);
-    expect(r.callsSince(at).filter((path) => path === "/api/p/fixture/loops").length).toBeGreaterThanOrEqual(6);
+    expect(r.callsSince(at).filter((path) => path === "/api/p/fixture/dashboard").length).toBeGreaterThanOrEqual(6);
     // And idle again once the viewer has been gone 120 s.
     await r.run(2 * MINUTE);
     expect(r.bridge.state().hot).toEqual({});
@@ -649,8 +649,8 @@ describe("hot", () => {
 });
 
 describe("the local change stream", () => {
-  const LOOPS = "/api/p/fixture/loops";
-  const loopReads = (r: Rig): number[] => r.m.local.calls.filter((call) => call.path === LOOPS).map((call) => call.at);
+  const DASHBOARD = "/api/p/fixture/dashboard";
+  const loopReads = (r: Rig): number[] => r.m.local.calls.filter((call) => call.path === DASHBOARD).map((call) => call.at);
   /** A change the `dashboard` key reflects. */
   const moveBranch = (r: Rig, branch: string): void => {
     (r.m.snapshot.loops[0] as unknown as { branch: string }).branch = branch;
@@ -686,7 +686,7 @@ describe("the local change stream", () => {
     // The next cadence read of `dashboard` sees the old state; the change and
     // its event land while that read is still in flight.
     r.m.local.onCall = (path) => {
-      if (path !== LOOPS) return;
+      if (path !== DASHBOARD) return;
       r.m.local.onCall = null;
       moveBranch(r, "ralph/16-raced");
       r.streams.emit("fixture", "dashboard");
@@ -751,7 +751,7 @@ describe("the local change stream", () => {
       bridge.markHot("fixture", "viewer");
       streams.emit("fixture", "dashboard");
       await bridge.tick();
-      if (r.m.local.calls.slice(before).some((call) => call.path === LOOPS)) dashboardAt.push(clock.t);
+      if (r.m.local.calls.slice(before).some((call) => call.path === DASHBOARD)) dashboardAt.push(clock.t);
     }
     expect(dashboardAt.length).toBeGreaterThan(1);
     for (let i = 1; i < dashboardAt.length; i++) expect(dashboardAt[i]! - dashboardAt[i - 1]!).toBeGreaterThanOrEqual(40 * SECOND);

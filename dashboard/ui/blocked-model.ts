@@ -36,7 +36,7 @@ export interface StuckGroups {
   other: StuckReason[];
 }
 
-export function stuckGroups(view: FrontierView, nowMs: number): StuckGroups {
+export function stuckGroups(view: Pick<FrontierView, "stuckReasons">, nowMs: number): StuckGroups {
   const groups: StuckGroups = noStuckGroups();
   for (const reason of view.stuckReasons) {
     const group =

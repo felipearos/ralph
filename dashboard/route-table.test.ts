@@ -61,7 +61,8 @@ const EXPECTED: [string, string, string, string][] = [
   ["POST", "/api/evals/improve/propose", "project", "command eval-improve-propose"],
   ["POST", "/api/evals/set/calibrate", "project", "command eval-set-calibrate"],
   ["POST", "/api/evals/proposals/open-pr", "project", "command eval-proposal-open-pr"],
-  ["GET", "/api/loops", "project", "snapshot dashboard"],
+  ["GET", "/api/dashboard", "project", "snapshot dashboard"],
+  ["GET", "/api/loops", "project", "derived dashboard overview"],
   ["GET", "/api/ownership", "project", "derived dashboard ownership"],
   ["GET", "/api/frontier", "project", "derived dashboard frontier"],
   ["GET", "/api/notifications", "project", "snapshot notifications"],
@@ -220,7 +221,7 @@ describe("the bridge lists", () => {
     const expected = [
       { scope: "global", key: "_/projects", path: "/api/projects" },
       { scope: "global", key: "_/health", path: "/api/projects/health" },
-      { scope: "project", key: "dashboard", path: "/api/loops" },
+      { scope: "project", key: "dashboard", path: "/api/dashboard" },
       { scope: "project", key: "controls", path: "/api/controls" },
       { scope: "loop", key: "control/<loop>", path: "/api/loops/<loop>/control" },
       { scope: "loop", key: "checkout/<loop>", path: "/api/loops/<loop>/checkout" },
@@ -335,10 +336,13 @@ describe("matchRoute", () => {
     expect(matchRoute("/api/chat/c1/nope", "project")).toBeNull();
   });
 
-  it("serves /api/loops as the dashboard snapshot, not a loop row", () => {
+  it("serves /api/loops as the dashboard's overview, not a loop row, and /api/dashboard as the snapshot", () => {
     const rows = matchRoute("/api/loops", "project")?.rows;
-    expect(rows?.map(describeRow)).toEqual(["snapshot dashboard"]);
+    expect(rows?.map(describeRow)).toEqual(["derived dashboard overview"]);
     expect(rows?.[0]?.scope).toBe("project");
+    const full = matchRoute("/api/dashboard", "project")?.rows;
+    expect(full?.map(describeRow)).toEqual(["snapshot dashboard"]);
+    expect(full?.[0]?.scope).toBe("project");
   });
 
   it("narrows to the rows kept before it decodes a segment", () => {
@@ -396,7 +400,7 @@ describe("snapshotKeyOf", () => {
   });
 
   it("leaves a fixed key as it is", () => {
-    expect(snapshotRow("/api/loops", "project")).toBe("dashboard");
+    expect(snapshotRow("/api/dashboard", "project")).toBe("dashboard");
     expect(snapshotRow("/api/projects", "global")).toBe("_/projects");
   });
 });
@@ -426,6 +430,26 @@ describe("the projections", () => {
     expect(frontierOf(dashboard)).toBe(dashboard.frontier);
     expect(PROJECTIONS.ownership(dashboard, input(""))).toEqual({ found: true, body: dashboard.ownership });
     expect(PROJECTIONS.frontier(dashboard, input(""))).toEqual({ found: true, body: dashboard.frontier });
+  });
+
+  it("projects the dashboard's overview, capped and without the heavy lists", () => {
+    const recent = Array.from({ length: 12 }, (_, index) => ({ label: `row ${index}` }));
+    const full = {
+      loops: [{ loop: "ralph", presence: { loop: "ralph", recent } }],
+      ownership: { claims: [] },
+      frontier: { readAt: "t", view: { ready: [], tree: [{}] }, problem: null, prs: [] },
+      learnings: { base: null, sources: [] },
+      ciHealth: { readAt: "t", view: null, problem: null },
+    } as unknown as Dashboard;
+    const projected = PROJECTIONS.overview(full, input(""));
+    expect(projected).toEqual({
+      found: true,
+      body: {
+        loops: [{ loop: "ralph", presence: { loop: "ralph", recent: recent.slice(-5), recentTotal: 12 } }],
+        ownership: { claims: [] },
+        frontier: { readAt: "t", view: { ready: [] }, problem: null },
+      },
+    });
   });
 
   it("finds a loop's panel, or says it found none", () => {
@@ -513,7 +537,7 @@ describe("the projections", () => {
 });
 
 describe("the browser-safe import graph", () => {
-  it("reaches only the contracts and the parser leaf, and no package", () => {
+  it("reaches only the contracts, the parser leaf and the overview projection, and no package", () => {
     const repo = resolve(import.meta.dirname, "..");
     const seen = new Set<string>();
     const packages = new Set<string>();
@@ -527,7 +551,12 @@ describe("the browser-safe import graph", () => {
     };
     walk(join(repo, "dashboard", "route-table.ts"));
     const files = [...seen].map((file) => file.slice(repo.length + 1)).sort();
-    expect(files).toEqual(["dashboard/command-requests.ts", "dashboard/contracts.ts", "dashboard/route-table.ts"]);
+    expect(files).toEqual([
+      "dashboard/command-requests.ts",
+      "dashboard/contracts.ts",
+      "dashboard/overview.ts",
+      "dashboard/route-table.ts",
+    ]);
     expect([...packages]).toEqual([]);
   });
 });

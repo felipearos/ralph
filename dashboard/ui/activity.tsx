@@ -30,6 +30,7 @@ import { LabelText } from "./label";
 import {
   FILTERS,
   applyFilter,
+  keptNote as kept,
   durationOf,
   filterCounts,
   groupActivity,
@@ -372,7 +373,7 @@ function toggled(set: Set<string>, key: string): Set<string> {
  * `live` marks the newest step as the one the loop is on; it is only true
  * while the supervisor is alive and the loop is running.
  */
-export function ActivityFeed({ recent, live }: { recent: ActivityView[]; live: boolean }) {
+export function ActivityFeed({ recent, live, total }: { recent: ActivityView[]; live: boolean; total?: number }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [showAll, setShowAll] = useState(false);
   // Toggles are stored against each group's default, so a group keeps the
@@ -455,7 +456,7 @@ export function ActivityFeed({ recent, live }: { recent: ActivityView[]; live: b
         </>
       )}
       <p className="text-[11px] text-muted-foreground">
-        The observer keeps the latest {recent.length >= 200 ? "200" : recent.length} events. Times are local.
+        {kept(recent.length, total)} Times are local.
       </p>
     </div>
   );

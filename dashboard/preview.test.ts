@@ -52,6 +52,7 @@ const LINEUP_ROWS = new Set(["/api/lineup", "/api/lineup/catalog", "/api/lineup/
 /** Every GET row the preview answers. */
 const PREVIEWED = [
   "/api/loops",
+  "/api/dashboard",
   "/api/ownership",
   "/api/frontier",
   "/api/controls",
@@ -430,7 +431,7 @@ describe("the preview's projects", () => {
   });
 
   it("draws each CI scenario from the project's own store", async () => {
-    const ci = async (id: string) => ((await (await scoped(id, "/api/loops")).json()) as Dashboard).ciHealth;
+    const ci = async (id: string) => ((await (await scoped(id, "/api/dashboard")).json()) as Dashboard).ciHealth;
     const atlas = (await ci("atlas"))!.view!;
     expect(atlas.main.state).toBe("green");
     expect(atlas).toMatchObject({ cases: [], incidents: [], parked: [], reverts: [] });

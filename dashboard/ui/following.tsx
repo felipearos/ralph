@@ -8,7 +8,7 @@
  */
 import { CircleAlert } from "lucide-react";
 
-import type { Dashboard } from "../contracts";
+import type { DashboardOverview } from "../contracts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,7 +44,7 @@ function Ticket({ repoUrl, ticket, ticketRef }: { repoUrl: string | null; ticket
 
 const ROW = "flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2 text-sm first:pt-0 last:pb-0";
 
-export function FollowingPanel({ data, repoUrls }: { data: Dashboard; repoUrls: Record<string, string | null> }) {
+export function FollowingPanel({ data, repoUrls }: { data: DashboardOverview; repoUrls: Record<string, string | null> }) {
   // The poll's own clock, as the backlog uses, so "overdue by" agrees with the
   // read rather than drifting with however long the tab has been open.
   const panel = followingPanel(data, new Date(data.generatedAt));

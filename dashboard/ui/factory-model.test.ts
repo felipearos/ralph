@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { overviewOf } from "../overview";
 import type {
   Dashboard,
   DashboardLoop,
@@ -8,7 +9,7 @@ import type {
   LoopRole,
   PullStatusView,
 } from "../contracts";
-import { agentState, factoryFloor } from "./factory-model";
+import { agentState, factoryFloor, type ProjectRead } from "./factory-model";
 
 const NOW = Date.parse("2026-10-13T14:00:00Z");
 
@@ -78,7 +79,7 @@ const frontier = (over: Partial<FrontierView> = {}): FrontierView => ({
   ...over,
 });
 
-const dashboard = (loops: DashboardLoop[], view: FrontierView, prs: PullStatusView[] = []): Dashboard => ({
+const fullDashboard = (loops: DashboardLoop[], view: FrontierView, prs: PullStatusView[] = []): Dashboard => ({
   generatedAt: "2026-10-13T14:00:00.000Z",
   loops,
   reconciliation: { orphaned: [], prunable: [] },
@@ -89,6 +90,15 @@ const dashboard = (loops: DashboardLoop[], view: FrontierView, prs: PullStatusVi
   following: null,
   learnings: null,
 });
+
+/**
+ * A project's read as the floor holds it (#67): the overview `GET /api/loops`
+ * answers, beside the full frontier `GET /api/frontier` answers.
+ */
+const snapshot = (loops: DashboardLoop[], view: FrontierView, prs: PullStatusView[] = []): Pick<ProjectRead, "dashboard" | "frontier"> => {
+  const full = fullDashboard(loops, view, prs);
+  return { dashboard: overviewOf(full), frontier: full.frontier };
+};
 
 const roots = (...nodes: FrontierTreeNode[]): FrontierView["tree"] => [
   { spec: null, under: null, subSpecs: [], total: nodes.length, complete: false, specStillOpen: false, roots: nodes },
@@ -108,7 +118,7 @@ describe("the factory floor", () => {
       [
         {
           id: "loggd",
-          dashboard: dashboard(
+          ...snapshot(
             [
               loop("ralph", "coder", { issue: 1 }),
               loop("rafa", "coder", { supervisor: "dead" }),
@@ -151,7 +161,7 @@ describe("the factory floor", () => {
       { issue: 8, pr: 80, state: "merged", draft: false, mergedAt: "2026-10-11T09:00:00Z" },
     ];
     const floor = factoryFloor(
-      [{ id: "loggd", dashboard: dashboard([loop("ralph", "coder")], frontier({ tree: roots(node(7, "done")) }), prs) }],
+      [{ id: "loggd", ...snapshot([loop("ralph", "coder")], frontier({ tree: roots(node(7, "done")) }), prs) }],
       NOW,
     );
     expect(floor.lanes[0]!.cells).toMatchObject([
@@ -165,16 +175,16 @@ describe("the factory floor", () => {
       [
         {
           id: "loggd",
-          dashboard: dashboard(
+          ...snapshot(
             [loop("tria", "triager", { issue: 40, issueTitle: "triage me" }), loop("doc", "ci-doctor")],
             frontier({ triage: { staffing: 0, routing: 0, intake: 2, oversize: 0, rescue: 0 } }),
           ),
         },
         {
           id: "factory",
-          dashboard: dashboard([loop("medic", "pr-medic", { issue: 12 })], frontier()),
+          ...snapshot([loop("medic", "pr-medic", { issue: 12 })], frontier()),
         },
-        { id: "down", dashboard: null },
+        { id: "down", dashboard: null, frontier: null },
       ],
       NOW,
     );
@@ -186,7 +196,7 @@ describe("the factory floor", () => {
   });
 
   it("is empty with no agents and no work", () => {
-    expect(factoryFloor([{ id: "loggd", dashboard: null }], NOW)).toEqual({
+    expect(factoryFloor([{ id: "loggd", dashboard: null, frontier: null }], NOW)).toEqual({
       lanes: [],
       tasks: 0,
       active: 0,
@@ -213,8 +223,8 @@ describe("an agent's state", () => {
   it("puts one square per agent in its lane, across projects, linking to the loop page", () => {
     const floor = factoryFloor(
       [
-        { id: "loggd", dashboard: dashboard([loop("ralph", "coder"), loop("doc", "ci-doctor", { loopStatus: "idle" })], frontier()) },
-        { id: "factory", dashboard: dashboard([loop("rafa", "coder", { supervisor: "dead" })], frontier()) },
+        { id: "loggd", ...snapshot([loop("ralph", "coder"), loop("doc", "ci-doctor", { loopStatus: "idle" })], frontier()) },
+        { id: "factory", ...snapshot([loop("rafa", "coder", { supervisor: "dead" })], frontier()) },
       ],
       NOW,
     );

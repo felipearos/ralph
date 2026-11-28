@@ -12,6 +12,9 @@ import type {
   ControlsView,
   ControlView,
   Dashboard,
+  DashboardLoop,
+  DashboardOverview,
+  FrontierRead,
   GithubReposView,
   GuideView,
   HistoryView,
@@ -87,8 +90,31 @@ function scoped(project: string | null, path: string): string {
   return project === null ? path : apiPath(project, path);
 }
 
-export function dashboardRead(project: string): ReadTarget<Dashboard> {
+export function dashboardRead(project: string): ReadTarget<DashboardOverview> {
   return polled(apiPath(project, "/api/loops"));
+}
+
+/**
+ * One loop's full panel (#67): the overview caps its recent activity, and the
+ * loop page's feed draws every row. Polled while the loop page is on screen.
+ */
+export function loopPanelRead(project: string, loop: string): ReadTarget<DashboardLoop> {
+  return polled(apiPath(project, `/api/loops/${encodeURIComponent(loop)}`));
+}
+
+/** The project's full frontier (#67), with the tree and the PRs the overview leaves out: the backlog page's read. */
+export function frontierRead(project: string): ReadTarget<FrontierRead | null> {
+  return polled(apiPath(project, "/api/frontier"));
+}
+
+/** The floor's read of a project's full frontier (#67), at the floor's pace like `floorRead`. */
+export function floorFrontierRead(project: string): ReadTarget<FrontierRead | null> {
+  return { url: frontierRead(project).url, intervalMs: FLOOR_POLL_MS };
+}
+
+/** The full dashboard (#67), with the learnings and the CI health the overview leaves out: the CI and Learnings pages' read. */
+export function fullDashboardRead(project: string): ReadTarget<Dashboard> {
+  return polled(apiPath(project, "/api/dashboard"));
 }
 
 /**
@@ -185,7 +211,7 @@ export function intakeMetricsRead(project: string, open: boolean): ReadTarget<In
 }
 
 /** The same URL as `dashboardRead`, so the floor and the shell share one store entry for the current project. */
-export function floorRead(project: string): ReadTarget<Dashboard> {
+export function floorRead(project: string): ReadTarget<DashboardOverview> {
   return { url: apiPath(project, "/api/loops"), intervalMs: FLOOR_POLL_MS };
 }
 

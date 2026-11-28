@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { overviewOf } from "../overview";
 import type {
   Dashboard,
   DashboardLoop,
@@ -21,6 +22,7 @@ import {
   type Sample,
   tracks,
 } from "./factory-views-model";
+import type { ProjectRead } from "./factory-model";
 
 const NOW = Date.parse("2026-10-13T14:00:00Z");
 
@@ -93,7 +95,7 @@ const frontier = (over: Partial<FrontierView> = {}): FrontierView => ({
   ...over,
 });
 
-const dashboard = (loops: DashboardLoop[], view: FrontierView = frontier(), prs: PullStatusView[] = []): Dashboard => ({
+const fullDashboard = (loops: DashboardLoop[], view: FrontierView = frontier(), prs: PullStatusView[] = []): Dashboard => ({
   generatedAt: "2026-10-13T14:00:00.000Z",
   loops,
   reconciliation: { orphaned: [], prunable: [] },
@@ -104,6 +106,15 @@ const dashboard = (loops: DashboardLoop[], view: FrontierView = frontier(), prs:
   following: null,
   learnings: null,
 });
+
+/**
+ * A project's read as the floor holds it (#67): the overview `GET /api/loops`
+ * answers, beside the full frontier `GET /api/frontier` answers.
+ */
+const snapshot = (loops: DashboardLoop[], view: FrontierView = frontier(), prs: PullStatusView[] = []): Pick<ProjectRead, "dashboard" | "frontier"> => {
+  const full = fullDashboard(loops, view, prs);
+  return { dashboard: overviewOf(full), frontier: full.frontier };
+};
 
 const roots = (...nodes: FrontierTreeNode[]): FrontierView["tree"] => [
   { spec: null, under: null, subSpecs: [], total: nodes.length, complete: false, specStillOpen: false, roots: nodes },
@@ -142,10 +153,10 @@ describe("the projects", () => {
   it("puts the busiest live project first and folds the ones with nothing running", () => {
     const { live, dormant } = projectSummaries(
       [
-        { id: "quiet", dashboard: dashboard([loop("ralph", "coder", idle)]) },
-        { id: "busy", dashboard: dashboard([loop("ralph", "coder", { issue: 1 }), loop("rita", "coder", dead)], frontier({ inFlight: [inFlight(1, "ralph")], tree: roots(node(1, "in-flight"), node(2, "ready")) })) },
-        { id: "gone", dashboard: dashboard([loop("ralph", "coder", dead)]) },
-        { id: "slow", dashboard: null },
+        { id: "quiet", ...snapshot([loop("ralph", "coder", idle)]) },
+        { id: "busy", ...snapshot([loop("ralph", "coder", { issue: 1 }), loop("rita", "coder", dead)], frontier({ inFlight: [inFlight(1, "ralph")], tree: roots(node(1, "in-flight"), node(2, "ready")) })) },
+        { id: "gone", ...snapshot([loop("ralph", "coder", dead)]) },
+        { id: "slow", dashboard: null, frontier: null },
       ],
       NOW,
     );
@@ -161,7 +172,7 @@ describe("the attention inbox", () => {
     const reads = [
         {
           id: "loggd",
-          dashboard: dashboard(
+          ...snapshot(
             [
               loop("ralph", "coder", { issue: 1, lastEvent: { name: "phase", at: "2026-10-13T13:58:00Z" } }),
               loop("rafa", "coder", { issue: 2, lastEvent: { name: "phase", at: "2026-10-13T13:59:00Z" } }),
@@ -226,7 +237,7 @@ describe("ticket asks on a parked ticket", () => {
     const reads = [
       {
         id: "loggd",
-        dashboard: dashboard(
+        ...snapshot(
           [loop("ralph", "coder", idle)],
           frontier({
             tree: roots(
@@ -273,7 +284,7 @@ describe("the pipeline", () => {
       [
         {
           id: "loggd",
-          dashboard: dashboard(
+          ...snapshot(
             [
               loop("ralph", "coder", { issue: 1 }),
               loop("rulo", "coder", { issue: 2, lastEvent: { name: "pr-wait", at: "2026-10-13T13:50:00Z" } }),
@@ -287,7 +298,7 @@ describe("the pipeline", () => {
             prs,
           ),
         },
-        { id: "empty", dashboard: dashboard([loop("ralph", "coder", dead)]) },
+        { id: "empty", ...snapshot([loop("ralph", "coder", dead)]) },
       ],
       NOW,
     );
@@ -305,12 +316,12 @@ describe("the pipeline", () => {
   });
 
   it("leaves out a project with no tickets and nothing running", () => {
-    expect(pipeline([{ id: "gone", dashboard: dashboard([loop("ralph", "coder", dead)]) }], NOW)).toEqual([]);
+    expect(pipeline([{ id: "gone", ...snapshot([loop("ralph", "coder", dead)]) }], NOW)).toEqual([]);
   });
 });
 
 describe("the timeline", () => {
-  const read = (over: Partial<DashboardLoop>) => [{ id: "loggd", dashboard: dashboard([loop("ralph", "coder", over)]) }];
+  const read = (over: Partial<DashboardLoop>) => [{ id: "loggd", ...snapshot([loop("ralph", "coder", over)]) }];
 
   it("keeps only the busy agents in a sample, and only the window's samples", () => {
     expect(sampleOf(read(idle), NOW).agents).toEqual({});
