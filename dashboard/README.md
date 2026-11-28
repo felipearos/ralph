@@ -1922,8 +1922,9 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   card line `Off: disabled in config`.
 - `ui/agent-switch.tsx` — the On/Off switch at the top of the Sentinel and
   Verifier sheets, and the `Off: disabled in config` line on a sentinel's or
-  verifier's card (local only; it reads `/api/agents/sentinel` or
-  `/api/agents/verifier`, the base branch's rules the gate re-reads). A switch
+  verifier's card (local only; it reads `/api/agents/sentinel?pending=skip`
+  or `/api/agents/verifier?pending=skip`, the base branch's rules the gate
+  re-reads, without the open-PR lookup (#65)). A switch
   saves at once through the same POST as the rules, sending the base branch's
   rules with only `enabled` changed, so its commit reads `ralph: sentinel
   rules — enabled true → false`. Off, the gate keeps polling and does nothing

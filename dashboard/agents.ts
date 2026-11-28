@@ -148,11 +148,13 @@ async function pendingRulesPr(
   if (cache !== undefined && hit !== undefined && cache.now() - hit.at < RULES_PR_TTL_MS) return hit.value;
   const asked = cache?.now() ?? 0;
   const found = await lookup(repo);
-  if (!found.ok) return null;
   // A save that wrote while this lookup ran knows better (it may have just
-  // opened the PR this slower list missed): never overwrite a newer entry.
+  // opened the PR this slower list missed): answer its entry, failed lookup
+  // or not, and never overwrite it.
   const latest = cache?.entries.get(rulesPrKey(kind, repo));
-  if (latest === undefined || latest.at <= asked) rememberRulesPr(deps, kind, repo, found.value);
+  if (latest !== undefined && latest.at > asked) return latest.value;
+  if (!found.ok) return null;
+  rememberRulesPr(deps, kind, repo, found.value);
   return found.value;
 }
 

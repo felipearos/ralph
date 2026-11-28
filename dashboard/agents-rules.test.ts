@@ -314,8 +314,23 @@ describe("the rules-PR cache", () => {
         return { ok: true as const, value: null };
       },
     };
-    expect(await readSentinel({ ...deps, agents })).toMatchObject({ ok: true, value: { pending: null } });
+    // The overlapping read answers what the save wrote, not its stale none.
+    expect(await readSentinel({ ...deps, agents })).toMatchObject({ ok: true, value: { pending: opened } });
     expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: opened } });
+  });
+
+  it("answers what a save wrote even when the overlapping lookup failed", async () => {
+    const { deps, clock } = cached({});
+    const opened = { ...OPEN, url: "https://github.com/o/r/pull/9" };
+    const agents = {
+      ...deps.agents,
+      sentinelPr: async () => {
+        clock.at += 10;
+        deps.rulesPrs!.entries.set(`sentinel\u0000o/r`, { value: opened, at: clock.at });
+        return { ok: false as const, why: "gh: unreadable" };
+      },
+    };
+    expect(await readSentinel({ ...deps, agents })).toMatchObject({ ok: true, value: { pending: opened } });
   });
 
   it("does not let a stale cached none bypass the already-open refusal", async () => {
