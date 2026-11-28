@@ -28,7 +28,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -234,10 +234,14 @@ async function startMachine() {
           ...(method === "GET" || method === "HEAD" ? {} : { body: new Uint8Array(raw) }),
         }),
       );
-      const text = await answer.text();
+      // The bytes go to the bridge as the handler encoded them (#69): reading
+      // them as text would mangle a compressed body under its Content-Encoding.
+      const bytes = Buffer.from(await answer.arrayBuffer());
+      const encoding = answer.headers.get("content-encoding");
+      const text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString("utf8");
       calls.push({ method, path: new URL(url).pathname, body: method === "POST" ? (JSON.parse(raw.toString("utf8")) as Record<string, unknown>) : null, status: answer.status, text });
       response.writeHead(answer.status, Object.fromEntries(answer.headers));
-      response.end(text);
+      response.end(bytes);
     })().catch((error: unknown) => {
       response.writeHead(500);
       response.end(String(error));
