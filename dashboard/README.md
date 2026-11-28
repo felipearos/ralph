@@ -1724,7 +1724,9 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   derived state, that controls reach the next read, and that the reads never
   call the executor. `chat-ui.e2e.test.ts` drives the chat panel against it in a headless
   chromium (`playwright-core`, the browser from Playwright's cache; skipped
-  when there is none), including a 375 px viewport.
+  when there is none), including a 375 px viewport. `cold-load.e2e.test.ts`
+  opens `/` against it with each read delayed and pins that a cold load reads
+  each polled URL once before its poll (#68).
 - `dev.ts` — `bun run dashboard:dev` serves `ui/` from source under Vite's
   dev server, with hot module replacement, so a UI edit shows up in place
   without a rebuild or a reload. React Fast Refresh keeps a component's state
@@ -1820,7 +1822,13 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   loop controls and the busy flags of the lineup catalogue and GitHub repo
   list go through it too, and the change stream drives the Query layer
   alone; a returning one-shot reader opens on loading rather than the cache,
-  so a form never seeds its draft from stale data. #738 deleted the
+  so a form never seeds its draft from stale data. Since #68 a returning
+  polling reader on data younger than its interval (the route's prefetch a
+  moment ago, or a panel remounted by the redirect from `/`) does not read
+  again: it waits out the rest of the interval, so a cold load reads each URL
+  once. A `refresh` for a URL nobody reads marks its data stale instead, so
+  the next reader still reads at once. `cold-load.e2e.test.ts` pins it in
+  chromium against the preview, with latency injected. #738 deleted the
   hand-written read store (`ui/read-store.ts`) the page had used since #603,
   so the Query layer is the only one. The notification and history panels,
   the intake page, the agents page and the labels page read through these named reads too, so a

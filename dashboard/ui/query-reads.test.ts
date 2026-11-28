@@ -1090,6 +1090,39 @@ describe("a fresh read on a cold load (#68)", () => {
     expect(net.calls).toHaveLength(2);
   });
 
+  it("re-checks skipped data within the subscribers' interval, and the stream opening does not push that back", async () => {
+    const { clock, net, store } = setup();
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    // The operator goes to another project: no stream watches this URL now.
+    leave();
+    clock.advance(4_000);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(1);
+    expect(clock.pending()).toEqual([1_000]);
+    // Back on the project, its stream opens and slows the poll to a fallback.
+    store.livePoll("/api/a", 60_000);
+    expect(clock.pending()).toEqual([1_000]);
+    clock.advance(1_000);
+    expect(net.calls).toHaveLength(2);
+    net.call(1).answer(json({ n: 2 }));
+    await flush();
+    expect(clock.pending()).toEqual([60_000]);
+  });
+
+  it("judges freshness by the subscribers' interval, not a live stream's slower one", async () => {
+    const { clock, net, store } = setup();
+    store.livePoll("/api/a", 60_000);
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    leave();
+    clock.advance(6_000);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(2);
+  });
+
   it("reads at once for a returning subscriber on an error with data, though within its interval", async () => {
     const { clock, net, store } = setup();
     const leave = store.subscribe("/api/a", 5_000, () => {});

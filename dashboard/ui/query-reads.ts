@@ -151,6 +151,12 @@ interface Entry {
   /** The pending poll timer's handle; meaningful only while `hasTimer` (a handle may be any value, even 0). */
   timer: unknown;
   hasTimer: boolean;
+  /**
+   * The pending timer re-checks data a first subscribe chose not to re-read
+   * (#68). Nothing vouches for that data since its settle (no stream may have
+   * been open), so the change stream slowing the poll must not push it back.
+   */
+  verifying: boolean;
   /** A read is on the wire (or announced and about to be), whoever started it. */
   inFlight: boolean;
   /** A refresh arrived while a read was in flight: read once more after it. */
@@ -203,7 +209,7 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
   function entryOf(url: string): Entry {
     let entry = entries.get(url);
     if (entry === undefined) {
-      entry = { read: LOADING, subscribers: new Set(), timer: undefined, hasTimer: false, inFlight: false, queued: false, liveIntervalMs: null, settledAt: null, release: null };
+      entry = { read: LOADING, subscribers: new Set(), timer: undefined, hasTimer: false, verifying: false, inFlight: false, queued: false, liveIntervalMs: null, settledAt: null, release: null };
       entries.set(url, entry);
     }
     return entry;
@@ -214,6 +220,7 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
     deps.clock.clearTimeout(entry.timer);
     entry.timer = undefined;
     entry.hasTimer = false;
+    entry.verifying = false;
   }
 
   /** The shortest live interval, read at scheduling time; null when every subscriber is one-shot. */
@@ -248,6 +255,7 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
     entry.timer = deps.clock.setTimeout(() => {
       entry.timer = undefined;
       entry.hasTimer = false;
+      entry.verifying = false;
       // A timer that fires anyway while hidden drops; the catch-up covers it.
       if (isHidden()) return;
       start(url, entry);
@@ -475,11 +483,17 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
           // it) is as fresh as the poll would keep it: wait out the rest of
           // the interval rather than read the URL twice on a cold load (#68).
           // An error, a skeleton, data a refresh marked stale, or a clock
-          // stepped back behind the settle reads now.
-          const interval = intervalMs === null ? null : intervalOf(entry);
+          // stepped back behind the settle reads now. The subscribers' own
+          // interval, never the change stream's slower fallback: no stream
+          // may have watched the URL since it settled (the operator was on
+          // another project), so the data is re-checked within one normal
+          // poll, and the stream opening meanwhile does not push that back.
+          const interval = intervalMs === null ? null : subscribedInterval(entry);
           const since = entry.settledAt === null ? null : deps.clock.now() - entry.settledAt;
-          if (interval !== null && since !== null && entry.read.state === "ready" && since >= 0 && since < interval) arm(url, entry, interval - since);
-          else start(url, entry, false);
+          if (interval !== null && since !== null && entry.read.state === "ready" && since >= 0 && since < interval) {
+            arm(url, entry, interval - since);
+            entry.verifying = entry.hasTimer;
+          } else start(url, entry, false);
         }
       } else if (!entry.inFlight && !entry.hasTimer) {
         // Every earlier subscriber was one-shot; a polling one starts the timer.
@@ -512,7 +526,7 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
         // The change stream says this data changed, and nobody reads it now:
         // the next reader must read at once, not wait out a fresh-looking
         // interval (#68). A null settle is what `livePoll` already counts as
-        // overdue; it also lets a hover prefetch it again. A read on the wire
+        // overdue. A read on the wire
         // started before the change: its settle marks the data stale instead.
         if (entry.inFlight) entry.queued = true;
         else entry.settledAt = null;
@@ -528,6 +542,9 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
       // In flight: the settle schedules with the new interval. Unread: the
       // first subscriber's read does.
       if (entry.subscribers.size === 0 || entry.inFlight) return;
+      // A re-check of data nobody vouched for (#68) is never pushed back by
+      // the stream slowing the poll; its settle arms the slow poll.
+      if (intervalMs !== null && entry.verifying) return;
       cancelTimer(entry);
       // Hidden: the change stream closing on hide lands here, and must not
       // read "overdue now"; the catch-up on show uses the new interval.
