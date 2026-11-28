@@ -8,7 +8,18 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { proposeSentinel, proposeVerifier, rulesCommitMessage, sentinelChanges, verifierChanges, type AgentsDeps } from "./agents";
+import {
+  RULES_PR_TTL_MS,
+  proposeSentinel,
+  proposeVerifier,
+  readSentinel,
+  readVerifier,
+  rulesCommitMessage,
+  sentinelChanges,
+  verifierChanges,
+  type AgentsDeps,
+  type RulesPrCache,
+} from "./agents";
 import { parseAgentConfig, pushRefusal } from "./agents-adapter";
 import { SENTINEL_RULE_DEFAULTS, VERIFIER_RULE_DEFAULTS, type RosterPrView } from "./contracts";
 
@@ -95,6 +106,8 @@ interface RulesFake {
   baseRefused?: string;
   /** The open rules PR the fallback finds. */
   open?: RosterPrView;
+  /** Why the open-PR lookup fails; it answers when unset. */
+  openFails?: string;
   prFails?: boolean;
 }
 
@@ -122,11 +135,11 @@ function rulesDeps(fake: RulesFake = {}) {
     },
     sentinelPr: () => {
       calls.push("open?");
-      return done(fake.open ?? null);
+      return fake.openFails === undefined ? done(fake.open ?? null) : Promise.resolve({ ok: false, why: fake.openFails });
     },
     verifierPr: () => {
       calls.push("open?");
-      return done(fake.open ?? null);
+      return fake.openFails === undefined ? done(fake.open ?? null) : Promise.resolve({ ok: false, why: fake.openFails });
     },
     sentinelBranch: (stamp: string) => `ralph-roster/sentinel-rules-${stamp}`,
     verifierBranch: (stamp: string) => `ralph-roster/verifier-rules-${stamp}`,
@@ -204,5 +217,115 @@ describe("a rules save", () => {
     const result = await proposeVerifier(deps, { ...VERIFIER_RULE_DEFAULTS, mode: "report" });
     expect(result).toEqual({ outcome: "proposed", pr: { url: "https://github.com/o/r/pull/9", branch: expect.any(String), state: "open" } });
     expect(calls).toEqual(["fetch", "open?", "commit on origin/main: Ralph verifier: rules", "push c0ffee1234567 rules-branch", "pr"]);
+  });
+});
+
+describe("the rules-PR cache", () => {
+  const OPEN = { url: "https://github.com/o/r/pull/3", branch: "ralph-roster/sentinel-rules-x", state: "open" as const };
+  /** Deps over the fake, with a cache on an injected clock. */
+  const cached = (fake: RulesFake) => {
+    const clock = { at: 1_000 };
+    const rulesPrs: RulesPrCache = { now: () => clock.at, entries: new Map() };
+    const { deps, calls } = rulesDeps(fake);
+    return { deps: { ...deps, rulesPrs } as AgentsDeps, calls, clock };
+  };
+  const lookups = (calls: readonly string[]) => calls.filter((call) => call === "open?").length;
+
+  it("answers the sentinel's pending PR from the cache within the TTL, and asks again after it", async () => {
+    const fake: RulesFake = { open: OPEN };
+    const { deps, calls, clock } = cached(fake);
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: OPEN } });
+    clock.at += RULES_PR_TTL_MS - 1;
+    // Closed outside the dashboard: the cache still answers it until the TTL runs out.
+    delete fake.open;
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: OPEN } });
+    expect(lookups(calls)).toBe(1);
+    clock.at += 1;
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: null } });
+    expect(lookups(calls)).toBe(2);
+  });
+
+  it("caches the verifier's lookup apart from the sentinel's", async () => {
+    const { deps, calls } = cached({ open: OPEN });
+    await readSentinel(deps);
+    expect(await readVerifier(deps)).toMatchObject({ ok: true, value: { pending: OPEN } });
+    await readVerifier(deps);
+    expect(lookups(calls)).toBe(2);
+  });
+
+  it("without a cache, asks on every read", async () => {
+    const { deps, calls } = rulesDeps({ open: OPEN });
+    await readSentinel(deps);
+    await readSentinel(deps);
+    await readVerifier(deps);
+    expect(lookups(calls)).toBe(3);
+  });
+
+  it("never caches a failed lookup, which still answers no pending PR", async () => {
+    const fake: RulesFake = { openFails: "HTTP 502" };
+    const { deps, calls } = cached(fake);
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: null } });
+    delete fake.openFails;
+    fake.open = OPEN;
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: OPEN } });
+    expect(lookups(calls)).toBe(2);
+  });
+
+  it("skips the lookup on pending skip, with the rules intact", async () => {
+    const { deps, calls } = cached({ open: OPEN });
+    const sentinel = await readSentinel(deps, { pending: "skip" });
+    const verifier = await readVerifier(deps, { pending: "skip" });
+    expect(lookups(calls)).toBe(0);
+    // Everything but the pending PR is what a full read answers.
+    const fullSentinel = await readSentinel(rulesDeps({ open: OPEN }).deps);
+    const fullVerifier = await readVerifier(rulesDeps({ open: OPEN }).deps);
+    expect(sentinel).toEqual({ ok: true, value: { ...(fullSentinel.ok ? fullSentinel.value : {}), pending: null } });
+    expect(verifier).toEqual({ ok: true, value: { ...(fullVerifier.ok ? fullVerifier.value : {}), pending: null } });
+    expect(sentinel).toMatchObject({ value: { rostered: true, configured: true, rules: { mode: "observe" } } });
+  });
+
+  it("shows a proposed PR on the next read without a new lookup", async () => {
+    const { deps, calls } = cached({ configChanges: "pr" });
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: null } });
+    const result = await proposeSentinel(deps, FILE);
+    expect(result).toMatchObject({ outcome: "proposed", pr: { url: "https://github.com/o/r/pull/9" } });
+    const before = lookups(calls);
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: { url: "https://github.com/o/r/pull/9", state: "open" } } });
+    expect(lookups(calls)).toBe(before);
+  });
+
+  it("shows a fallback PR on the next read too", async () => {
+    const { deps, calls } = cached({ baseRefused: "the branch is protected" });
+    expect(await proposeVerifier(deps, { ...VERIFIER_RULE_DEFAULTS, mode: "report" })).toMatchObject({ outcome: "proposed" });
+    const before = lookups(calls);
+    expect(await readVerifier(deps)).toMatchObject({ ok: true, value: { pending: { url: "https://github.com/o/r/pull/9" } } });
+    expect(lookups(calls)).toBe(before);
+  });
+
+  it("never lets a slow lookup overwrite what a save wrote while it ran", async () => {
+    const { deps, clock } = cached({});
+    const opened = { ...OPEN, url: "https://github.com/o/r/pull/9" };
+    // The list was asked before the save opened its PR, and answers after it.
+    const agents = {
+      ...deps.agents,
+      sentinelPr: async () => {
+        clock.at += 10;
+        deps.rulesPrs!.entries.set(`sentinel\u0000o/r`, { value: opened, at: clock.at });
+        return { ok: true as const, value: null };
+      },
+    };
+    expect(await readSentinel({ ...deps, agents })).toMatchObject({ ok: true, value: { pending: null } });
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: opened } });
+  });
+
+  it("does not let a stale cached none bypass the already-open refusal", async () => {
+    const fake: RulesFake = { configChanges: "pr" };
+    const { deps } = cached(fake);
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: null } });
+    // Opened outside the dashboard, within the TTL: the save still reads fresh.
+    fake.open = OPEN;
+    expect(await proposeSentinel(deps, FILE)).toEqual({ outcome: "refused", why: expect.stringContaining(OPEN.url) });
+    // And the fresh read refreshed the cache.
+    expect(await readSentinel(deps)).toMatchObject({ ok: true, value: { pending: OPEN } });
   });
 });

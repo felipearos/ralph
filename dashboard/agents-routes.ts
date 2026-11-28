@@ -18,12 +18,13 @@
  *     not list yet, through the same gate and `start.sh` as `POST /api/start`.
  *   - `GET /api/agents/verifier` — the verifier's rules as the base branch's
  *     config spells them, whether a roster loop is a verifier, and the open
- *     rules PR, if any. Read-only.
+ *     rules PR, if any (cached for a minute; `?pending=skip` skips the
+ *     lookup and answers `pending: null`). Read-only.
  *   - `POST /api/agents/verifier` `{ rules }` — propose new verifier rules as
  *     a PR changing only the `verifier` block's rules.
  *   - `GET /api/agents/sentinel` — the sentinel's rules as the base branch's
  *     config spells them, whether a roster loop is a sentinel, and the open
- *     rules PR, if any. Read-only.
+ *     rules PR, if any (cached and skippable as for the verifier). Read-only.
  *   - `POST /api/agents/sentinel` `{ rules }` — propose new sentinel rules as
  *     a PR changing only the `sentinel` block's rules.
  *   - `GET /api/labels` — every label the roster's loops need, which loops
@@ -101,6 +102,7 @@ import {
   rerunWorktreeSetup,
   startAgent,
   type AgentsDeps,
+  type RulesReadOptions,
   type ProjectRegistryWrite,
 } from "./agents";
 import { projectSettings } from "./settings";
@@ -198,6 +200,10 @@ export interface AgentRouteOptions {
 
 /** The agent routes that only read, and so answer GET and nothing else. */
 const READ_ONLY: readonly string[] = [AGENTS_GUIDE_PATH, AGENT_PREFLIGHT_PATH, LABELS_PATH, SETTINGS_PATH, SETTINGS_PROMPTS_PATH, SENTINEL_PANEL_PATH];
+
+/** `?pending=skip` skips the rules-PR lookup; any other value, or none, reads it. */
+const rulesReadOptions = (request: Request): RulesReadOptions =>
+  new URL(request.url).searchParams.get("pending") === "skip" ? { pending: "skip" } : {};
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -394,13 +400,13 @@ export async function handleAgentRoute(
     }
     if (pathname === LABELS_PATH) return json((await listProjectLabels(deps)) satisfies LabelsView);
     if (pathname === VERIFIER_PATH && request.method === "GET") {
-      const verifier = await readVerifier(deps);
+      const verifier = await readVerifier(deps, rulesReadOptions(request));
       if (!verifier.ok) throw new ControlRouteError(502, "VerifierUnreadable", verifier.why);
       return json(verifier.value satisfies VerifierView);
     }
     if (pathname === SENTINEL_PANEL_PATH) return json((await sentinelPanel(deps)) satisfies SentinelPanelView);
     if (pathname === SENTINEL_PATH && request.method === "GET") {
-      const sentinel = await readSentinel(deps);
+      const sentinel = await readSentinel(deps, rulesReadOptions(request));
       if (!sentinel.ok) throw new ControlRouteError(502, "SentinelUnreadable", sentinel.why);
       return json(sentinel.value satisfies SentinelView);
     }

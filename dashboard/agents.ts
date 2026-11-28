@@ -83,6 +83,8 @@ export interface AgentsDeps {
   agents: AgentsAdapter;
   /** When the agents read last fetched for each merged roster PR; the module's own when absent. */
   mergedFetches?: MergedFetches;
+  /** The last rules-PR lookup each kind and repo answered; no caching when absent. */
+  rulesPrs?: RulesPrCache;
 }
 
 /**
@@ -100,6 +102,64 @@ export interface MergedFetches {
 export const MERGED_FETCH_EVERY_MS = 60_000;
 
 const moduleMergedFetches: MergedFetches = { now: () => Date.now(), last: new Map() };
+
+/**
+ * The open rules PR each successful lookup found (or null: none open), by
+ * kind and repo, and when. `gh pr list` takes ~3 s, and the Sentinel and
+ * Verifier sheets read it on every load. Only a successful lookup is kept: an
+ * unreadable list is asked again next time.
+ */
+export interface RulesPrCache {
+  now(): number;
+  readonly entries: Map<string, { value: RosterPrView | null; at: number }>;
+}
+
+/**
+ * How long a rules-PR lookup is reused. The page reads it on cold load, not on
+ * a poll, and a save writes through (the fresh read it refuses on, and the PR
+ * it opens), so only a PR opened or closed outside the dashboard waits out
+ * the minute.
+ */
+export const RULES_PR_TTL_MS = 60_000;
+
+type RulesPrKind = "sentinel" | "verifier";
+
+// A NUL cannot appear in a repo name, so the two kinds never share a key.
+const rulesPrKey = (kind: RulesPrKind, repo: string): string => `${kind}\u0000${repo}`;
+
+const rememberRulesPr = (deps: AgentsDeps, kind: RulesPrKind, repo: string, value: RosterPrView | null): void => {
+  const cache = deps.rulesPrs;
+  if (cache !== undefined) cache.entries.set(rulesPrKey(kind, repo), { value, at: cache.now() });
+};
+
+/**
+ * The open rules PR for the read's banner: from the cache within the TTL,
+ * else the adapter's lookup, cached when it succeeds. An unreadable list is
+ * no banner (null), never an error: the proposal itself refuses on it.
+ */
+async function pendingRulesPr(
+  deps: AgentsDeps,
+  kind: RulesPrKind,
+  repo: string,
+  lookup: (repo: string) => Promise<Read<RosterPrView | null>>,
+): Promise<RosterPrView | null> {
+  const cache = deps.rulesPrs;
+  const hit = cache?.entries.get(rulesPrKey(kind, repo));
+  if (cache !== undefined && hit !== undefined && cache.now() - hit.at < RULES_PR_TTL_MS) return hit.value;
+  const asked = cache?.now() ?? 0;
+  const found = await lookup(repo);
+  if (!found.ok) return null;
+  // A save that wrote while this lookup ran knows better (it may have just
+  // opened the PR this slower list missed): never overwrite a newer entry.
+  const latest = cache?.entries.get(rulesPrKey(kind, repo));
+  if (latest === undefined || latest.at <= asked) rememberRulesPr(deps, kind, repo, found.value);
+  return found.value;
+}
+
+/** How a rules read treats the open PR: look it up (the default), or skip it and answer none. */
+export interface RulesReadOptions {
+  pending?: "read" | "skip";
+}
 
 /** A change to the registry, as the remove and worktrees-folder routes hand it over. */
 export interface ProjectRegistryWrite {
@@ -1106,8 +1166,10 @@ async function saveRules(deps: AgentsDeps, rules: RulesKind): Promise<RulesSaveR
   if (!base.ok) return refused(`cannot read the config on ${baseRef(config.value)}: ${base.why}`);
   /** Why a new rules PR may not be opened, or null when it may. */
   const prBlocked = async (): Promise<string | null> => {
+    // Always fresh, never the cache: the refusal must be exact. A good read refreshes the cache.
     const open = await rules.openPr(base.value.repo);
     if (!open.ok) return `cannot tell whether a ${kind} rules PR is open: ${open.why}`;
+    rememberRulesPr(deps, kind, base.value.repo, open.value);
     return open.value === null ? null : `a ${kind} rules PR is already open: ${open.value.url}; merge or close it first`;
   };
   const byPr = base.value.configChanges === "pr";
@@ -1125,7 +1187,10 @@ async function saveRules(deps: AgentsDeps, rules: RulesKind): Promise<RulesSaveR
 
   if (byPr) {
     const opened = await openConfigPr(deps, base.value, pr, edited.value);
-    return opened.ok ? { outcome: "proposed", pr: opened.value } : prFailed(opened.why);
+    if (!opened.ok) return prFailed(opened.why);
+    // The next read shows the new PR at once, without waiting out the TTL.
+    rememberRulesPr(deps, kind, base.value.repo, opened.value);
+    return { outcome: "proposed", pr: opened.value };
   }
 
   const changes = rules.changes(base.value);
@@ -1146,6 +1211,7 @@ async function saveRules(deps: AgentsDeps, rules: RulesKind): Promise<RulesSaveR
     { ...pr, body: `${pr.body}\n\nOpened as a PR because the dashboard could not commit to \`${base.value.baseBranch}\` directly: ${notCommitted}.` },
     commit.value,
   );
+  if (opened.ok) rememberRulesPr(deps, kind, base.value.repo, opened.value);
   return opened.ok
     ? { outcome: "proposed", pr: opened.value, notCommitted }
     : prFailed(`could not commit to ${base.value.baseBranch} directly (${notCommitted}), and then ${opened.why}`);
@@ -1158,16 +1224,16 @@ async function saveRules(deps: AgentsDeps, rules: RulesKind): Promise<RulesSaveR
  * reads — and the rules PR still open, if any. The checkout's own config may
  * be behind or ahead of that, so it is not read.
  */
-export async function readVerifier(deps: AgentsDeps): Promise<Read<VerifierView>> {
+export async function readVerifier(deps: AgentsDeps, options: RulesReadOptions = {}): Promise<Read<VerifierView>> {
   const config = await readConfig(deps);
   if (!config.ok) return { ok: false, why: `cannot read the project config: ${config.why}` };
   const base = await readBaseConfig(deps, config.value);
   if (!base.ok) return { ok: false, why: `cannot read the config on ${baseRef(config.value)}: ${base.why}` };
   // Only an open PR is pending: a merged one is already in `rules`, a closed
   // one proposes nothing. An unreadable list shows no banner; the proposal
-  // itself refuses on it.
-  const found = await deps.agents.verifierPr(base.value.repo);
-  const pending = found.ok ? found.value : null;
+  // itself refuses on it. A caller that skips the lookup shows none either.
+  const pending =
+    options.pending === "skip" ? null : await pendingRulesPr(deps, "verifier", base.value.repo, (repo) => deps.agents.verifierPr(repo));
   return {
     ok: true,
     value: {
@@ -1229,15 +1295,15 @@ export async function sentinelPanel(deps: AgentsDeps): Promise<SentinelPanelView
  * The sentinel's rules as the base branch holds them and the rules PR still
  * open, if any — as `readVerifier`, and for the same reason.
  */
-export async function readSentinel(deps: AgentsDeps): Promise<Read<SentinelView>> {
+export async function readSentinel(deps: AgentsDeps, options: RulesReadOptions = {}): Promise<Read<SentinelView>> {
   const config = await readConfig(deps);
   if (!config.ok) return { ok: false, why: `cannot read the project config: ${config.why}` };
   const base = await readBaseConfig(deps, config.value);
   if (!base.ok) return { ok: false, why: `cannot read the config on ${baseRef(config.value)}: ${base.why}` };
   // As for the verifier: an unreadable PR list shows no banner, and the
   // proposal itself refuses on it.
-  const found = await deps.agents.sentinelPr(base.value.repo);
-  const pending = found.ok ? found.value : null;
+  const pending =
+    options.pending === "skip" ? null : await pendingRulesPr(deps, "sentinel", base.value.repo, (repo) => deps.agents.sentinelPr(repo));
   return {
     ok: true,
     value: {

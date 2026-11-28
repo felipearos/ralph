@@ -1863,6 +1863,18 @@ describe("the sentinel", () => {
     expect(writes(m.gitCalls()).filter((line) => line.startsWith("push")).length).toBe(pushes);
   });
 
+  it("skips the open-PR lookup on ?pending=skip, answering no pending PR", async () => {
+    const m = sentinelMachine();
+    const url = "https://github.com/o/r/pull/4";
+    m.prs([{ url, state: "OPEN", headRefName: `${PREFIX}x` }]);
+    const response = await get(m, "/api/p/proj/agents/sentinel?pending=skip");
+    expect(response.status).toBe(200);
+    expect((await response.json()) as SentinelView).toMatchObject({ rules: { lookbackHours: 48, mode: "file" }, pending: null });
+    expect(m.ghCalls().filter((call) => call[0] === "pr" && call[1] === "list")).toEqual([]);
+    // Any other value reads it as before.
+    expect((await (await get(m, "/api/p/proj/agents/sentinel?pending=read")).json()) as SentinelView).toMatchObject({ pending: { url } });
+  });
+
   it("answers a body without an object of rules with a 400", async () => {
     const m = sentinelMachine();
     for (const body of [{}, { rules: [] }, { rules: "mode=file" }]) {
