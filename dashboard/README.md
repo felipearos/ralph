@@ -2,7 +2,8 @@
 
 A small local-only Bun HTTP server that presents the Ralph loops on one
 page: durable loop status and worktree status per loop, token usage, and each
-loop's recent journal entries, served from `GET /api/loops` as JSON and rendered
+loop's recent journal entries, served from `GET /api/dashboard` as JSON (cut
+to what the overview draws at `GET /api/loops`, #67) and rendered
 by a React shell at `GET /`. Each loop page also offers the loop controls —
 start, pause, resume, stop, approve, deny, retry, abandon, release and
 restart-to-apply — plus Stop now and the recovery that follows it: Resume work
@@ -1704,10 +1705,10 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   loops on its own port, rebuilding on `ui/` changes (`RALPH_PREVIEW_WATCH=0`
   turns that off, as `dashboard:dev` does); `/states` renders every
   loop-header state. It never touches a loop. Its loops are a canned
-  `RuntimeSnapshot`, rebuilt per read, and its loop reads (`/api/loops`, a
-  loop's panel, `/api/ownership`, `/api/frontier`) are answered by
-  `composeServer(previewServerDeps())`: the real handler and
-  `aggregateDashboard`, with every other factory a stub that refuses and an
+  `RuntimeSnapshot`, rebuilt per read, and its loop reads (`/api/dashboard`, its
+  `/api/loops` overview, a loop's panel, `/api/ownership`,
+  `/api/frontier`) are answered by `composeServer(previewServerDeps())`:
+  the real handler and `aggregateDashboard`, with every other factory a stub that refuses and an
   executor that refuses every call (#625). So the preview cannot draw a state
   the aggregate would not derive. Its command routes stay in a front layer and
   change the in-memory loops the next read derives from, and nudge the
@@ -1726,7 +1727,7 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   (`createPreviewRouter`) in-process and pins every GET row of the route table
   as previewed or deliberately not; a new row fails it until someone decides.
   `preview-compose.test.ts` composes the preview's deps in-process and pins
-  that `/api/loops` is a well-formed `Dashboard` with every canned loop and
+  that `/api/dashboard` is a well-formed `Dashboard` with every canned loop and
   derived state, that controls reach the next read, and that the reads never
   call the executor. `chat-ui.e2e.test.ts` drives the chat panel against it in a headless
   chromium (`playwright-core`, the browser from Playwright's cache; skipped
@@ -1809,7 +1810,7 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   layer also reports whether a URL's read is in flight (`inFlight`), telling
   listeners when a read starts as well as when it settles; `useReadBusy`
   carries it, opt-in so other readers do not re-render at every poll's start,
-  and the labels page's Refresh button is disabled from it. The dashboard snapshot (`useDashboard`, the factory floor and the
+  and the labels page's Refresh button is disabled from it. The dashboard overview (`useDashboard`, the factory floor and the
   change stream's refresh of it) goes through TanStack Query since #727, the
   first step of spec #722: `ui/query-reads.ts` kept the old store's rules and
   shape with a `QueryClient` as its cache, so a project's snapshot stays
@@ -1831,10 +1832,16 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   so the Query layer is the only one. The notification and history panels,
   the intake page, the agents page and the labels page read through these named reads too, so a
   failed refresh keeps their last data on screen; none polls on its own.
-  The factory floor reads every project's snapshot as `floorRead` (15 s,
+  The factory floor reads every project's overview as `floorRead` (15 s,
   through `useDashboards`, one Query-layer entry per project), on the same
   URL as `useDashboard`, so the current project costs one request per tick
-  and polls at the shell's 5 s while the shell is mounted. The lineup
+  and polls at the shell's 5 s while the shell is mounted. Beside it the
+  floor reads every project's full frontier (`floorFrontierRead`, 15 s,
+  through `useFloorFrontiers`, on the backlog page's `/api/frontier` URL),
+  since its cells draw the tree and the PRs the overview leaves out (#67).
+  The loop page reads its panel (`loopPanelRead`, `/api/loops/<loop>`) for
+  the full recent activity, and the CI and Learnings pages the full body
+  (`fullDashboardRead`, `/api/dashboard`), each only while on screen. The lineup
   (and its harness catalog, `?refresh=1` on Refresh), verifier, Jav, agent
   guide, setup defaults and GitHub repo list are one-shot reads
   (`intervalMs: null`): read on mount, again only on `reload()`, which the
@@ -1845,7 +1852,9 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   the tab is visible; on the remote page it opens `ui/version-wait.ts`
   instead, a fetch long-poll of the hosted `/api/versions` that turns each
   key whose version moved into the same event (#731). Each event refreshes the reads its key names (#729):
-  `dashboard`, `controls` (the batched controls read), `control/<loop>`,
+  `dashboard` (the overview, and the full frontier, full dashboard and
+  loop panel reads that project from the same snapshot), `controls` (the
+  batched controls read), `control/<loop>`,
   `notifications` (the project's feed and every loop's), `history/<loop>`,
   `agents`, and `_/health`, which the stream forwards from the other
   projects' hubs and which refreshes the switcher's health read. The per-loop

@@ -5,7 +5,7 @@
  * timeline says how the last hours went; the lanes are the original floor, a
  * square per agent in a lane per agent type.
  *
- * It reads each project's own snapshot (`/api/p/:id/loops`) through the
+ * It reads each project's overview (`/api/p/:id/loops`) through the
  * Query read layer (`floorRead`, `useDashboards`), the same entry the project
  * pages poll, and beside it the project's full frontier (`/api/p/:id/frontier`,
  * `useFloorFrontiers`), whose tree and PRs that overview leaves out (#67), so

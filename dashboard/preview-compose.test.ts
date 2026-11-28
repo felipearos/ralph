@@ -4,8 +4,7 @@
  *
  * The preview answers `/api/dashboard`, its `/api/loops` overview and a
  * loop's panel by composing the server over a canned runtime snapshot, so
- * the page shows what `aggregateDashboard`
- * derives rather than a hand-written `Dashboard`. These tests pin that: the
+ * the page shows what `aggregateDashboard` derives rather than a hand-written `Dashboard`. These tests pin that: the
  * composed read is a well-formed `Dashboard` holding every canned loop and
  * every derived state the preview exists to draw, the control buttons still
  * act on the in-memory loops that read sees, and the reads never call the

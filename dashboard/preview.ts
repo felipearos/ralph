@@ -12,9 +12,10 @@
  * timestamps stay relative to it and the page always looks live. The loop
  * reads (`/api/loops`, `/api/dashboard`, a loop's panel, ownership, frontier)
  * are answered by the real server, composed over that snapshot with no
- * process behind it, so every panel is what `aggregateDashboard` derives. The control buttons act
- * on an in-memory copy of the snapshot's facts. The lineup editor reads the
- * harness's real `models.json`, but a save only validates: it never writes.
+ * process behind it, so every panel is what `aggregateDashboard` derives.
+ * The control buttons act on an in-memory copy of the snapshot's facts.
+ * The lineup editor reads the harness's real `models.json`, but a save only
+ * validates: it never writes.
  *
  * It serves several canned projects, so the project rail and the CI health
  * page can be clicked through over different shapes: "preview", the gallery

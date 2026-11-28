@@ -15,8 +15,8 @@
  * keep zero imports, and a row here names contract types and the command
  * parsers. It may import only `./contracts`, the parser leaf
  * `./command-requests` and the overview projection `./overview` (which itself
- * reaches only the contracts): the Vercel function bundles it and so will the UI's
- * browser bundle, so no `node:` module, no package and no CLI, filesystem or
+ * reaches only the contracts): the Vercel function bundles it and so will
+ * the UI's browser bundle, so no `node:` module, no package and no CLI, filesystem or
  * process code may sit behind it. That is also why `/api/projects/health` is
  * spelled as a literal below instead of read from `routes.ts`; the test pins
  * that the two agree.
