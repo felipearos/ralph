@@ -94,7 +94,7 @@ describe('a roster that mixes roles', () => {
 
   it("leaves an issue a role loop claimed out of the coders' ready set", () => {
     const raw = [issue(1, ['ready-for-agent']), issue(2, ['ready-for-agent', 'tria-wip']), issue(3, ['ready-for-agent', 'doc-wip'])];
-    const frontier = classify(buildTickets(raw, raw.map(() => [])), []);
+    const frontier = classify(buildTickets(raw, raw.map(() => [])), [], {});
     expect(frontier.readyTasks.map((ticket) => ticket.number)).toEqual([1]);
     expect(frontier.inFlight.map((ticket) => ticket.number).sort()).toEqual([2, 3]);
   });

@@ -137,7 +137,7 @@ const stripAnsi = (s: string): string => s.replace(/\x1b\[\d+m/g, '');
  * branch under test is the branch that ships.
  */
 const show = (tickets: Map<number, Ticket>, closedChildParents: number[] = []): string =>
-  stripAnsi(render(tickets, classify(tickets, closedChildParents)));
+  stripAnsi(render(tickets, classify(tickets, closedChildParents, {})));
 
 /** The READY NOW block alone — later sections legitimately repeat a number. */
 const readySection = (out: string): string =>
@@ -316,7 +316,7 @@ describe('cross-repository references (#22)', () => {
       ];
       expect(tickets.get(1)!.droppedReferences).toEqual(references);
       expect(tickets.get(2)!.droppedReferences).toEqual([]);
-      expect(frontierReport(tickets, classify(tickets, []), []).dropped).toEqual([
+      expect(frontierReport(tickets, classify(tickets, [], {}), []).dropped).toEqual([
         { number: 1, title: 'moved', references },
       ]);
     });
@@ -838,7 +838,7 @@ describe('render', () => {
     // its branch: the branch alone must keep the ticket from a second loop.
     const raw = [issue(1, 'lost its label', '', ['ready-for-agent'])];
     const tickets = buildTickets(raw, [[]], new Set(), [], new Map([[1, branchClaim('rafa/1-lost-its-label')]]));
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     expect(frontier.inFlight.map((t) => t.number)).toEqual([1]);
     expect(frontier.readyTasks).toEqual([]);
     expect(frontier.claimed.has(1)).toBe(true);
@@ -846,6 +846,38 @@ describe('render', () => {
     expect(out).toContain('READY NOW — nothing');
     expect(out).toContain('IN FLIGHT');
     expect(out).toContain('branch rafa/1-lost-its-label');
+  });
+
+  it('checks a -wip claim against the leases it is given, not the host store (#72)', () => {
+    // With no lease the label alone claims the ticket; an expired lease for the
+    // same number releases it. Injected, so the host's live store — shared by
+    // every loop on it — cannot turn a fixture's wip ticket ready by accident.
+    const raw = [issue(5, 'claimed', '', ['ready-for-agent', 'remo-wip'])];
+    const tickets = buildTickets(raw, [[]]);
+
+    const held = classify(tickets, [], {});
+    expect(held.claimed.has(5)).toBe(true);
+    expect(held.inFlight.map((t) => t.number)).toEqual([5]);
+    expect(held.readyTasks).toEqual([]);
+
+    const store: LeaseStore = { version: 1, leases: {} };
+    claimLease(store, {
+      issue: 5,
+      run: 'remo-run-1',
+      loop: 'remo',
+      pid: null,
+      worktree: '/tmp/acme-remo',
+      branch: null,
+      claim: 'remo-wip',
+      nowMs: Date.parse('2026-01-01T00:00:00Z'),
+      leaseMs: 1_000,
+    });
+    expect(leaseStatus(store.leases['5']!, { nowMs: Date.now() })).toBe('expired');
+
+    const released = classify(tickets, [], store.leases);
+    expect(released.claimed.has(5)).toBe(false);
+    expect(released.inFlight).toEqual([]);
+    expect(released.readyTasks.map((t) => t.number)).toEqual([5]);
   });
 
   it('leaves a ticket READY NOW when its linked PR is merged or closed', () => {
@@ -1013,7 +1045,7 @@ describe('what waits on the operator', () => {
       issue(125, 'Agent guide', '', []),
     ];
     const tickets = buildTickets(raw, [[], [], [], []]);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const ownership = { held: new Set([166]), triager: false };
 
     const report = frontierReport(tickets, frontier, [], new Map(), [], 'felipearosr', ownership);
@@ -1044,7 +1076,7 @@ describe('what waits on the operator', () => {
       issue(7, 'Spec: something', '', ['spec', 'ready-for-human']),
     ];
     const tickets = buildTickets(raw, raw.map(() => []));
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const empty = { ticket: null, tickets: [], bucket: null, claimed: false, obstructed: [] };
 
     it('counts one per reason, the same set the report lists', () => {
@@ -1089,7 +1121,7 @@ describe('what waits on the operator', () => {
 
   it('marks labels only for a caller that read no plan and no roster', () => {
     const tickets = buildTickets([issue(1, 'a', '', ['ready-for-human']), issue(2, 'b', '', [])], [[], []]);
-    const report = frontierReport(tickets, classify(tickets, []), []);
+    const report = frontierReport(tickets, classify(tickets, [], {}), []);
     expect(report.human).toEqual([{ number: 1, title: 'a', reason: 'ready-for-human' }]);
   });
 
@@ -1118,7 +1150,7 @@ describe('frontierReport', () => {
       issue(561, 'Stuck off the queue', '', ['rafa-blocked']),
     ];
     const tickets = buildTickets(raw, [[], [], [], [], [{ number: 550, state: 'open' }], [{ number: 560, state: 'open' }], [], []]);
-    const report = frontierReport(tickets, classify(tickets, []), []);
+    const report = frontierReport(tickets, classify(tickets, [], {}), []);
 
     expect(report.ready).toEqual([
       {
@@ -1140,7 +1172,7 @@ describe('frontierReport', () => {
     expect(report.gates).toEqual([{ number: 560, title: 'Gate off the queue' }]);
     expect(report.stuck).toEqual([{ number: 561, title: 'Stuck off the queue', label: 'rafa-blocked' }]);
     // The tree is the same backlog by spec, in buildTree's own order.
-    expect(report.tree).toEqual(classify(tickets, []) && buildTree(tickets, classify(tickets, []), []));
+    expect(report.tree).toEqual(classify(tickets, [], {}) && buildTree(tickets, classify(tickets, [], {}), []));
     expect(report.tree.find((g) => g.spec?.number === 542)?.roots.map((n) => [n.number, n.state, n.heldBy])).toEqual([
       [544, 'ready', null],
       [545, 'occupied', 544],
@@ -1156,7 +1188,7 @@ describe('frontierReport', () => {
       issue(11, 'Fenced by a PR', ''),
     ];
     const tickets = buildTickets(raw, [[], []], new Set(), [{ number: 99, closingIssuesReferences: [{ number: 11 }] }]);
-    const report = frontierReport(tickets, classify(tickets, []), []);
+    const report = frontierReport(tickets, classify(tickets, [], {}), []);
     expect(report.inFlight).toEqual([
       { number: 10, title: 'Taken by hand', loop: null, claim: 'assigned to felipearosr', queued: true },
       { number: 11, title: 'Fenced by a PR', loop: null, claim: 'PR #99', queued: true },
@@ -1166,7 +1198,7 @@ describe('frontierReport', () => {
   it('names a live loop branch claim after the PR, without inventing a loop', () => {
     const raw = [issue(12, 'Fenced by a branch', '', ['ready-for-agent'])];
     const tickets = buildTickets(raw, [[]], new Set(), [], new Map([[12, branchClaim('rafa/12-x')]]));
-    const report = frontierReport(tickets, classify(tickets, []), []);
+    const report = frontierReport(tickets, classify(tickets, [], {}), []);
     expect(report.inFlight).toEqual([
       { number: 12, title: 'Fenced by a branch', loop: null, claim: 'branch rafa/12-x', queued: true },
     ]);
@@ -1182,7 +1214,7 @@ describe('frontierReport', () => {
     const tickets = buildTickets(raw, [[], [], [], []]);
     const migration = { kind: 'migration' as const, reason: 'needs-migration: apply drizzle/0062_x.sql', pr: 1242, migration: 'drizzle/0062_x.sql', at: null };
     const other = { kind: 'other' as const, reason: 'Blocked: red CI', pr: 1276, migration: null, at: null };
-    const report = frontierReport(tickets, classify(tickets, []), [], new Map<number, BlockReason>([[20, migration], [21, other]]));
+    const report = frontierReport(tickets, classify(tickets, [], {}), [], new Map<number, BlockReason>([[20, migration], [21, other]]));
     expect(report.stuckReasons).toEqual([
       { number: 20, title: 'Needs a migration', ...migration, park: null },
       { number: 21, title: 'Red CI', ...other, park: null },
@@ -1220,7 +1252,7 @@ describe('untriaged', () => {
 
   it('lists unlabelled ready and occupied tickets, and never claimed, stuck, spec, blocked or unqueued ones', () => {
     const t = tickets();
-    const frontier = classify(t, []);
+    const frontier = classify(t, [], {});
     // #4 is OCCUPIED behind #3 (one legacy tree): unblocked, unclaimed, still unrouted.
     expect(frontier.occluded.map((x) => x.number)).toEqual([4]);
     expect(untriagedTickets(frontier, JAV).map((x) => x.number)).toEqual([1, 4]);
@@ -1256,7 +1288,7 @@ describe('untriaged', () => {
       new Set(),
       [{ number: 500, closingIssuesReferences: [{ number: 11 }] }],
     );
-    const frontier = classify(t, []);
+    const frontier = classify(t, [], {});
     // Both filings are ready and unlabelled, so only the exemption keeps them
     // out — #1 and #4 are the controls, the same two the case above lists.
     expect(frontier.readyTasks.map((x) => x.number)).toEqual(expect.arrayContaining([1, 12, 13]));
@@ -1269,7 +1301,7 @@ describe('untriaged', () => {
 
   it('leaves the report as it was when no Jav labels are configured', () => {
     const t = tickets();
-    const frontier = classify(t, []);
+    const frontier = classify(t, [], {});
     expect(untriagedTickets(frontier, [])).toEqual([]);
     expect(stripAnsi(render(t, frontier, []))).toBe(stripAnsi(render(t, frontier)));
     expect(stripAnsi(render(t, frontier))).not.toContain('UNTRIAGED');
@@ -1278,7 +1310,7 @@ describe('untriaged', () => {
 
   it('changes nothing a coder picks: the frontier, its candidates and every other bucket stay the same', () => {
     const t = tickets();
-    const frontier = classify(t, []);
+    const frontier = classify(t, [], {});
     const before = {
       ready: frontier.readyTasks.map((x) => x.number),
       occluded: frontier.occluded.map((x) => x.number),
@@ -1432,7 +1464,7 @@ describe('claim set', () => {
     // could not detect a print/claim divergence, which is the guarantee the
     // shared Frontier exists to give.
     const tickets = buildTickets(raw, [[], [], [], []]);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const out = stripAnsi(render(tickets, frontier));
     const claimed = frontier.readyTasks.map((t) => t.number);
 
@@ -1484,7 +1516,7 @@ const frontierOf = (raw: RawIssue[], closedChildParents: number[] = []) => {
     raw,
     raw.map(() => []),
   );
-  return { tickets, frontier: classify(tickets, closedChildParents) };
+  return { tickets, frontier: classify(tickets, closedChildParents, {}) };
 };
 
 /**
@@ -1805,7 +1837,7 @@ describe('takeOneCandidates', () => {
     const raw = [issue(1, 'has a PR', ''), issue(2, 'free', '')];
     const prs: OpenPullRequest[] = [{ number: 742, closingIssuesReferences: [{ number: 1 }] }];
     const tickets = buildTickets(raw, [[], []], new Set(), prs);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     expect(takeOneCandidates(frontier).map((t) => t.number)).toEqual([2]);
   });
 
@@ -1821,7 +1853,7 @@ describe('takeOneCandidates', () => {
     const raw = splitSpec();
     const prs: OpenPullRequest[] = [{ number: 375, closingIssuesReferences: [], references: [{ number: 373 }] }];
     const tickets = buildTickets(raw, raw.map(() => []), new Set(), prs);
-    expect(takeOneCandidates(classify(tickets, [])).map((t) => t.number)).toEqual([400]);
+    expect(takeOneCandidates(classify(tickets, [], {})).map((t) => t.number)).toEqual([400]);
     expect(tickets.get(381)!.openPullRequest).toBe(375);
     expect(tickets.get(382)!.openPullRequest).toBe(375);
   });
@@ -1830,7 +1862,7 @@ describe('takeOneCandidates', () => {
     const raw = splitSpec();
     const prs: OpenPullRequest[] = [{ number: 375, closingIssuesReferences: [{ number: 373 }] }];
     const tickets = buildTickets(raw, raw.map(() => []), new Set(), prs);
-    expect(takeOneCandidates(classify(tickets, [])).map((t) => t.number)).toEqual([400]);
+    expect(takeOneCandidates(classify(tickets, [], {})).map((t) => t.number)).toEqual([400]);
     expect(tickets.get(381)!.openPullRequest).toBe(375);
     expect(tickets.get(382)!.openPullRequest).toBe(375);
   });
@@ -1911,7 +1943,7 @@ describe('priority:urgent', () => {
 
   const offered = (raw: RawIssue[], excluded: number[] = []): number[] => {
     const tickets = withClosed99(raw);
-    return takeOneCandidates(classify(tickets, []), new Set(excluded)).map((t) => t.number);
+    return takeOneCandidates(classify(tickets, [], {}), new Set(excluded)).map((t) => t.number);
   };
 
   it('offers the urgent ticket before every other READY NOW group', () => {
@@ -1926,7 +1958,7 @@ describe('priority:urgent', () => {
 
   it('prints the urgent ticket first under READY NOW, tagged', () => {
     const tickets = withClosed99(threeGroups());
-    const ready = readySection(stripAnsi(render(tickets, classify(tickets, []))));
+    const ready = readySection(stripAnsi(render(tickets, classify(tickets, [], {}))));
 
     // The whole printed order, not just "#40 before #10": the weaker
     // assertion also passes with the urgent key demoted below `hasProgress`,
@@ -1939,7 +1971,7 @@ describe('priority:urgent', () => {
 
   it('leaves URGENT off every line when no ticket carries the label', () => {
     const tickets = withClosed99(threeGroups(['ready-for-agent']));
-    expect(stripAnsi(render(tickets, classify(tickets, [])))).not.toContain('URGENT');
+    expect(stripAnsi(render(tickets, classify(tickets, [], {})))).not.toContain('URGENT');
   });
 
   it('picks an urgent member over a sibling that frees more work', () => {
@@ -1972,7 +2004,7 @@ describe('priority:urgent', () => {
     const tickets = buildTickets(raw, [[], []], new Set(), [
       { number: 742, closingIssuesReferences: [{ number: 40 }] },
     ]);
-    expect(takeOneCandidates(classify(tickets, [])).map((t) => t.number)).toEqual([10]);
+    expect(takeOneCandidates(classify(tickets, [], {})).map((t) => t.number)).toEqual([10]);
   });
 
   it('is not offered when it is stuck', () => {
@@ -1985,7 +2017,7 @@ describe('priority:urgent', () => {
       raw,
       raw.map(() => []),
     );
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
 
     expect(takeOneCandidates(frontier).map((t) => t.number)).not.toContain(40);
     expect(frontier.blocked.map((t) => t.number)).toContain(40);
@@ -2000,7 +2032,7 @@ describe('priority:urgent', () => {
     // restates the list, and before this it restated `readyTasks`, which
     // carries none of the ordering keys.
     const tickets = withClosed99(threeGroups());
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const out = stripAnsi(renderTree(tickets, frontier, buildTree(tickets, frontier, [])));
 
     expect(out).toContain('READY NOW — #40 URGENT #20 #10');
@@ -2048,7 +2080,7 @@ describe('priority:urgent', () => {
 
   it('marks the urgent ticket in the JSON report, and only it', () => {
     const tickets = withClosed99(threeGroups());
-    const report = frontierReport(tickets, classify(tickets, []), []);
+    const report = frontierReport(tickets, classify(tickets, [], {}), []);
     const ready = report.ready.flatMap((group) => group.tickets);
 
     expect(ready[0]).toEqual({ number: 40, title: 'the urgent one', frees: 0, urgent: true, stuck: null });
@@ -2059,7 +2091,7 @@ describe('priority:urgent', () => {
     // `toEqual` fails on a present-but-false key, which is the assertion: the
     // dashboard's document is unchanged for a project that never files one.
     const tickets = withClosed99(threeGroups(['ready-for-agent']));
-    const report = frontierReport(tickets, classify(tickets, []), []);
+    const report = frontierReport(tickets, classify(tickets, [], {}), []);
 
     for (const ticket of report.ready.flatMap((group) => group.tickets)) {
       expect(Object.keys(ticket).sort()).toEqual(['frees', 'number', 'stuck', 'title']);
@@ -3133,6 +3165,7 @@ describe('tree', () => {
       closed
         .map((c) => parseParent(c.body))
         .filter((n): n is number => n !== null),
+      {},
     );
     return buildTree(tickets, frontier, closed);
   };
@@ -3352,7 +3385,7 @@ describe('tree', () => {
   it('gives a COMPLETE line a name even when the spec cannot be named', () => {
     const raw = [issue(11, 'child', parentedBy(999))];
     const tickets = buildTickets(raw, [[]]);
-    const frontier = classify(tickets, [999]);
+    const frontier = classify(tickets, [999], {});
     const out = stripAnsi(renderTree(tickets, frontier, buildTree(tickets, frontier, [])));
     expect(out).toContain('#999  (outside the fetched graph)');
   });
@@ -3421,7 +3454,7 @@ describe('tree', () => {
     // empty-frontier note said the opposite of the truth about it.
     const raw = [issue(11, 'wedged', '', ['ready-for-agent', 'ralph-blocked'])];
     const tickets = buildTickets(raw, [[]]);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const out = stripAnsi(renderTree(tickets, frontier, buildTree(tickets, frontier, [])));
     expect(out).not.toContain('1 open ticket not labelled');
     // Both real labels, never the docs placeholder: this line is read in a
@@ -3466,7 +3499,7 @@ describe('tree', () => {
       [],
       new Map([[10, branchClaim('rafa/10-held')]]),
     );
-    const groups = buildTree(tickets, classify(tickets, []), []);
+    const groups = buildTree(tickets, classify(tickets, [], {}), []);
     const held = groups.flatMap((g) => g.roots).find((r) => r.number === 10)!;
     expect(held.state).toBe('in-flight');
     expect(held.detail).toBe('branch rafa/10-held');
@@ -3512,7 +3545,7 @@ describe('tree', () => {
       issue(12, 'waiting', parentedBy(10, [11])),
     ];
     const tickets = buildTickets(raw, [[], [], []]);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const out = stripAnsi(renderTree(tickets, frontier, buildTree(tickets, frontier, [])));
     expect(out).toContain('gates work but is not ready-for-agent');
     expect(out).toContain('prose-only edges');
@@ -3522,7 +3555,7 @@ describe('tree', () => {
     // --tree replaces the flat sections, and READY NOW is the tool's promise.
     const raw = [issue(10, 'spec', '', ['spec']), issue(11, 'startable', parentedBy(10))];
     const tickets = buildTickets(raw, [[], []]);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const out = stripAnsi(renderTree(tickets, frontier, buildTree(tickets, frontier, [])));
     expect(out).toContain('READY NOW — #11');
   });
@@ -3532,7 +3565,7 @@ describe('tree', () => {
     // work under a page of them.
     const raw = [issue(10, 'spec', '', ['spec'])];
     const tickets = buildTickets(raw, [[]]);
-    const frontier = classify(tickets, [10]);
+    const frontier = classify(tickets, [10], {});
     const out = stripAnsi(
       renderTree(tickets, frontier, buildTree(tickets, frontier, [done(9, 'merged', 10)])),
     );
@@ -3636,7 +3669,7 @@ describe('readFrontierInputs', () => {
     expect(commands).toHaveLength(4);
     expect(nativeCalls).toEqual([]);
     const tickets = buildTickets(inputs.raw, inputs.natives, new Set(inputs.closed.map((i) => i.number)), inputs.openPrs);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     expect(frontier.readyTasks.map((ticket) => ticket.number)).toContain(1);
     expect(frontier.blocked.map((ticket) => ticket.number)).toContain(2);
     expect(frontier.inFlight.map((ticket) => ticket.number)).toContain(4);
@@ -4367,7 +4400,7 @@ describe('roleUnits', () => {
       new Set(),
       [],
     );
-  const classified = () => classify(ticketsOf(), []);
+  const classified = () => classify(ticketsOf(), [], {});
   const numbers = (units: FrontierUnit[]): number[] => units.flatMap((u) => u.tickets.map((t) => t.number));
   const JAV = ['difficulty:easy', 'difficulty:hard'];
 
@@ -4541,7 +4574,7 @@ describe('triagerUnits', () => {
       const tickets = buildTickets(raw, [[], []], new Set(), [
         { number: 500, closingIssuesReferences: [{ number: 2 }] },
       ]);
-      const frontier = classify(tickets, []);
+      const frontier = classify(tickets, [], {});
       expect(
         triagerUnits(tickets, frontier, { javLabels: JAV, owner: 'felipearosr' }).flatMap((u) =>
           u.tickets.map((t) => t.number),
@@ -4839,7 +4872,7 @@ describe('triageBuckets — rescue', () => {
     const tickets = buildTickets(raw, raw.map(() => []), new Set<number>(), [
       { number: 900, closingIssuesReferences: [{ number: 4 }] },
     ]);
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     expect(
       triageBuckets(tickets, frontier, { javLabels: JAV, owner: 'felipearosr', coders: CODERS, now: NOW }).rescue,
     ).toEqual([]);

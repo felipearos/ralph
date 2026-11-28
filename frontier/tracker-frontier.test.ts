@@ -58,7 +58,7 @@ async function frontierOf(options: FakeTrackerOptions, key: string | null, heads
   useReferenceKey(key);
   const inputs = await readKeyedFrontierInputs(tracker, { gh: async () => JSON.stringify(heads) });
   const tickets = buildTickets(inputs.raw, inputs.natives, new Set(inputs.closed.map((issue) => issue.number)), inputs.openPrs);
-  const frontier = classify(tickets, inputs.closed.map((issue) => parseParent(issue.body)).filter((n): n is number => n !== null));
+  const frontier = classify(tickets, inputs.closed.map((issue) => parseParent(issue.body)).filter((n): n is number => n !== null), {});
   return { tracker, tickets, frontier };
 }
 

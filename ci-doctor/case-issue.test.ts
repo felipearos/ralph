@@ -654,7 +654,7 @@ describe("AC 1 — what a coder's frontier offers", () => {
   });
 
   const buckets = (raw: RawIssue[]) => {
-    const frontier = classify(buildTickets(raw, raw.map(() => [])), []);
+    const frontier = classify(buildTickets(raw, raw.map(() => [])), [], {});
     const numbers = (tickets: { number: number }[]): number[] => tickets.map((ticket) => ticket.number);
     return {
       ready: numbers(frontier.readyTasks),

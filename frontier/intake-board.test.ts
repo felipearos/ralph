@@ -95,7 +95,7 @@ async function offeredTo(tracker: FakeTracker, loop: string): Promise<number[]> 
   useReferenceKey("OAI");
   const inputs = await readKeyedFrontierInputs(tracker, { gh: async () => "[]" });
   const tickets = buildTickets(inputs.raw, inputs.natives, new Set(inputs.closed.map((issue) => issue.number)), inputs.openPrs);
-  const frontier = classify(tickets, inputs.closed.map((issue) => parseParent(issue.body)).filter((n): n is number => n !== null));
+  const frontier = classify(tickets, inputs.closed.map((issue) => parseParent(issue.body)).filter((n): n is number => n !== null), {});
   const units = roleUnits("coder", tickets, frontier, { route: javLabelsFor(JAV, loop), javLabels: () => JAV.labels });
   return units.flatMap((unit) => unit.tickets.map((ticket) => ticket.number));
 }
@@ -113,7 +113,7 @@ describe("coder loops on the intake board", () => {
     useFrontierTracker(tracker, "OAI", async () => [], SCOPE);
     const inputs = await readKeyedFrontierInputs(tracker, { gh: async () => "[]" });
     const tickets = buildTickets(inputs.raw, inputs.natives, new Set(), inputs.openPrs);
-    const units = roleUnits("coder", tickets, classify(tickets, []), { route: null });
+    const units = roleUnits("coder", tickets, classify(tickets, [], {}), { route: null });
     expect(units.flatMap((unit) => unit.tickets.map((ticket) => ticket.number))).toEqual([7]);
   });
 

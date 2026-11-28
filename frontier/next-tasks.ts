@@ -1002,10 +1002,17 @@ export function classify(
    * the mistake would write to the tracker rather than merely misprint.
    */
   closedChildParents: number[],
+  /**
+   * The claim leases a `-wip` label is checked against (#72). Required, like
+   * `closedChildParents`: the live store sits in the git common dir every loop
+   * on the host shares, and a test that silently read it turned a fixture's
+   * wip ticket ready whenever an expired lease there shared its number. The
+   * CLI passes the host store; tests pass their own.
+   */
+  leases: Readonly<Record<string, ClaimLease>>,
 ): Frontier {
   const dependents = buildDependents(tickets);
   const all = [...tickets.values()];
-  const leases = readLeaseStore(leasePathFromGit()).leases;
 
   // A ticket is claimed by any loop's `-wip` OR by a GitHub assignee OR by an
   // open PR that closes or references it or its parent: `ralph/prompt.md` treats an assignee as another
@@ -4485,6 +4492,7 @@ async function main(): Promise<void> {
   const frontier = classify(
     tickets,
     closed.map((i) => parseParent(i.body ?? "")).filter((n): n is number => n !== null),
+    readLeaseStore(leasePathFromGit()).leases,
   );
 
   // Only tickets that actually have a linked PR reach this, so it stays cheap.
