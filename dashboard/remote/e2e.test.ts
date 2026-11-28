@@ -28,7 +28,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -114,6 +114,8 @@ interface LocalCall {
   body: Record<string, unknown> | null;
   status: number;
   text: string;
+  /** The Content-Encoding the handler answered with, so a case can see the bridge read compressed bytes. */
+  encoding: string | null;
 }
 
 /**
@@ -234,10 +236,14 @@ async function startMachine() {
           ...(method === "GET" || method === "HEAD" ? {} : { body: new Uint8Array(raw) }),
         }),
       );
-      const text = await answer.text();
-      calls.push({ method, path: new URL(url).pathname, body: method === "POST" ? (JSON.parse(raw.toString("utf8")) as Record<string, unknown>) : null, status: answer.status, text });
+      // The bytes go to the bridge as the handler encoded them (#69): reading
+      // them as text would mangle a compressed body under its Content-Encoding.
+      const bytes = Buffer.from(await answer.arrayBuffer());
+      const encoding = answer.headers.get("content-encoding");
+      const text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString("utf8");
+      calls.push({ method, path: new URL(url).pathname, body: method === "POST" ? (JSON.parse(raw.toString("utf8")) as Record<string, unknown>) : null, status: answer.status, text, encoding });
       response.writeHead(answer.status, Object.fromEntries(answer.headers));
-      response.end(text);
+      response.end(bytes);
     })().catch((error: unknown) => {
       response.writeHead(500);
       response.end(String(error));
@@ -546,6 +552,9 @@ describe("the remote dashboard, end to end", () => {
     );
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(fresh.version).toBeGreaterThan(before.version);
+    // The bridge asks with fetch's own Accept-Encoding, so its dashboard read
+    // came back compressed and it still pushed the snapshot it decoded (#69).
+    expect(machine.calls.some((call) => call.method === "GET" && call.encoding !== null)).toBe(true);
     const viewerWakes = await until(
       async () => hubServer.hub.delivered.slice(wakes).filter((wake) => wake.event === "viewer"),
       (found) => found.length > 0,
