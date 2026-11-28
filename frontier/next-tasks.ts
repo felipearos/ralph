@@ -1002,10 +1002,16 @@ export function classify(
    * the mistake would write to the tracker rather than merely misprint.
    */
   closedChildParents: number[],
+  /**
+   * The claim leases a `-wip` label is checked against (#72). Injected so a
+   * test passes its own: the default is the host's live store in the git
+   * common dir, and an expired lease there for a fixture's issue number would
+   * turn the fixture's wip ticket unclaimed on a host-state accident.
+   */
+  leases: Readonly<Record<string, ClaimLease>> = readLeaseStore(leasePathFromGit()).leases,
 ): Frontier {
   const dependents = buildDependents(tickets);
   const all = [...tickets.values()];
-  const leases = readLeaseStore(leasePathFromGit()).leases;
 
   // A ticket is claimed by any loop's `-wip` OR by a GitHub assignee OR by an
   // open PR that closes or references it or its parent: `ralph/prompt.md` treats an assignee as another

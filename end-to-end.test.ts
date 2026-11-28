@@ -2205,7 +2205,7 @@ const pickAndClaim = async (tracker: FakeTracker, expected: number, key = "AND")
   useFrontierTracker(tracker, key, async () => []);
   const inputs = await readKeyedFrontierInputs(tracker, { gh: async () => "[]" });
   const tickets = buildTickets(inputs.raw, inputs.natives, new Set(inputs.closed.map((issue) => issue.number)), inputs.openPrs);
-  const [pick] = takeOneCandidates(classify(tickets, []));
+  const [pick] = takeOneCandidates(classify(tickets, [], {}));
   expect(pick?.number).toBe(expected);
   const claim = await claimByNumber(pick!.number, "ralph-wip", {
     readLive: readLiveIssue,
@@ -2283,7 +2283,7 @@ describe("a coder iteration on a Linear project", () => {
     // Its dependent is free now: the next census offers it.
     const next = await readKeyedFrontierInputs(tracker, { gh: async () => "[]" });
     const after = buildTickets(next.raw, next.natives, new Set(next.closed.map((issue) => issue.number)), next.openPrs);
-    expect(takeOneCandidates(classify(after, [])).map((ticket) => ticket.number)).toEqual([185]);
+    expect(takeOneCandidates(classify(after, [], {})).map((ticket) => ticket.number)).toEqual([185]);
   });
 
   it("parks a stuck ticket blocked, with the reason on it, and keeps its state for a human", async () => {
@@ -2341,7 +2341,7 @@ describe("a coder iteration on a Linear project", () => {
     const census = async () => {
       const inputs = await readKeyedFrontierInputs(tracker, { gh: async () => "[]" });
       const tickets = buildTickets(inputs.raw, inputs.natives, new Set(inputs.closed.map((issue) => issue.number)), inputs.openPrs);
-      return { tickets, frontier: classify(tickets, []) };
+      return { tickets, frontier: classify(tickets, [], {}) };
     };
     const rescue = async (parked: boolean): Promise<number[]> => {
       const { tickets, frontier } = await census();
@@ -2495,7 +2495,7 @@ describe("a Slack report through the intake board, from filing to a valuable out
     useFrontierTracker(waiting, "OAI", async () => []);
     const census = await readKeyedFrontierInputs(waiting, { gh: async () => "[]" });
     const unconfirmed = buildTickets(census.raw, census.natives, new Set(), census.openPrs);
-    expect(takeOneCandidates(classify(unconfirmed, []))).toEqual([]);
+    expect(takeOneCandidates(classify(unconfirmed, [], {}))).toEqual([]);
 
     // 3. A person confirms it on the board; the gate's next poll makes it ready.
     Object.assign(ticketOf(key), { status: "Confirmado", statusCategory: "indeterminate" });
