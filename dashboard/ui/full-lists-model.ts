@@ -23,7 +23,7 @@ export type FullListView<T> = { kind: "loading" } | { kind: "error"; message: st
  */
 export function fullListView<T>(read: Read<T>): FullListView<T> {
   if (read.state === "loading") return { kind: "loading" };
-  if (read.state === "error" && read.data === null) return { kind: "error", message: read.message };
+  if (read.state === "error" && read.data === null && read.answered !== true) return { kind: "error", message: read.message };
   return { kind: "data", data: read.data as T };
 }
 

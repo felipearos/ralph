@@ -148,27 +148,39 @@ describe("the query reads", () => {
     clock.advance(1_000);
     net.call(1).answer(json({ message: "adapter down", error: "ignored" }, { status: 503 }));
     await flush();
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "adapter down", status: 503, data: { n: 1 } });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "adapter down", status: 503, data: { n: 1 }, answered: true });
 
     clock.advance(1_000);
     net.call(2).answer(json({ error: "not set up" }, { status: 409 }));
     await flush();
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "not set up", status: 409, data: { n: 1 } });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "not set up", status: 409, data: { n: 1 }, answered: true });
 
     clock.advance(1_000);
     net.call(3).answer(new Response("<html>bad gateway</html>", { status: 502 }));
     await flush();
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "HTTP 502", status: 502, data: { n: 1 } });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "HTTP 502", status: 502, data: { n: 1 }, answered: true });
 
     clock.advance(1_000);
     net.call(4).fail(new TypeError("network down"));
     await flush();
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "network down", status: null, data: { n: 1 } });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "network down", status: null, data: { n: 1 }, answered: true });
 
     clock.advance(1_000);
     net.call(5).fail("plain string");
     await flush();
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "plain string", status: null, data: { n: 1 } });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "plain string", status: null, data: { n: 1 }, answered: true });
+  });
+
+  it("marks a failed poll after a successful null answer as answered (#67)", async () => {
+    const { clock, net, store } = setup();
+    store.subscribe("/api/a", 1_000, () => {});
+    net.call(0).answer(json(null));
+    await flush();
+
+    clock.advance(1_000);
+    net.call(1).answer(json({}, { status: 500 }));
+    await flush();
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "HTTP 500", status: 500, data: null, answered: true });
   });
 
   it("errors with null data when nothing was ever read", async () => {
@@ -176,7 +188,7 @@ describe("the query reads", () => {
     store.subscribe("/api/a", null, () => {});
     net.call(0).answer(json({}, { status: 500 }));
     await flush();
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "HTTP 500", status: 500, data: null });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "HTTP 500", status: 500, data: null, answered: false });
   });
 
   it("never overlaps a slow read with the next one", async () => {
@@ -783,7 +795,7 @@ describe("bindReads", () => {
     poll("/api/p/c/loops").answer(json({ n: 3 }));
     await flush();
     expect(binding.getSnapshot()).toMatchObject([
-      { state: "error", message: "adapter down", status: 503, data: { n: 1 } },
+      { state: "error", message: "adapter down", status: 503, data: { n: 1 }, answered: true },
       { state: "ready", data: { n: 2 } },
       { state: "ready", data: { n: 3 } },
     ]);
@@ -868,7 +880,7 @@ describe("keep-alive", () => {
     await flush();
     leave();
     store.subscribe("/api/a", 1_000, () => {});
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "adapter down", status: 503, data: { n: 1 } });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "adapter down", status: 503, data: { n: 1 }, answered: true });
     expect(net.calls).toHaveLength(3);
   });
 
@@ -886,7 +898,7 @@ describe("keep-alive", () => {
     net.call(1).answer(json({ message: "adapter down" }, { status: 503 }));
     await flush();
     // The dropped cache is gone for the error too: no stale data behind it.
-    expect(store.get("/api/a")).toEqual({ state: "error", message: "adapter down", status: 503, data: null });
+    expect(store.get("/api/a")).toEqual({ state: "error", message: "adapter down", status: 503, data: null, answered: false });
   });
 
   it("joins a read the last subscriber left in flight, and polls after it settles", async () => {

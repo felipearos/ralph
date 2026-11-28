@@ -35,7 +35,10 @@ export const KEEP_ALIVE_MS = STALE_AFTER_MS;
 export type Read<T> =
   | { state: "loading" }
   | { state: "ready"; data: T; at: Date; snapshotAt: Date | null }
-  | { state: "error"; message: string; status: number | null; data: T | null };
+  // `answered`: the read had a successful answer before this failure. A
+  // successful answer may itself be null (a project with no frontier), so
+  // `data: null` alone cannot tell a first-read failure from a failed poll.
+  | { state: "error"; message: string; status: number | null; data: T | null; answered?: boolean };
 
 export interface ReadClock {
   now(): number;
@@ -358,6 +361,7 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
           message: error?.message ?? "read failed",
           status: error instanceof ReadError ? error.status : null,
           data: last === undefined ? null : last.data,
+          answered: last !== undefined,
         });
         return;
       }

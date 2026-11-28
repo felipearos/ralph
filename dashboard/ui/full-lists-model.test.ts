@@ -67,4 +67,8 @@ describe("fullListView", () => {
   it("draws a ready read with no data, as a project with no frontier", () => {
     expect(fullListView<string | null>({ state: "ready", data: null, at, snapshotAt: null })).toEqual({ kind: "data", data: null });
   });
+
+  it("keeps a successful null answer through a failed poll", () => {
+    expect(fullListView<string | null>({ state: "error", message: "HTTP 500", status: 500, data: null, answered: true })).toEqual({ kind: "data", data: null });
+  });
 });
