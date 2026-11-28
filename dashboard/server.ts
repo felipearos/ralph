@@ -210,6 +210,15 @@ export interface ProjectScope {
 /** The stream key another project's health moves under (#729). */
 const HEALTH_KEY = "_/health";
 
+/**
+ * How long a project's last runtime read answers the next request instead of
+ * a new `loop-state status` run. The page asks `/api/loops` and then
+ * `/api/controls` back to back, and each read runs every loop's status. It
+ * must stay below the page's poll interval (`POLL_MS` in `ui/reads.ts`), so a
+ * reused snapshot is never older than the freshness the page already promises.
+ */
+export const RUNTIME_REUSE_MS = 2_000;
+
 /** The project the `adapter` shorthand stands for when no registry is given. */
 export const IMPLICIT_PROJECT: RegisteredProject = {
   id: "default",
@@ -341,6 +350,12 @@ export interface HandlerOptions {
    * server's stderr. Absent, the hub's own defaults and the 20 s heartbeat.
    */
   snapshotStream?: SnapshotStreamOptions;
+  /**
+   * How long, from when it started, a project's last successful runtime read
+   * answers later requests in place of a new one. Absent,
+   * `RUNTIME_REUSE_MS`; `0` reads afresh on every request.
+   */
+  runtimeReuseMs?: number;
 }
 
 /** Each project's snapshot hub and its responses: timings, the file watch and the log. */
@@ -446,6 +461,7 @@ function createProjectHandler({
   gates,
   snapshotSource,
   stream,
+  runtimeReuseMs = RUNTIME_REUSE_MS,
 }: ProjectHandlerOptions): (request: Request) => Promise<Response> {
   const projectId = project?.id;
   const now = clock ?? (() => ({ nowMs: Date.now() }));
@@ -456,12 +472,29 @@ function createProjectHandler({
   // not join one that began before the file event it answers: it would hash
   // the old state and miss the change.
   let reading: Promise<unknown> | null = null;
-  const read = (): ReturnType<RalphAdapter["read"]> => {
+  type Runtime = Awaited<ReturnType<RalphAdapter["read"]>>;
+  // The last successful read and when it started, on a wall clock of its own:
+  // tests freeze the injected `clock`, which would never close the window. A
+  // failed read is never kept. `generation` moves on every write, so a read
+  // that began before one cannot be kept after it.
+  let kept: { runtime: Runtime; startedMs: number } | null = null;
+  let generation = 0;
+  const forget = (): void => {
+    kept = null;
+    generation += 1;
+  };
+  const readFresh = (): Promise<Runtime> => {
+    const startedMs = performance.now();
+    const startedIn = generation;
     const pending = adapter.read();
     reading = pending;
     void pending.then(
-      () => {
+      (runtime) => {
         if (reading === pending) reading = null;
+        // An older read settling late must not replace a newer kept one.
+        if (runtimeReuseMs > 0 && startedIn === generation && (kept === null || kept.startedMs <= startedMs)) {
+          kept = { runtime, startedMs };
+        }
       },
       () => {
         if (reading === pending) reading = null;
@@ -469,8 +502,12 @@ function createProjectHandler({
     );
     return pending;
   };
-  const dashboard = async (): Promise<Dashboard> => {
-    const runtime = await read();
+  const read = (): Promise<Runtime> => {
+    if (kept !== null && performance.now() - kept.startedMs < runtimeReuseMs) return Promise.resolve(kept.runtime);
+    return readFresh();
+  };
+  // The kept snapshot is shared across requests: never write into it.
+  const compose = (runtime: Runtime): Dashboard => {
     if (records === undefined) return aggregateDashboard(runtime, now());
     // New loop objects rather than writes into the read: the adapter may hand
     // the same snapshot to the next request.
@@ -488,6 +525,7 @@ function createProjectHandler({
     });
     return aggregateDashboard({ ...runtime, loops }, now());
   };
+  const dashboard = async (): Promise<Dashboard> => compose(await read());
 
   // The stream's recompute: it waits out any read already on the wire (its
   // failure is that caller's), so its own starts after the change it answers.
@@ -499,11 +537,13 @@ function createProjectHandler({
         // The earlier caller reports its own failure.
       }
     }
-    return dashboard();
+    // Past the reuse window: it answers a file event, so it reads afresh,
+    // and its result is what the next request reuses.
+    return compose(await readFresh());
   };
   snapshotSource?.(freshDashboard);
 
-  return async (request: Request): Promise<Response> => {
+  const handle = async (request: Request): Promise<Response> => {
     const { pathname, searchParams: search } = new URL(request.url);
     if (lineup !== undefined && isLineupPath(pathname)) return lineup(request);
     try {
@@ -688,6 +728,18 @@ function createProjectHandler({
         if (explained !== null) return explained;
       }
       return failure(error);
+    }
+  };
+  // A write may change what the runtime reports, so the next read after it is
+  // fresh: the kept snapshot is dropped before the write, and again after it,
+  // since the write's own route may read (and keep) the state before it acts.
+  return async (request: Request): Promise<Response> => {
+    if (request.method === "GET") return handle(request);
+    forget();
+    try {
+      return await handle(request);
+    } finally {
+      forget();
     }
   };
 }
