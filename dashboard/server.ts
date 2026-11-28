@@ -63,7 +63,7 @@ import { gatedStart, type AgentsDeps, type ProjectRegistryWrite } from "./agents
 import { handleAgentRoute, handleProjectRemoval, START_AGENT_PATH, type AgentsFactory } from "./agents-routes";
 import { aggregateDashboard } from "./aggregate";
 import { buildShell, type Asset } from "./build";
-import { compressible, createAssetCompressionCache, negotiate, withCompression, type AssetCompressionCache } from "./compression";
+import { compressible, createAssetCompressionCache, leaveUncompressed, negotiate, withCompression, type AssetCompressionCache } from "./compression";
 import { configFromEnv, DashboardConfigError } from "./config";
 import type {
   AccountUsageView,
@@ -1069,14 +1069,14 @@ export function createHandler({
       const encoding = negotiate(request.headers.get("accept-encoding"));
       if (encoding !== null && compressible(asset.type)) {
         // Compressed once per asset and encoding, then served from memory; on a
-        // failed compression the plain bytes go out as they always did.
+        // failed compression the plain bytes go out as they always did, marked
+        // so the outer wrapper does not recompress the bundle on every request.
         const encoded = await assetCompression.get(pathname, asset.body, encoding);
-        if (encoded !== null) {
-          return new Response(encoded, {
-            status: 200,
-            headers: { ...headers, "content-encoding": encoding, vary: "Accept-Encoding" },
-          });
-        }
+        if (encoded === null) return leaveUncompressed(new Response(asset.body, { status: 200, headers }));
+        return new Response(encoded, {
+          status: 200,
+          headers: { ...headers, "content-encoding": encoding, vary: "Accept-Encoding" },
+        });
       }
       return new Response(asset.body, { status: 200, headers });
     }

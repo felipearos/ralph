@@ -84,7 +84,21 @@ export const zlibCompressor: Compressor = async (body, encoding, quality) => {
 /** Low brotli quality for dynamic bodies, so a `/loops` poll stays cheap on the host. */
 const DYNAMIC_BROTLI_QUALITY = 4;
 
+/**
+ * Responses a route has already settled the encoding of. An asset whose
+ * once-only compression failed is served plain and marked here, so the
+ * wrapper does not recompress the whole bundle on every request instead.
+ */
+const settled = new WeakSet<Response>();
+
+/** Marks a response the wrapper must pass through as it is. */
+export function leaveUncompressed(response: Response): Response {
+  settled.add(response);
+  return response;
+}
+
 function untouchable(request: Request, response: Response): boolean {
+  if (settled.has(response)) return true;
   if (request.method === "HEAD") return true;
   if (response.body === null) return true;
   const status = response.status;

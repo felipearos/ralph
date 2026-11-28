@@ -140,6 +140,26 @@ describe("createHandler", () => {
     expect(compress).toHaveBeenCalledTimes(2);
   });
 
+  it("serves an asset plain, and never recompresses it per request, when its one compression failed", async () => {
+    const compress = vi.fn<Compressor>(async () => {
+      throw new Error("brotli ran out of memory");
+    });
+    const handler = createHandler({
+      adapter: { read: vi.fn() },
+      shell: "",
+      clock: () => ({ nowMs: 0 }),
+      assets,
+      assetCompression: createAssetCompressionCache(compress),
+    });
+    for (let i = 0; i < 2; i++) {
+      const out = await handler(at("/assets/app-abc.js", "br"));
+      expect(out.status).toBe(200);
+      expect(out.headers.get("content-encoding")).toBeNull();
+      expect(await out.text()).toBe(script);
+    }
+    expect(compress).toHaveBeenCalledTimes(1);
+  });
+
   it("serves an asset exactly as before without Accept-Encoding", async () => {
     const { handler, compress } = handlerWith();
     const out = await handler(at("/assets/app-abc.js"));
