@@ -243,8 +243,12 @@ root is derived from the file's own location, never from `pwd`.
 
 Snapshot reads overlap independent data sources and process up to four
 worktrees at a time. Simultaneous panel, control, and usage requests share the
-in-flight runtime snapshot; the next request after it finishes reads fresh loop
-state. GitHub claim reads overlap local loop reads, and the frontier retains
+in-flight runtime snapshot, and each project's handler reuses its last
+successful snapshot for `RUNTIME_REUSE_MS` (4 s, below the page's 5 s poll) from
+when that read started, so `/api/controls` after `/api/loops` runs no second
+`loop-state status` (#66). A write (any non-GET) drops the kept snapshot, the
+change stream's recompute always reads fresh, and the preview turns reuse off
+(`runtimeReuseMs: 0`). GitHub claim reads overlap local loop reads, and the frontier retains
 its separate 60-second cache. Within each frontier refresh, the open-issue,
 closed-issue, and open-PR censuses overlap; native blocker reads start as soon
 as the open issues arrive, with the existing concurrency limit.

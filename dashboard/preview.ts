@@ -1777,6 +1777,10 @@ export function previewServerDeps(): ServerDeps {
       if (script.endsWith(`/${ONBOARDING_SURFACE.tracker.script}`)) return { status: 0, stdout: "", stderr: "" };
       throw new Error("the preview runs no process");
     },
+    // The preview's controls change its canned world in memory, never through
+    // a write the composed server sees, so a kept read would show the state
+    // from before the click; reading the canned world costs no process anyway.
+    runtimeReuseMs: 0,
     ralphAdapter: (config) => {
       const world = worldFor(config.projectId, config.roots);
       return { read: async () => snapshot(world), readLocal: async () => localSnapshot(world) } as unknown as ReturnType<

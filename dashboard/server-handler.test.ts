@@ -65,6 +65,8 @@ import { createProjectRegistry, projectsFile } from "./projects";
 import { reconcileConfigFromEnv } from "./reconcile";
 import type { Answer, Matcher, RecordingExecutor } from "./recording-executor";
 import { subprocessSuite } from "../test-timeouts";
+import { RUNTIME_REUSE_MS } from "./server";
+import { POLL_MS } from "./ui/reads";
 
 subprocessSuite("runs the pane's redactor and the lineup's models.ts behind an in-process handler");
 
@@ -131,6 +133,8 @@ interface ScriptedOptions {
    * invocation's `cwd`); unkeyed, every project gets the same answer.
    */
   projects?: readonly string[];
+  /** How long a project's runtime read is reused; absent, the handler's default. */
+  runtimeReuseMs?: number;
   /** The change stream's timings, passed through to `composeServer`. */
   snapshotStream?: ServerDeps["snapshotStream"];
   /** Called on every full adapter read, before it runs. */
@@ -149,7 +153,7 @@ interface ScriptedOptions {
  */
 function scriptedServer(
   label: string,
-  { script = {}, env = {}, projects, snapshotStream, onAdapterRead }: ScriptedOptions = {},
+  { script = {}, env = {}, projects, snapshotStream, onAdapterRead, runtimeReuseMs }: ScriptedOptions = {},
 ): ScriptedServer {
   const root = scratchRoot(label);
   const configHome = join(root, "config");
@@ -203,6 +207,7 @@ function scriptedServer(
   const usageSources: { close(): void }[] = [];
   const composed = composeServer({
     ...(snapshotStream === undefined ? {} : { snapshotStream }),
+    ...(runtimeReuseMs === undefined ? {} : { runtimeReuseMs }),
     config,
     registry,
     shell: { html: "<!doctype html><title>Ralph dashboard</title>", assets: new Map() },
@@ -1048,6 +1053,83 @@ describe("projects over HTTP", () => {
     } finally {
       server.stop();
     }
+  });
+
+  describe("one runtime read per page load (#66)", () => {
+    // A window no loaded host can outlast between two in-process requests, so
+    // the counts below never depend on how fast the host is; the default's
+    // bound is pinned against the page's poll interval instead.
+    const WIDE_MS = 600_000;
+    const onePage = (label: string, runtimeReuseMs: number) => {
+      const server = scriptedServer(label, { projects: ["alpha"], runtimeReuseMs });
+      const alpha = server.project("alpha");
+      server.answer(loopStateIn(alpha), loopStateWith([loopReport(server.worktree("alpha/ralph-loop"), { loop: "ralph" })]));
+      const reads = (): number => server.rec.calls.filter((call) => loopStateIn(alpha)(call.invocation)).length;
+      return { server, reads };
+    };
+
+    it("answers /controls from the read /loops just made, scoped and unscoped", async () => {
+      const { server, reads } = onePage("http-reuse-pair", WIDE_MS);
+      try {
+        expect((await server.fetch(`/api/p/alpha/loops`)).status).toBe(200);
+        expect((await server.fetch(`/api/p/alpha/controls`)).status).toBe(200);
+        expect(reads()).toBe(1);
+        expect((await server.fetch(`/api/loops`)).status).toBe(200);
+        expect((await server.fetch(`/api/controls`)).status).toBe(200);
+        expect(reads()).toBe(1);
+      } finally {
+        server.stop();
+      }
+    });
+
+    // The adapter's in-flight sharing does this, not the reuse window; pinned
+    // here so the handler's own read path never stops joining it.
+    it("shares one read between concurrent requests", async () => {
+      const { server, reads } = onePage("http-reuse-concurrent", WIDE_MS);
+      try {
+        const answers = await Promise.all([server.fetch(`/api/p/alpha/controls`), server.fetch(`/api/p/alpha/controls`)]);
+        expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+        expect(reads()).toBe(1);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reads afresh on every request when reuse is off", async () => {
+      const { server, reads } = onePage("http-reuse-off", 0);
+      try {
+        expect((await server.fetch(`/api/p/alpha/loops`)).status).toBe(200);
+        expect((await server.fetch(`/api/p/alpha/controls`)).status).toBe(200);
+        expect(reads()).toBe(2);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reads afresh after a write reaches the project", async () => {
+      const { server, reads } = onePage("http-reuse-write", WIDE_MS);
+      try {
+        expect((await server.fetch(`/api/p/alpha/loops`)).status).toBe(200);
+        expect(reads()).toBe(1);
+        // Refused for its missing loop, but a POST the project's handler answers.
+        const write = await server.fetch(`/api/p/alpha/control`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "pause" }),
+        });
+        expect(write.status).toBe(400);
+        const afterWrite = reads();
+        expect((await server.fetch(`/api/p/alpha/controls`)).status).toBe(200);
+        expect(reads()).toBe(afterWrite + 1);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("keeps a reused snapshot younger than the page's poll interval", () => {
+      expect(RUNTIME_REUSE_MS).toBeGreaterThan(0);
+      expect(RUNTIME_REUSE_MS).toBeLessThan(POLL_MS);
+    });
   });
 
   /** A loop as loop-state reports one that stopped on an error. */

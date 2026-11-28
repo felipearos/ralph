@@ -111,6 +111,8 @@ export interface ServerDeps {
   log?: { out(line: string): void; err(line: string): void };
   /** The change stream's timings, file watch and log (#724); absent, its defaults, logging to `log.err`. */
   snapshotStream?: SnapshotStreamOptions;
+  /** How long a project's runtime read is reused (`HandlerOptions.runtimeReuseMs`); absent, the handler's default. */
+  runtimeReuseMs?: number;
 }
 
 export interface ComposedServer {
@@ -372,6 +374,7 @@ export function composeServer(deps: ServerDeps): ComposedServer {
     hosts: new Set(config.hosts),
     // A failed watch or snapshot read goes to the server's journal; a test's own log wins.
     snapshotStream: { log: (line: string) => log.err(line), ...deps.snapshotStream },
+    ...(deps.runtimeReuseMs === undefined ? {} : { runtimeReuseMs: deps.runtimeReuseMs }),
   });
   // The loops this dashboard shows do not come back by themselves. The
   // service does — `Restart=always` after an oomd kill, `WantedBy` plus
