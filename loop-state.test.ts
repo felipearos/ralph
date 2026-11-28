@@ -15,7 +15,7 @@
  * subprocess seam, so a fake binary tests the seam where a mock would test the
  * mock; nothing here touches this repository's own git metadata.
  */
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -1510,5 +1510,45 @@ describe("one /proc scan answers every worktree (#64)", () => {
     expect(verdict(worktrees[0]!)).toBe("dead");
     expect(verdict(worktrees[1]!)).toBe("alive");
     expect(verdict(worktrees[2]!)).toBe("dead");
+  });
+
+  it("takes no scan when every worktree's recorded pid is a live supervisor", async () => {
+    // The fast path the scan must never cost: a panel whose loops are all
+    // running answers from the recorded pids alone.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ralph-scan-none-")));
+    made.push(root);
+    const main = join(root, "main");
+    mkdirSync(main);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: main, stdio: "ignore" });
+    // A real `bash …/ralph.sh` with the worktree as cwd, which is what
+    // `supervisorPidMatches` reads from `/proc`. It blocks on stdin, so it
+    // lives until the test closes the pipe — no sleep to outlast.
+    writeFileSync(join(root, "ralph.sh"), "read -r _\n");
+    const child = spawn("bash", [join(root, "ralph.sh")], { cwd: main, stdio: ["pipe", "ignore", "ignore"] });
+    try {
+      const pid = child.pid!;
+      const deadline = Date.now() + 20_000;
+      while (supervisorPidMatches(pid, main) !== "alive" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(supervisorPidMatches(pid, main)).toBe("alive");
+      mkdirSync(join(main, STATE_RELATIVE_PATH, ".."), { recursive: true });
+      writeFileSync(
+        join(main, STATE_RELATIVE_PATH),
+        JSON.stringify(state({ worktree: main, owner: { loop: "ralph", pid, host: "desktop" } })),
+      );
+      let calls = 0;
+      const snap = snapshot(main, clock, {
+        scan: () => {
+          calls += 1;
+          return null;
+        },
+      });
+      expect(snap.loops.map((l) => l.supervisor)).toEqual(["alive"]);
+      expect(calls).toBe(0);
+    } finally {
+      child.stdin!.end();
+      child.kill();
+    }
   });
 });
