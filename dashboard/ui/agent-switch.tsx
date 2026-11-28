@@ -16,7 +16,7 @@ import type { CommandError } from "./command-model";
 import type { AgentSwitch, RulesOwner, SaveNotice } from "./rules-save-model";
 import { agentSwitch } from "./rules-save-model";
 import { isRemote } from "./api";
-import { useSentinel, useVerifier } from "./use-reads";
+import { useSentinelRules, useVerifierRules } from "./use-reads";
 
 export type SwitchState = { kind: "idle" } | { kind: "saving" } | { kind: "done"; notice: SaveNotice } | { kind: "refused"; error: CommandError };
 
@@ -112,15 +112,18 @@ function OffLine({ text }: { text: string | null }) {
   );
 }
 
-/** Each reads the base branch's rules, which is what the gate re-reads; one hook apiece, so neither is conditional. */
+/**
+ * Each reads the base branch's rules, which is what the gate re-reads; one hook apiece, so neither is conditional.
+ * The rules-only read skips the open-PR lookup: the line never shows it, and it is a `gh` call on every cold load (#65).
+ */
 function SentinelOff() {
-  const read = useSentinel().read;
+  const read = useSentinelRules().read;
   const view = read.state === "loading" ? null : read.data;
   return <OffLine text={view === null ? null : agentSwitch(view.rules, "sentinel", view.configChanges, view.baseBranch).card} />;
 }
 
 function VerifierOff() {
-  const read = useVerifier().read;
+  const read = useVerifierRules().read;
   const view = read.state === "loading" ? null : read.data;
   return <OffLine text={view === null ? null : agentSwitch(view.rules, "verifier", view.configChanges, view.baseBranch).card} />;
 }

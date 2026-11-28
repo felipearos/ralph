@@ -28,7 +28,7 @@ import { agentSwitch, rulesSaveCopy, switchNotice } from "./rules-save-model";
 import { AgentSwitchControl, type SwitchState } from "./agent-switch";
 import { CommandNotice, LocalOnlyNote, useCommand } from "./command";
 import type { CommandError } from "./command-model";
-import { useSentinel } from "./use-reads";
+import { useSentinel, useRulesOnlyRefresh } from "./use-reads";
 
 const MODE_HINTS: Record<SentinelMode, string> = {
   observe: "Drafts a ticket for each issue over the bar and files nothing.",
@@ -70,6 +70,8 @@ function NumberField({
 export function SentinelSettings() {
   // The read goes through the store; the proposal goes through the command module, as the verifier's form does.
   const sentinel = useSentinel();
+  // The agent card's Off line reads the rules alone (#65); a save re-reads it too.
+  const refreshCard = useRulesOnlyRefresh("sentinel");
   const read = sentinel.read.state === "loading" ? null : sentinel.read.data;
   // Only a read that never landed replaces the form: a failed re-read after a save keeps it.
   const loadError = sentinel.read.state === "error" && sentinel.read.data === null ? sentinel.read.message : null;
@@ -129,7 +131,10 @@ export function SentinelSettings() {
     setSave({ kind: "done", notice: saveNotice(body as ProposeSentinelResult) });
     // Re-read, so committed rules show as the base branch's, and a PR just
     // opened shows as pending so the next save is not offered as if none were.
-    if (body.outcome !== "refused") sentinel.reload();
+    if (body.outcome !== "refused") {
+      sentinel.reload();
+      refreshCard();
+    }
   };
 
   // The switch saves at once (#789), through the same route as the rules: the
@@ -152,7 +157,10 @@ export function SentinelSettings() {
       return;
     }
     setSwitching({ kind: "done", notice: switchNotice(body as ProposeSentinelResult, "sentinel", enabled) });
-    if (body.outcome !== "refused") sentinel.reload();
+    if (body.outcome !== "refused") {
+      sentinel.reload();
+      refreshCard();
+    }
   };
 
   return (

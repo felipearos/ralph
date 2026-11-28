@@ -101,6 +101,7 @@ import {
   evalSuggestionsRead,
   evalInboxRead,
   evalProposalsRead,
+  rulesOnlyRead,
   sentinelRulesRead,
   settingsRead,
   promptsRead,
@@ -486,6 +487,18 @@ export const useModelUpdates = (): OneShot<ModelUpdatesView> =>
   useOneShot(isRemote() ? null : modelUpdatesRead(shellProject()));
 export const useVerifier = (): OneShot<VerifierView> => useOneShot(verifierRead(shellProject()));
 export const useSentinel = (): OneShot<SentinelView> => useOneShot(sentinelRulesRead(shellProject()));
+/** The rules alone, for the agent card's Off line: no open-PR lookup behind it (#65). */
+export const useSentinelRules = (): OneShot<SentinelView> => useOneShot(rulesOnlyRead(shellProject(), "sentinel"));
+export const useVerifierRules = (): OneShot<VerifierView> => useOneShot(rulesOnlyRead(shellProject(), "verifier"));
+/**
+ * Re-reads the agent card's rules-only read after a save, as the sheet's own
+ * reload does for its read: the two are separate URLs. A no-op while no card shows.
+ */
+export function useRulesOnlyRefresh(kind: "sentinel" | "verifier"): () => void {
+  const store = useQueryStore();
+  const url = rulesOnlyRead(shellProject(), kind).url;
+  return useMemo(() => () => store().refresh(url), [store, url]);
+}
 export const useJav = (): OneShot<JavView> => useOneShot(javRead(shellProject()));
 /** Scoped to the project the Settings page is open on, which the page is handed. */
 export const useProjectSettings = (project: string): OneShot<ProjectSettingsView> => useOneShot(settingsRead(project));

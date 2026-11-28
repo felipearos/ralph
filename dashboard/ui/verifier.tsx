@@ -28,7 +28,7 @@ import { agentSwitch, rulesSaveCopy, switchNotice } from "./rules-save-model";
 import { AgentSwitchControl, type SwitchState } from "./agent-switch";
 import { CommandNotice, LocalOnlyNote, useCommand } from "./command";
 import type { CommandError } from "./command-model";
-import { useVerifier } from "./use-reads";
+import { useVerifier, useRulesOnlyRefresh } from "./use-reads";
 
 const MODE_HINTS: Record<VerifierMode, string> = {
   observe: "Records each verdict and acts on none of them.",
@@ -71,6 +71,8 @@ function NumberField({
 export function VerifierSettings() {
   // The read goes through the store (#614); the proposal goes through the command module (#621).
   const verifier = useVerifier();
+  // The agent card's Off line reads the rules alone (#65); a save re-reads it too.
+  const refreshCard = useRulesOnlyRefresh("verifier");
   const read = verifier.read.state === "loading" ? null : verifier.read.data;
   // Only a read that never landed replaces the form: a failed re-read after a save keeps it.
   const loadError = verifier.read.state === "error" && verifier.read.data === null ? verifier.read.message : null;
@@ -132,7 +134,10 @@ export function VerifierSettings() {
     setSave({ kind: "done", notice: saveNotice(body as ProposeVerifierResult) });
     // Re-read, so committed rules show as the base branch's, and a PR just
     // opened shows as pending so the next save is not offered as if none were.
-    if (body.outcome !== "refused") verifier.reload();
+    if (body.outcome !== "refused") {
+      verifier.reload();
+      refreshCard();
+    }
   };
 
   // The switch saves at once (#789), through the same route as the rules: the
@@ -155,7 +160,10 @@ export function VerifierSettings() {
       return;
     }
     setSwitching({ kind: "done", notice: switchNotice(body as ProposeVerifierResult, "verifier", enabled) });
-    if (body.outcome !== "refused") verifier.reload();
+    if (body.outcome !== "refused") {
+      verifier.reload();
+      refreshCard();
+    }
   };
 
   return (
