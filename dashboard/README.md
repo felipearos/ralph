@@ -642,7 +642,13 @@ Paths below are shown unscoped; each is also served under `/api/p/:project`.
   and the form shows its default), whether a roster loop has the verifier
   role, the open rules PR (head `ralph-roster/verifier-rules-*`), if any, and
   how a save lands (`commit` or `pr`, the config's `configChanges`). The
-  Verifier sheet reads it.
+  Verifier sheet reads it. The open-PR lookup is a `gh pr list` (~3 s), so a
+  successful answer is kept for a minute per process (#65); a save writes
+  through (its own fresh check, and the PR it opens), so only a PR opened or
+  closed outside the dashboard waits that minute out. An unreadable list is
+  never kept and answers `pending: null`. With `?pending=skip` the lookup is
+  not made at all and `pending` is `null`: the agent card's Off line reads it
+  that way, on every cold load.
 - `POST /api/agents/verifier` `{ rules }` — save new verifier rules.
   `project-config --set-verifier --at origin/<baseBranch>` (the rules as JSON
   on stdin) replaces only the block's rules (`enabled`, `windowHours`,
@@ -674,7 +680,8 @@ Paths below are shown unscoped; each is also served under `/api/p/:project`.
   pending, configChanges }`: the sentinel's rules as `origin/<baseBranch>`'s
   `sentinel` block spells them, whether a roster loop has the sentinel role,
   the open rules PR (head `ralph-roster/sentinel-rules-*`), if any, and how a
-  save lands. The Sentinel sheet reads it.
+  save lands. The Sentinel sheet reads it; the open-PR lookup is cached and
+  skippable (`?pending=skip`, the agent card's read) as for the verifier.
 - `POST /api/agents/sentinel` `{ rules }` — save new sentinel rules, as the
   verifier's POST does: `project-config --set-sentinel --at origin/<baseBranch>`
   replaces only `enabled`, `lookbackHours`, `minEvents`, `minUsers`,
