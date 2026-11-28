@@ -314,7 +314,7 @@ describe("derived routes", () => {
 
 describe("snapshot routes", () => {
   const ROUTES: [path: string, key: string][] = [
-    ["/api/p/snap/loops", "dashboard"],
+    ["/api/p/snap/dashboard", "dashboard"],
     ["/api/p/snap/controls", "controls"],
     ["/api/p/snap/loops/ralph/control", "control/ralph"],
     ["/api/p/snap/loops/ralph/checkout", "checkout/ralph"],
@@ -341,6 +341,25 @@ describe("snapshot routes", () => {
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(body);
   });
 
+  it("answers /loops as the overview of the pushed dashboard: recent capped, heavy lists dropped", async () => {
+    const recent = Array.from({ length: 40 }, (_, index) => ({ label: `row ${index}` }));
+    await pushJson("overview", "dashboard", {
+      loops: [{ loop: "ralph", presence: { loop: "ralph", recent } }],
+      ownership: { claims: [] },
+      frontier: { readAt: PUSHED_AT, view: { ready: [], tree: [{ number: 1 }] }, problem: null, prs: [] },
+      learnings: { base: null, sources: [] },
+      ciHealth: null,
+    });
+    const response = await remote().get("/api/p/overview/loops");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({
+      loops: [{ loop: "ralph", presence: { loop: "ralph", recent: recent.slice(-5), recentTotal: 40 } }],
+      ownership: { claims: [] },
+      frontier: { readAt: PUSHED_AT, view: { ready: [] }, problem: null },
+    });
+  });
+
   it("answers the project list from the _/projects key", async () => {
     const body = await pushJson(GLOBAL_SNAPSHOT_PROJECT, "_/projects", { projects: [{ id: "alpha" }] });
     const response = await remote().get("/api/projects");
@@ -358,11 +377,11 @@ describe("snapshot routes", () => {
     });
     await pushJson("cache", "dashboard", { v: 1 }, 1);
     const bodyReads = () => reads.filter((query) => query === "select body,").length;
-    await get("/api/p/cache/loops");
-    await get("/api/p/cache/loops");
+    await get("/api/p/cache/dashboard");
+    await get("/api/p/cache/dashboard");
     expect(bodyReads()).toBe(1);
     const next = await pushJson("cache", "dashboard", { v: 2 }, 2);
-    const response = await get("/api/p/cache/loops");
+    const response = await get("/api/p/cache/dashboard");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(next);
     expect(bodyReads()).toBe(2);
   });
@@ -993,6 +1012,7 @@ describe("api/index.ts", () => {
       "api/index.ts",
       "dashboard/command-requests.ts",
       "dashboard/contracts.ts",
+      "dashboard/overview.ts",
       "dashboard/remote/handler.ts",
       "dashboard/remote/intake-auth.ts",
       "dashboard/route-table.ts",

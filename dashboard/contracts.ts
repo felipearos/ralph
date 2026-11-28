@@ -1127,6 +1127,59 @@ export interface Dashboard {
   tracker?: TrackerLinkView | null;
 }
 
+/* --------------------------------------------------------------- overview */
+
+/*
+ * What `GET /api/loops` answers (#67): the dashboard cut to what the overview
+ * draws. The full `Dashboard` of a busy project weighs ~650 KB, almost all of
+ * it lists no overview card shows in full — every loop's 200 recent rows, the
+ * frontier's spec tree and PR states, the learnings and the CI health — and
+ * the page re-reads it on every change. The full body stays one request away
+ * at `GET /api/dashboard`, which the remote bridge collects as `dashboard`.
+ */
+
+/** How many of a loop's recent activity rows the overview keeps: the newest. */
+export const OVERVIEW_RECENT_ROWS = 5;
+
+/**
+ * A loop's presence with `recent` cut to its newest `OVERVIEW_RECENT_ROWS`
+ * rows, still oldest-first. `recentTotal` is how many the full list holds, so
+ * a card can say there is more; the full list is the loop's panel,
+ * `GET /api/loops/<loop>`.
+ */
+export interface OverviewPresenceView extends PresenceView {
+  recentTotal: number;
+}
+
+/** A loop panel as the overview carries it: the full one is `GET /api/loops/<loop>`. */
+export interface OverviewLoop extends Omit<DashboardLoop, "presence"> {
+  presence: OverviewPresenceView | null;
+}
+
+/**
+ * The backlog's buckets without the spec tree, which only the Backlog view
+ * draws; it reads the full frontier at `GET /api/frontier`.
+ */
+export type FrontierOverviewView = Omit<FrontierView, "tree">;
+
+/**
+ * The frontier read without the PR states, which only the Backlog view draws
+ * (`GET /api/frontier` carries them), and with the tree-less view.
+ */
+export interface FrontierOverviewRead extends Omit<FrontierRead, "prs" | "view"> {
+  view: FrontierOverviewView | null;
+}
+
+/**
+ * The overview's body: the dashboard without the learnings and the CI health
+ * (each read by its own view from `GET /api/dashboard`), with capped loops and
+ * a tree-less frontier.
+ */
+export interface DashboardOverview extends Omit<Dashboard, "learnings" | "ciHealth" | "loops" | "frontier"> {
+  loops: OverviewLoop[];
+  frontier: FrontierOverviewRead | null;
+}
+
 /* -------------------------------------------------------------- learnings */
 
 /*

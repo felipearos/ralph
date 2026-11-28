@@ -709,9 +709,15 @@ Paths below are shown unscoped; each is also served under `/api/p/:project`.
   content-hashed paths next to it.
 - `GET /loops/:name` — the shell again; the page routes client-side to that
   loop's detail view, so deep links and reloads work.
-- `GET /api/loops` — `{ generatedAt, loops, reconciliation, unattributed, ownership }`.
-  `loops` carries exactly the project's roster (`loops` in its
-  `.ralph/config.json`) in roster order, each with its `claims`.
+- `GET /api/loops` — the overview: `{ generatedAt, loops, reconciliation,
+  unattributed, ownership, frontier, following, tracker }`, sent as compact
+  JSON. `loops` carries exactly the project's roster (`loops` in its
+  `.ralph/config.json`) in roster order, each with its `claims`; each
+  `presence.recent` keeps only its newest 5 rows, with `recentTotal` the full
+  count. The frontier carries no `tree` and no `prs`, and there is no
+  `learnings` or `ciHealth` (#67).
+- `GET /api/dashboard` — the full dashboard `/api/loops` is cut from, every
+  field and every recent row; the remote bridge collects it as `dashboard`.
 - `GET /api/loops/:name` — one loop's panel, or 404. The panel's `presence`
   carries the observer's full reading: issue history, per-stage agents, recent
   timeline activity, and the derived step, phase and warning that

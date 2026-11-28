@@ -10,9 +10,9 @@
  *
  * The loops are a canned runtime snapshot, rebuilt on every request so its
  * timestamps stay relative to it and the page always looks live. The loop
- * reads (`/api/loops`, a loop's panel, ownership, frontier) are answered by
- * the real server, composed over that snapshot with no process behind it, so
- * every panel is what `aggregateDashboard` derives. The control buttons act
+ * reads (`/api/loops`, `/api/dashboard`, a loop's panel, ownership, frontier)
+ * are answered by the real server, composed over that snapshot with no
+ * process behind it, so every panel is what `aggregateDashboard` derives. The control buttons act
  * on an in-memory copy of the snapshot's facts. The lineup editor reads the
  * harness's real `models.json`, but a save only validates: it never writes.
  *
@@ -1804,8 +1804,8 @@ export function previewServerDeps(): ServerDeps {
   };
 }
 
-/** The loop reads the composed server answers — three fixed paths and a loop's panel; nothing else may fall through to it. */
-const COMPOSED_READS = new Set(["/api/loops", "/api/ownership", "/api/frontier"]);
+/** The loop reads the composed server answers — four fixed paths and a loop's panel; nothing else may fall through to it. */
+const COMPOSED_READS = new Set(["/api/loops", "/api/dashboard", "/api/ownership", "/api/frontier"]);
 const isComposedRead = (pathname: string): boolean =>
   COMPOSED_READS.has(pathname) || /^\/api\/loops\/[^/]+$/.test(pathname);
 
@@ -1886,8 +1886,8 @@ export function createPreviewRouter(deps: PreviewRouterDeps): (request: Request)
   // A failed composed read is the server's error, not a dashboard: the records
   // routes must report it rather than read `{ error }` as loops.
   const dashboard = async (world: PreviewWorld): Promise<Dashboard> => {
-    const response = await forward(world, "/api/loops", new Request("http://127.0.0.1/"));
-    if (!response.ok) throw new Error(`the composed /api/loops answered ${response.status}: ${await response.text()}`);
+    const response = await forward(world, "/api/dashboard", new Request("http://127.0.0.1/"));
+    if (!response.ok) throw new Error(`the composed /api/dashboard answered ${response.status}: ${await response.text()}`);
     return (await response.json()) as Dashboard;
   };
   // This router's change streams, one per canned project over that project's

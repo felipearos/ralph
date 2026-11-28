@@ -242,7 +242,7 @@ describe("collect over the real handler", () => {
     const paths: Record<string, string> = {
       "_/projects": "/api/projects",
       "_/health": "/api/projects/health",
-      dashboard: "/api/p/fixture/loops",
+      dashboard: "/api/p/fixture/dashboard",
       controls: "/api/p/fixture/controls",
       "control/ralph": "/api/p/fixture/loops/ralph/control",
       "checkout/ralph": "/api/p/fixture/loops/ralph/checkout",
@@ -493,7 +493,7 @@ describe("SNAPSHOT_ROUTES", () => {
     expect(SNAPSHOT_ROUTES).toEqual([
       { scope: "global", key: "_/projects", path: "/api/projects" },
       { scope: "global", key: "_/health", path: "/api/projects/health" },
-      { scope: "project", key: "dashboard", path: "/api/loops" },
+      { scope: "project", key: "dashboard", path: "/api/dashboard" },
       { scope: "project", key: "controls", path: "/api/controls" },
       { scope: "loop", key: "control/<loop>", path: "/api/loops/<loop>/control" },
       { scope: "loop", key: "checkout/<loop>", path: "/api/loops/<loop>/checkout" },

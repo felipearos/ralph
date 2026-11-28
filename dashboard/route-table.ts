@@ -13,8 +13,9 @@
  *
  * It sits beside `routes.ts` rather than extending it because `routes.ts` must
  * keep zero imports, and a row here names contract types and the command
- * parsers. It may import only `./contracts` and the parser leaf
- * `./command-requests`: the Vercel function bundles it and so will the UI's
+ * parsers. It may import only `./contracts`, the parser leaf
+ * `./command-requests` and the overview projection `./overview` (which itself
+ * reaches only the contracts): the Vercel function bundles it and so will the UI's
  * browser bundle, so no `node:` module, no package and no CLI, filesystem or
  * process code may sit behind it. That is also why `/api/projects/health` is
  * spelled as a literal below instead of read from `routes.ts`; the test pins
@@ -33,6 +34,7 @@ import {
   type SnapshotKey,
 } from "./contracts";
 import { COMMAND_PARSERS } from "./command-requests";
+import { overviewOf } from "./overview";
 
 export type RouteScope = "global" | "project" | "loop";
 export type RouteMethod = "GET" | "POST" | "DELETE";
@@ -106,6 +108,7 @@ export const evalPatchOf = (view: EvalPatchesView, search: URLSearchParams): Pro
 };
 
 export type ProjectionName =
+  | "overview"
   | "ownership"
   | "frontier"
   | "loop-panel"
@@ -115,6 +118,7 @@ export type ProjectionName =
 
 /** The named projections a derived row can carry, each wrapped for a uniform call. */
 export const PROJECTIONS: Record<ProjectionName, Projection> = {
+  overview: (source) => found(overviewOf(source as Dashboard)),
   ownership: (source) => found(ownershipOf(source as Dashboard)),
   frontier: (source) => found(frontierOf(source as Dashboard)),
   "loop-panel": (source, { loop }) => maybe(loopPanelOf(source as Dashboard, loop)),
@@ -237,9 +241,13 @@ export const ROUTE_TABLE: readonly RouteRow[] = [
   // The project's snapshots and their projections, in the order the bridge
   // reads and pushes them: the dashboard and the loops' controls first, so a
   // push cut short by a lost lease has already sent what the overview draws.
-  snapshot("project", "/api/loops", "dashboard"),
+  // The full dashboard is `/api/dashboard`, the one read the bridge collects
+  // as `dashboard`; `/api/loops` is its overview (#67), capped so the page's
+  // most frequent read stays small, and projected from the same snapshot.
+  snapshot("project", "/api/dashboard", "dashboard"),
+  derived("project", "/api/loops", "dashboard", "overview"),
   // The page's change stream (#724): invalidations only, a version per read
-  // key and never a body, so the page re-reads through the row above and a
+  // key and never a body, so the page re-reads through the rows above and a
   // dropped stream costs nothing but its polling interval.
   row({ method: "GET", path: "/api/stream", scope: "project" }, { kind: "stream" }),
   derived("project", "/api/ownership", "dashboard", "ownership"),

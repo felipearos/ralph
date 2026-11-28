@@ -81,8 +81,10 @@ const ALLOWED: Record<string, string[]> = {
   "contracts.ts": [],
   // The command body parsers: the remote function imports them too, so they reach nothing but the contracts.
   "command-requests.ts": ["./contracts"],
-  // The route index: the remote function imports it and the UI's browser bundle will, so it reaches only the contracts and the parser leaf.
-  "route-table.ts": ["./command-requests", "./contracts"],
+  // The route index: the remote function imports it and the UI's browser bundle will, so it reaches only the contracts, the parser leaf and the overview projection.
+  "route-table.ts": ["./command-requests", "./contracts", "./overview"],
+  // The overview projection behind `/api/loops` (#67): the route table calls it, so it reaches only the contracts.
+  "overview.ts": ["./contracts"],
   "aggregate.ts": ["./contracts"],
   // `./ci-health` is the ci-doctor's store, read off the checkout's own `.git`
   // with `node:fs` alone — no subprocess, no ralph module. Its own entry below
