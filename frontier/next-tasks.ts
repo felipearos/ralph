@@ -1003,12 +1003,13 @@ export function classify(
    */
   closedChildParents: number[],
   /**
-   * The claim leases a `-wip` label is checked against (#72). Injected so a
-   * test passes its own: the default is the host's live store in the git
-   * common dir, and an expired lease there for a fixture's issue number would
-   * turn the fixture's wip ticket unclaimed on a host-state accident.
+   * The claim leases a `-wip` label is checked against (#72). Required, like
+   * `closedChildParents`: the live store sits in the git common dir every loop
+   * on the host shares, and a test that silently read it turned a fixture's
+   * wip ticket ready whenever an expired lease there shared its number. The
+   * CLI passes the host store; tests pass their own.
    */
-  leases: Readonly<Record<string, ClaimLease>> = readLeaseStore(leasePathFromGit()).leases,
+  leases: Readonly<Record<string, ClaimLease>>,
 ): Frontier {
   const dependents = buildDependents(tickets);
   const all = [...tickets.values()];
@@ -4491,6 +4492,7 @@ async function main(): Promise<void> {
   const frontier = classify(
     tickets,
     closed.map((i) => parseParent(i.body ?? "")).filter((n): n is number => n !== null),
+    readLeaseStore(leasePathFromGit()).leases,
   );
 
   // Only tickets that actually have a linked PR reach this, so it stays cheap.

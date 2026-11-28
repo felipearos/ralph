@@ -23,6 +23,7 @@ import {
   type OpenPullRequest,
   type RawIssue,
 } from "../frontier/next-tasks";
+import { leasePathFromGit, readLeaseStore } from "../claim-lease";
 import { applySection, issueBodyWithOpMarker } from "./body";
 import { orderOps } from "./order";
 import { isRefLabelOp, type ApplyOp, type TriagePlan } from "./plan";
@@ -199,7 +200,7 @@ export function frontierOf(census: Census): { frontier: Frontier } | { error: st
     const closedChildParents = census.closed
       .map((issue) => parseParent(issue.body ?? ""))
       .filter((parent): parent is number => parent !== null);
-    return { frontier: classify(tickets, closedChildParents) };
+    return { frontier: classify(tickets, closedChildParents, readLeaseStore(leasePathFromGit()).leases) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }

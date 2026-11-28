@@ -817,7 +817,7 @@ describe("a regression nothing may revert, filed urgent and offered to a coder f
       issue(urgent, "main red on the regression", "## What to build\n\nStuff.\n", urgentLabels),
     ];
     const tickets = buildTickets(raw, raw.map(() => []), new Set([1199]));
-    const frontier = classify(tickets, []);
+    const frontier = classify(tickets, [], {});
     const offered = (): number[] =>
       roleUnits("coder", tickets, frontier, { route: null }).flatMap((unit) =>
         unit.tickets.map((ticket) => ticket.number),
@@ -836,7 +836,7 @@ describe("a regression nothing may revert, filed urgent and offered to a coder f
     );
     const plainTickets = buildTickets(plain, plain.map(() => []), new Set([1199]));
     expect(
-      roleUnits("coder", plainTickets, classify(plainTickets, []), { route: null }).flatMap((unit) =>
+      roleUnits("coder", plainTickets, classify(plainTickets, [], {}), { route: null }).flatMap((unit) =>
         unit.tickets.map((ticket) => ticket.number),
       ),
     ).toEqual([1210, 1200, urgent]);
@@ -861,7 +861,7 @@ describe("a regression nothing may revert, filed urgent and offered to a coder f
     // `main`): the configured list is what makes the exemption narrow, so
     // omitting it here would assert through a blanket exemption instead.
     expect(
-      roleUnits("coder", routedTickets, classify(routedTickets, []), {
+      roleUnits("coder", routedTickets, classify(routedTickets, [], {}), {
         route: ["difficulty:hard"],
         javLabels: () => ["difficulty:easy", "difficulty:hard"],
       }).flatMap((unit) => unit.tickets.map((ticket) => ticket.number)),
