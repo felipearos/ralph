@@ -5,6 +5,14 @@ how learnings are split.
 
 ## Open: fix these
 
+### frontier tests read the host's real claim-lease store (2026-11-28)
+<!-- learning: frontier-tests-read-host-claim-leases -->
+- **Seen:** rafa #66 verify, 2026-11-28: `bun run test` failed 4 cases in `frontier/next-tasks.test.ts` (untriaged ×3) and `frontier/tracker-frontier.test.ts` on a branch that touches only `dashboard/`; main CI green at caf791e8. `classify()` calls `readLeaseStore(leasePathFromGit())`, i.e. the checkout's `.git/ralph-claim-leases.json`, which held an expired lease for issue 5, so the fixture's `remo-wip` #5 stopped counting as claimed.
+- **Workaround:** a red in those cases on a diff that does not touch `frontier/` is host state, not the diff: confirm with `jq '.leases' "$(git rev-parse --git-common-dir)/ralph-claim-leases.json"` that a fixture issue number has an expired lease, note it in the PR body, and let hosted CI judge.
+- **Fix:** https://github.com/felipearos/software-factory/issues/72
+- **Change:** let `classify` take the lease store (or its path) as an injected dependency, and have the frontier tests pass an empty store or a scratch path instead of the git common dir.
+- **Verify:** with an expired lease for issue 5 written to the real store, `bun x vitest run frontier/next-tasks.test.ts frontier/tracker-frontier.test.ts` passes.
+
 ### An intended screenshot change parks the ticket: the read token can't fetch artifacts (2026-10-08)
 <!-- learning: bk-read-token-no-artifacts -->
 - **Seen:** loggd #2013 / PR #2182, 2026-10-06. Build 3191 failed only `show detail at 1280px` (`e2e/poster-sizing.spec.ts:324`) on a deliberate desktop layout change. The fix is to commit the run's `-actual.png` as the new baseline, but `RALPH_BUILDKITE_READ_TOKEN` carries only `read_builds` and `read_build_logs`. The artifacts API answers "Your access token doesn't have the read_artifacts scope", so rulo blocked the ticket for a human.
