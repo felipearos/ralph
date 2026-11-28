@@ -216,8 +216,10 @@ const HEALTH_KEY = "_/health";
  * `/api/controls` back to back, and each read runs every loop's status. It
  * must stay below the page's poll interval (`POLL_MS` in `ui/reads.ts`), so a
  * reused snapshot is never older than the freshness the page already promises.
+ * Counted from when the read started, and a read takes 1.7–2.5 s on a busy
+ * host, so a window near that length would close before the next request.
  */
-export const RUNTIME_REUSE_MS = 2_000;
+export const RUNTIME_REUSE_MS = 4_000;
 
 /** The project the `adapter` shorthand stands for when no registry is given. */
 export const IMPLICIT_PROJECT: RegisteredProject = {
@@ -483,10 +485,19 @@ function createProjectHandler({
     kept = null;
     generation += 1;
   };
+  // Where and when each adapter read began. The adapter hands an overlapping
+  // caller the read already on the wire, so a caller's own start says nothing:
+  // a read that began before a write, joined after it, must still carry the
+  // write's old generation and its real start, or it would be kept as fresh.
+  const origins = new WeakMap<Promise<Runtime>, { startedMs: number; generation: number }>();
   const readFresh = (): Promise<Runtime> => {
-    const startedMs = performance.now();
-    const startedIn = generation;
     const pending = adapter.read();
+    let origin = origins.get(pending);
+    if (origin === undefined) {
+      origin = { startedMs: performance.now(), generation };
+      origins.set(pending, origin);
+    }
+    const { startedMs, generation: startedIn } = origin;
     reading = pending;
     void pending.then(
       (runtime) => {

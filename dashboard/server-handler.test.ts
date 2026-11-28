@@ -1082,6 +1082,8 @@ describe("projects over HTTP", () => {
       }
     });
 
+    // The adapter's in-flight sharing does this, not the reuse window; pinned
+    // here so the handler's own read path never stops joining it.
     it("shares one read between concurrent requests", async () => {
       const { server, reads } = onePage("http-reuse-concurrent", WIDE_MS);
       try {
