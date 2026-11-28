@@ -130,6 +130,7 @@ const ALLOWED: Record<string, string[]> = {
     "./chat",
     "./chat-routes",
     "./compose",
+    "./compression",
     "./config",
     "./contracts",
     "./control-adapter",
@@ -215,6 +216,8 @@ const ALLOWED: Record<string, string[]> = {
   // given, the remote dashboard's static output; the server only ever calls
   // the in-memory `buildShell`. Vite builds it with the config next door.
   "build.ts": ["node:fs/promises", "node:path", "vite", "./vite-config"],
+  // Response compression (#69): node's zlib and nothing else, no loop state.
+  "compression.ts": ["node:util", "node:zlib"],
   // That Vite config: the UI root, its plugins and the `@/` alias, nothing of ralph's.
   "vite-config.ts": ["node:url", "@tailwindcss/vite", "@vitejs/plugin-react", "vite"],
   // The ci-doctor's CI health: one JSON cache read off the checkout's own

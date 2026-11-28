@@ -63,6 +63,7 @@ import { gatedStart, type AgentsDeps, type ProjectRegistryWrite } from "./agents
 import { handleAgentRoute, handleProjectRemoval, START_AGENT_PATH, type AgentsFactory } from "./agents-routes";
 import { aggregateDashboard } from "./aggregate";
 import { buildShell, type Asset } from "./build";
+import { compressible, createAssetCompressionCache, negotiate, withCompression, type AssetCompressionCache } from "./compression";
 import { configFromEnv, DashboardConfigError } from "./config";
 import type {
   AccountUsageView,
@@ -242,6 +243,11 @@ export interface HandlerOptions {
   shell: string;
   /** The shell's bundled script and stylesheet, keyed by request path. */
   assets?: ReadonlyMap<string, Asset>;
+  /**
+   * Where compressed assets are kept, one per path and encoding; defaults to a
+   * cache of this handler's own. Injected so a test can count compressions.
+   */
+  assetCompression?: AssetCompressionCache;
   /** Extra `Host` names answered beside loopback and the tailnet (`RALPH_DASHBOARD_HOSTS`). */
   hosts?: ReadonlySet<string>;
   /** Defaults to the wall clock; injected as a factory so tests can freeze it. */
@@ -797,6 +803,7 @@ export function createHandler({
   usage,
   shell,
   assets = new Map(),
+  assetCompression = createAssetCompressionCache(),
   hosts = new Set<string>(),
   agents,
   registry,
@@ -951,7 +958,7 @@ export function createHandler({
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
     });
 
-  return async (request: Request): Promise<Response> => {
+  const handle = async (request: Request): Promise<Response> => {
     // Request authenticity, before any route: the server has no login by
     // design (the machine's user is the operator), so these two checks are
     // what keeps another site's page — on this machine or any tailnet device —
@@ -1058,13 +1065,26 @@ export function createHandler({
     const asset = assets.get(pathname);
     if (asset !== undefined) {
       // Names are content-hashed by the build, so a served asset never goes stale.
-      return new Response(asset.body, {
-        status: 200,
-        headers: { "content-type": asset.type, "cache-control": "public, max-age=31536000, immutable" },
-      });
+      const headers: Record<string, string> = { "content-type": asset.type, "cache-control": "public, max-age=31536000, immutable" };
+      const encoding = negotiate(request.headers.get("accept-encoding"));
+      if (encoding !== null && compressible(asset.type)) {
+        // Compressed once per asset and encoding, then served from memory; on a
+        // failed compression the plain bytes go out as they always did.
+        const encoded = await assetCompression.get(pathname, asset.body, encoding);
+        if (encoded !== null) {
+          return new Response(encoded, {
+            status: 200,
+            headers: { ...headers, "content-encoding": encoding, vary: "Accept-Encoding" },
+          });
+        }
+      }
+      return new Response(asset.body, { status: 200, headers });
     }
     return json({ error: "not found" }, 404);
   };
+  // Wrapped once around the whole dispatcher, so every route — the shell, the
+  // JSON reads, the error answers — is negotiated in one place.
+  return withCompression(handle);
 }
 
 async function main(): Promise<void> {
