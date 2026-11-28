@@ -393,6 +393,23 @@ describe("snapshot routes", () => {
     expect(big.status).toBe(503);
     expect(await big.json()).toMatchObject({ error: "SnapshotTooLarge" });
   });
+
+  it("refuses the dashboard an older bridge pushed, and serves a current bridge's", async () => {
+    const body = await pushJson("acme-widgets", "dashboard", { loops: [], ownership: { claims: [] }, frontier: null });
+    await bridge({ leaseSeconds: 45, schema: SNAPSHOT_SCHEMA - 1 });
+    for (const path of ["/api/p/acme-widgets/dashboard", "/api/p/acme-widgets/loops"]) {
+      const old = await remote().get(path);
+      expect(old.status).toBe(503);
+      const answer = (await old.json()) as { error: string; message?: string };
+      expect(answer).toMatchObject({ error: "SnapshotSchema" });
+      expect(JSON.stringify(answer)).toContain("deploy ~/ralph");
+    }
+    await bridge({ leaseSeconds: 45 });
+    const full = await remote().get("/api/p/acme-widgets/dashboard");
+    expect(full.status).toBe(200);
+    expect(new Uint8Array(await full.arrayBuffer())).toEqual(body);
+    expect((await remote().get("/api/p/acme-widgets/loops")).status).toBe(200);
+  });
 });
 
 describe("viewer presence", () => {

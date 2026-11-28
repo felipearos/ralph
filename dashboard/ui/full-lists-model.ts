@@ -13,6 +13,20 @@ export function dataOf<T>(read: Read<T>): T | null {
   return read.state === "loading" ? null : read.data;
 }
 
+/** What a page drawing one full-list read shows: a skeleton, the failure, or the data. */
+export type FullListView<T> = { kind: "loading" } | { kind: "error"; message: string } | { kind: "data"; data: T };
+
+/**
+ * The three-way choice of the backlog, CI and Learnings pages: a skeleton
+ * while the first read is out, the failure when it failed before it ever
+ * answered, and otherwise the data — the last answer through a failed poll.
+ */
+export function fullListView<T>(read: Read<T>): FullListView<T> {
+  if (read.state === "loading") return { kind: "loading" };
+  if (read.state === "error" && read.data === null) return { kind: "error", message: read.message };
+  return { kind: "data", data: read.data as T };
+}
+
 /**
  * The loop page's activity rows: the panel read's full list once it has one,
  * else the overview's capped rows, so the feed never draws empty while the

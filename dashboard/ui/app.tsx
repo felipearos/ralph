@@ -119,7 +119,7 @@ import { snapshotStamp } from "./remote-model";
 import type { LiveStatus } from "./live-stream";
 import type { Read } from "./query-reads";
 import { POLL_MS } from "./reads";
-import { dataOf, recentRows, recentTotal } from "./full-lists-model";
+import { fullListView, recentRows, recentTotal } from "./full-lists-model";
 import {
   useBridgeStatus,
   useDashboard,
@@ -1054,10 +1054,24 @@ function BacklogOverview({
   data: DashboardOverview;
   repoUrls: Record<string, string | null>;
 }) {
-  const read = useFrontier(project).read;
-  if (read.state === "loading") return <Skeleton className="h-64" />;
-  // A failed first read draws as an unread frontier does; a failed poll keeps the last one.
-  return <Backlog frontier={read.data} repoUrls={repoUrls} nowMs={new Date(data.generatedAt).getTime()} loops={data.loops} />;
+  const view = fullListView(useFrontier(project).read);
+  if (view.kind === "loading") return <Skeleton className="h-64" />;
+  // A failed first read says so; a failed poll keeps drawing the last frontier.
+  if (view.kind === "error") return <FullListError title="The backlog could not be read" message={view.message} />;
+  return <Backlog frontier={view.data} repoUrls={repoUrls} nowMs={new Date(data.generatedAt).getTime()} loops={data.loops} />;
+}
+
+/** A full-list read that failed before it ever answered (#67), drawn as `UsagePage` draws one. */
+function FullListError({ title, message }: { title: string; message: string }) {
+  return (
+    <Alert variant="destructive" className="bg-transparent">
+      <CircleAlert />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>
+        <p>{message}</p>
+      </AlertDescription>
+    </Alert>
+  );
 }
 
 /**
@@ -1065,8 +1079,10 @@ function BacklogOverview({
  * they read the full dashboard, polled only while one is on screen.
  */
 function FullDashboardOverview({ project, draw }: { project: string; draw: (full: Dashboard) => React.ReactNode }) {
-  const full = dataOf(useFullDashboard(project).read);
-  return full ? draw(full) : <Skeleton className="h-64" />;
+  const view = fullListView(useFullDashboard(project).read);
+  if (view.kind === "loading") return <Skeleton className="h-64" />;
+  if (view.kind === "error") return <FullListError title="The dashboard could not be read" message={view.message} />;
+  return draw(view.data);
 }
 
 /* ---------------------------------------------------------------- detail */
@@ -1193,15 +1209,19 @@ function LoopDetail({
   // A control action re-reads both feeds right away.
   const loopControl = useLoopControl(name);
   const refreshControl = loopControl.refresh;
+  // The overview caps the loop's recent activity (#67); the feed below draws
+  // this full panel's rows, read only while this page is on screen. A control
+  // action re-reads it too, so the activity it caused shows without a poll.
+  const loopPanel = useLoopPanel(project, name);
+  const refreshPanel = loopPanel.refresh;
   const refresh = useCallback(() => {
     refreshControl();
+    refreshPanel();
     onSent();
-  }, [refreshControl, onSent]);
+  }, [refreshControl, refreshPanel, onSent]);
   // The loop's panel is its row of the dashboard feed the app already polls.
   const feed = feedOf(dashboard, (data) => data.loops.find((entry) => entry.loop === name) ?? null);
-  // The overview caps the loop's recent activity (#67); the feed below draws
-  // this full panel's rows, read only while this page is on screen.
-  const panel = useLoopPanel(project, name).read;
+  const panel = loopPanel.read;
   const control = loopControl.read;
   const entry = feed.state === "loading" ? null : feed.data;
   // One read of the role's rules for the whole page, as `LoopCard` does.

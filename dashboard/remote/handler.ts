@@ -359,6 +359,21 @@ export function createRemoteHandler({
       if (head.problem === "too-large") return failure(503, "SnapshotTooLarge", `'${key}' is over the store's size limit, so it is not relayed`);
       return failure(503, "SnapshotUnavailable", `the machine could not read '${key}': ${head.problem}`);
     }
+    // An older bridge (schema 1) still pushes `GET /api/loops` as `dashboard`,
+    // which is now the capped overview: the full-list pages would draw it
+    // wrongly, so say so instead. No bridge row or no schema keeps today's
+    // answer — a missing signal never blocks the page.
+    if (key === "dashboard" && surface !== "intake") {
+      const [bridgeRow] = await sql<{ schema: number | null }>("select schema from ralph.bridge");
+      const bridgeSchema = bridgeRow?.schema ?? null;
+      if (bridgeSchema !== null && bridgeSchema < schema) {
+        return failure(
+          503,
+          "SnapshotSchema",
+          `the machine runs an older ralph (snapshot schema ${bridgeSchema}, this page expects ${schema}); deploy ~/ralph`,
+        );
+      }
+    }
     const version = head.version === null ? null : String(head.version);
     let entry = version === null ? undefined : cache.get(cacheKey);
     if (entry === undefined || entry.version !== version) {

@@ -105,11 +105,9 @@ function useFloor(projects: readonly ProjectView[] | null): { reads: ProjectRead
     if (settled) everLoaded.current = true;
     return {
       reads,
-      // A frontier read that failed before it ever answered leaves the coder lane empty: name the project.
-      failed: list.filter(
-        (id, index) =>
-          snapshot[index]?.state === "error" || (frontierReads[index]?.state === "error" && !seenFrontier.current.has(id)),
-      ),
+      // A failed frontier read is named as a failed overview read is: before it ever
+      // answered the coder lane is empty, after it the cells are the last frontier's, stale.
+      failed: list.filter((_id, index) => snapshot[index]?.state === "error" || frontierReads[index]?.state === "error"),
       loaded: list.length > 0 && everLoaded.current,
     };
   }, [snapshot, frontierReads, key]);

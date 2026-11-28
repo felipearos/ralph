@@ -25,29 +25,29 @@ import {
 } from "./reads";
 import type { Screen } from "./route-tree";
 
-const P = "loggd";
-const CHROME_LOCAL = ["/api/p/loggd/loops", "/api/p/loggd/setup", "/api/projects/health?selected=loggd", "/api/p/loggd/sleep", "/api/projects", "/api/p/loggd/controls"];
-const CHROME_REMOTE = ["/api/p/loggd/loops", "/api/p/loggd/setup", "/api/projects/health?selected=loggd", "/api/p/loggd/bridge", "/api/projects", "/api/p/loggd/controls"];
+const P = "acme-widgets";
+const CHROME_LOCAL = ["/api/p/acme-widgets/loops", "/api/p/acme-widgets/setup", "/api/projects/health?selected=acme-widgets", "/api/p/acme-widgets/sleep", "/api/projects", "/api/p/acme-widgets/controls"];
+const CHROME_REMOTE = ["/api/p/acme-widgets/loops", "/api/p/acme-widgets/setup", "/api/projects/health?selected=acme-widgets", "/api/p/acme-widgets/bridge", "/api/projects", "/api/p/acme-widgets/controls"];
 
 // Each project screen's body reads, on top of the chrome (literal URLs, so a renamed route shows here);
 // a third entry is what the remote page reads instead.
 const BODY: [Screen, string[], string[]?][] = [
-  [{ page: "agents" }, ["/api/p/loggd/agents", "/api/p/loggd/sentinel"]],
+  [{ page: "agents" }, ["/api/p/acme-widgets/agents", "/api/p/acme-widgets/sentinel"]],
   [
     { page: "loop", name: "rafa" },
-    ["/api/p/loggd/usage", "/api/p/loggd/loops/rafa/notifications", "/api/p/loggd/loops/rafa/history", "/api/p/loggd/loops/rafa"],
+    ["/api/p/acme-widgets/usage", "/api/p/acme-widgets/loops/rafa/notifications", "/api/p/acme-widgets/loops/rafa/history", "/api/p/acme-widgets/loops/rafa"],
   ],
-  [{ page: "notifications" }, ["/api/p/loggd/notifications"]],
-  [{ page: "usage" }, ["/api/p/loggd/usage"]],
+  [{ page: "notifications" }, ["/api/p/acme-widgets/notifications"]],
+  [{ page: "usage" }, ["/api/p/acme-widgets/usage"]],
   // The remote does not relay labels; its page draws "local only".
-  [{ page: "labels" }, ["/api/p/loggd/labels"], []],
+  [{ page: "labels" }, ["/api/p/acme-widgets/labels"], []],
   // The full lists the overview leaves out (#67).
-  [{ page: "backlog" }, ["/api/p/loggd/frontier"]],
-  [{ page: "ci" }, ["/api/p/loggd/dashboard"]],
-  [{ page: "learnings" }, ["/api/p/loggd/dashboard"]],
+  [{ page: "backlog" }, ["/api/p/acme-widgets/frontier"]],
+  [{ page: "ci" }, ["/api/p/acme-widgets/dashboard"]],
+  [{ page: "learnings" }, ["/api/p/acme-widgets/dashboard"]],
   [{ page: "ownership" }, []],
   [{ page: "reconciliation" }, []],
-  [{ page: "settings" }, ["/api/p/loggd/settings", "/api/p/loggd/settings/prompts"]],
+  [{ page: "settings" }, ["/api/p/acme-widgets/settings", "/api/p/acme-widgets/settings/prompts"]],
   [{ page: "states" }, []],
 ];
 
@@ -67,7 +67,7 @@ describe("pageReads", () => {
       expect(urls({ page: "landing" }, P, remote)).toEqual(["/api/projects"]);
     });
     it(`intake reads its own view, without the chrome (${remote ? "remote" : "local"})`, () => {
-      expect(urls({ page: "intake" }, P, remote)).toEqual(["/api/p/loggd/intake"]);
+      expect(urls({ page: "intake" }, P, remote)).toEqual(["/api/p/acme-widgets/intake"]);
     });
   }
 

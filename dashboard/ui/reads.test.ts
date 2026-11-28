@@ -140,15 +140,15 @@ describe("named reads", () => {
   });
 
   it("reads each full list the overview leaves out on its own URL, polled (#67)", () => {
-    expect(loopPanelRead("loggd", "rafa")).toEqual({ url: "/api/p/loggd/loops/rafa", intervalMs: POLL_MS });
+    expect(loopPanelRead("acme-widgets", "rafa")).toEqual({ url: "/api/p/acme-widgets/loops/rafa", intervalMs: POLL_MS });
     expect(loopPanelRead("a/b", "my loop").url).toBe("/api/p/a%2Fb/loops/my%20loop");
-    expect(frontierRead("loggd")).toEqual({ url: "/api/p/loggd/frontier", intervalMs: POLL_MS });
-    expect(fullDashboardRead("loggd")).toEqual({ url: "/api/p/loggd/dashboard", intervalMs: POLL_MS });
+    expect(frontierRead("acme-widgets")).toEqual({ url: "/api/p/acme-widgets/frontier", intervalMs: POLL_MS });
+    expect(fullDashboardRead("acme-widgets")).toEqual({ url: "/api/p/acme-widgets/dashboard", intervalMs: POLL_MS });
     expect(fullDashboardRead("my project").url).toBe("/api/p/my%20project/dashboard");
   });
 
   it("reads the floor's frontiers on the backlog's URL every fifteen seconds", () => {
-    expect(floorFrontierRead("loggd")).toEqual({ url: "/api/p/loggd/frontier", intervalMs: FLOOR_POLL_MS });
+    expect(floorFrontierRead("acme-widgets")).toEqual({ url: "/api/p/acme-widgets/frontier", intervalMs: FLOOR_POLL_MS });
     expect(floorFrontierRead("my project").url).toBe(frontierRead("my project").url);
   });
 
