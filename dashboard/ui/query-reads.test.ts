@@ -1026,6 +1026,147 @@ describe("prefetch", () => {
   });
 });
 
+describe("a fresh read on a cold load (#68)", () => {
+  it("does not re-read a settled prefetch for a polling subscriber within its interval, and polls on the remainder", async () => {
+    const { clock, net, store } = setup();
+    store.prefetch("/api/a");
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    clock.advance(600);
+    const cached = store.get("/api/a");
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(1);
+    expect(store.get("/api/a")).toBe(cached);
+    expect(store.inFlight("/api/a")).toBe(false);
+    expect(clock.pending()).toEqual([4_400]);
+    clock.advance(4_399);
+    expect(net.calls).toHaveLength(1);
+    clock.advance(1);
+    expect(net.calls).toHaveLength(2);
+  });
+
+  it("does not re-read for a panel remounted within its interval (a redirect), and shows the cache at once", async () => {
+    const { clock, net, store } = setup();
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    const cached = store.get("/api/a");
+    clock.advance(50);
+    leave();
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(store.get("/api/a")).toBe(cached);
+    expect(net.calls).toHaveLength(1);
+    expect(clock.pending()).toEqual([4_950]);
+    clock.advance(4_950);
+    expect(net.calls).toHaveLength(2);
+  });
+
+  it("reads at once for a subscriber after a refresh nobody heard, though the data is within its interval", async () => {
+    const { clock, net, store } = setup();
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    leave();
+    store.refresh("/api/a");
+    expect(net.calls).toHaveLength(1);
+    clock.advance(100);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(2);
+    expect(store.inFlight("/api/a")).toBe(true);
+  });
+
+  it("reads at once for a subscriber after a refresh nobody heard while a read was on the wire", async () => {
+    const { clock, net, store } = setup();
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    leave();
+    // The change lands after the read started: its answer may predate it.
+    store.refresh("/api/a");
+    expect(net.calls).toHaveLength(1);
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    expect(clock.pending()).toEqual([]);
+    clock.advance(100);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(2);
+  });
+
+  it("re-checks skipped data within the subscribers' interval, and the stream opening does not push that back", async () => {
+    const { clock, net, store } = setup();
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    // The operator goes to another project: no stream watches this URL now.
+    leave();
+    clock.advance(4_000);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(1);
+    expect(clock.pending()).toEqual([1_000]);
+    // Back on the project, its stream opens and slows the poll to a fallback.
+    store.livePoll("/api/a", 60_000);
+    expect(clock.pending()).toEqual([1_000]);
+    clock.advance(1_000);
+    expect(net.calls).toHaveLength(2);
+    net.call(1).answer(json({ n: 2 }));
+    await flush();
+    expect(clock.pending()).toEqual([60_000]);
+  });
+
+  it("judges freshness by the subscribers' interval, not a live stream's slower one", async () => {
+    const { clock, net, store } = setup();
+    store.livePoll("/api/a", 60_000);
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    leave();
+    clock.advance(6_000);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(2);
+  });
+
+  it("reads at once for a returning subscriber on an error with data, though within its interval", async () => {
+    const { clock, net, store } = setup();
+    const leave = store.subscribe("/api/a", 5_000, () => {});
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    store.refresh("/api/a");
+    net.call(1).answer(json({ message: "adapter down" }, { status: 503 }));
+    await flush();
+    leave();
+    clock.advance(100);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(store.get("/api/a")).toMatchObject({ state: "error", data: { n: 1 } });
+    expect(net.calls).toHaveLength(3);
+  });
+
+  it("still reads for a one-shot subscriber after a fresh prefetch (#734)", async () => {
+    const { net, store } = setup();
+    store.prefetch("/api/a");
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    store.subscribe("/api/a", null, () => {});
+    expect(store.get("/api/a")).toEqual({ state: "loading" });
+    expect(net.calls).toHaveLength(2);
+  });
+
+  it("while hidden reads nothing and arms nothing for a fresh entry; showing the page catches it up", async () => {
+    const { clock, net, page, store } = hiddenSetup();
+    store.prefetch("/api/a");
+    net.call(0).answer(json({ n: 1 }));
+    await flush();
+    page.hide();
+    clock.advance(100);
+    store.subscribe("/api/a", 5_000, () => {});
+    expect(net.calls).toHaveLength(1);
+    expect(clock.pending()).toEqual([]);
+    page.show();
+    expect(net.calls).toHaveLength(2);
+    net.call(1).answer(json({ n: 2 }));
+    await flush();
+    expect(store.get("/api/a")).toMatchObject({ state: "ready", data: { n: 2 } });
+    expect(clock.pending()).toEqual([5_000]);
+  });
+});
+
 describe("review fixes (#727)", () => {
   it("does not re-read a failed prefetch on every hover within KEEP_ALIVE_MS", async () => {
     const { clock, net, store } = setup();
