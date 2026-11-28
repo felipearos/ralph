@@ -213,6 +213,18 @@ export function sentinelRulesRead(project: string | null): ReadTarget<SentinelVi
   return oneShot(scoped(project, "/api/agents/sentinel"));
 }
 
+/**
+ * The same rules without the open rules PR (#65): the agent card's Off line
+ * reads only the rules, and asking GitHub for the PR costs ~3 s on a cold load.
+ * Its own URL, so the sheets' full read never answers from it.
+ */
+export function rulesOnlyRead<K extends "sentinel" | "verifier">(
+  project: string | null,
+  kind: K,
+): ReadTarget<K extends "sentinel" ? SentinelView : VerifierView> {
+  return oneShot(scoped(project, `/api/agents/${kind}?pending=skip`));
+}
+
 export function javRead(project: string | null): ReadTarget<JavView> {
   return oneShot(scoped(project, "/api/jav"));
 }

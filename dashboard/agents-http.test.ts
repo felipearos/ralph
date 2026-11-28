@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type { RulesPrCache } from "./agents";
 import { createAgentsAdapter } from "./agents-adapter";
 import type {
   AddAgentResult,
@@ -133,7 +134,11 @@ const readRecords = (path: string): string[][] => {
  * — which may spell roles (`{ name, role }`), as a project's roster can — and
  * any `extra` top-level blocks, such as a `verifier`.
  */
-function machine(loops: (string | { name: string; role: string })[] = CONFIG.loops, extra: Record<string, unknown> = {}): Machine {
+function machine(
+  loops: (string | { name: string; role: string })[] = CONFIG.loops,
+  extra: Record<string, unknown> = {},
+  options: { rulesPrs?: RulesPrCache } = {},
+): Machine {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "ralph-agents-http-")));
   scratch.push(dir);
   const bin = join(dir, "bin");
@@ -239,6 +244,8 @@ function machine(loops: (string | { name: string; role: string })[] = CONFIG.loo
     }),
     // As compose.ts does: the registry entry's own folder, when it names one.
     agents: (project) => ({
+      // compose.ts holds one cache for the process; a suite that pins it passes its own.
+      ...(options.rulesPrs === undefined ? {} : { rulesPrs: options.rulesPrs }),
       agents: createAgentsAdapter({
         cliDir: CLI_DIR,
         root: project.path,
@@ -1861,6 +1868,36 @@ describe("the sentinel", () => {
     const again = (await (await post(m, "/api/p/proj/agents/sentinel", { rules: RULES })).json()) as ProposeSentinelResult;
     expect(again).toEqual({ outcome: "refused", why: expect.stringContaining(url) });
     expect(writes(m.gitCalls()).filter((line) => line.startsWith("push")).length).toBe(pushes);
+  });
+
+  it("asks GitHub for the open rules PR once a minute, and shows a proposed one at once", async () => {
+    const clock = { at: 1_000 };
+    // A cache on the deps, as compose.ts wires one.
+    const cachedM = machine(["ralph", { name: "sent", role: "sentinel" }], { sentinel: SENTINEL, configChanges: "pr" }, {
+      rulesPrs: { now: () => clock.at, entries: new Map() },
+    });
+    const lists = () => cachedM.ghCalls().filter((call) => call[0] === "pr" && call[1] === "list").length;
+    expect((await (await get(cachedM, "/api/p/proj/agents/sentinel")).json()) as SentinelView).toMatchObject({ pending: null });
+    expect((await (await get(cachedM, "/api/p/proj/agents/sentinel")).json()) as SentinelView).toMatchObject({ pending: null });
+    expect(lists()).toBe(1);
+    const proposed = (await (await post(cachedM, "/api/p/proj/agents/sentinel", { rules: RULES })).json()) as ProposeSentinelResult;
+    expect(proposed.outcome).toBe("proposed");
+    const before = lists();
+    const after = (await (await get(cachedM, "/api/p/proj/agents/sentinel")).json()) as SentinelView;
+    expect(after.pending).not.toBeNull();
+    expect(lists()).toBe(before);
+  });
+
+  it("skips the open-PR lookup on ?pending=skip, answering no pending PR", async () => {
+    const m = sentinelMachine();
+    const url = "https://github.com/o/r/pull/4";
+    m.prs([{ url, state: "OPEN", headRefName: `${PREFIX}x` }]);
+    const response = await get(m, "/api/p/proj/agents/sentinel?pending=skip");
+    expect(response.status).toBe(200);
+    expect((await response.json()) as SentinelView).toMatchObject({ rules: { lookbackHours: 48, mode: "file" }, pending: null });
+    expect(m.ghCalls().filter((call) => call[0] === "pr" && call[1] === "list")).toEqual([]);
+    // Any other value reads it as before.
+    expect((await (await get(m, "/api/p/proj/agents/sentinel?pending=read")).json()) as SentinelView).toMatchObject({ pending: { url } });
   });
 
   it("answers a body without an object of rules with a 400", async () => {

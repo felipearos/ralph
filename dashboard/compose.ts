@@ -13,7 +13,7 @@
  * that one factory. `deps.factories` holds only what runs no executor.
  */
 import { createRalphAdapter, defaultBunPath } from "./adapter";
-import type { AgentsDeps } from "./agents";
+import type { AgentsDeps, RulesPrCache } from "./agents";
 import { createAgentsAdapter } from "./agents-adapter";
 import type { Asset } from "./build";
 import { ChatSessions, createChatRunner } from "./chat";
@@ -161,7 +161,11 @@ export function composeServer(deps: ServerDeps): ComposedServer {
     });
   // Fetches, pushes and `gh pr create` go over the network.
   const agentsExecutor = deps.executor(120_000);
+  // One rules-PR cache for the process: the adapter below is per request. A
+  // monotonic clock, so a wall-clock step back cannot stretch the TTL.
+  const rulesPrs: RulesPrCache = { now: () => performance.now(), entries: new Map() };
   const agents = (project: RegisteredProject): AgentsDeps => ({
+    rulesPrs,
     agents: createAgentsAdapter({
       cliDir: config.cliDir,
       root: project.path,

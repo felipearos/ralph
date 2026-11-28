@@ -29,6 +29,7 @@ import {
   projectsRead,
   verifierRead,
   sentinelRead,
+  rulesOnlyRead,
   sentinelRulesRead,
   setupDefaultsRead,
   settingsRead,
@@ -149,6 +150,8 @@ describe("named reads", () => {
     expect(verifierRead(null)).toEqual({ url: "/api/agents/verifier", intervalMs: null });
     expect(sentinelRulesRead("loggd")).toEqual({ url: "/api/p/loggd/agents/sentinel", intervalMs: null });
     expect(sentinelRulesRead(null)).toEqual({ url: "/api/agents/sentinel", intervalMs: null });
+    expect(rulesOnlyRead("loggd", "sentinel")).toEqual({ url: "/api/p/loggd/agents/sentinel?pending=skip", intervalMs: null });
+    expect(rulesOnlyRead(null, "verifier")).toEqual({ url: "/api/agents/verifier?pending=skip", intervalMs: null });
     expect(javRead("loggd")).toEqual({ url: "/api/p/loggd/jav", intervalMs: null });
     expect(javRead(null)).toEqual({ url: "/api/jav", intervalMs: null });
     expect(settingsRead("loggd")).toEqual({ url: "/api/p/loggd/settings", intervalMs: null });

@@ -642,7 +642,13 @@ Paths below are shown unscoped; each is also served under `/api/p/:project`.
   and the form shows its default), whether a roster loop has the verifier
   role, the open rules PR (head `ralph-roster/verifier-rules-*`), if any, and
   how a save lands (`commit` or `pr`, the config's `configChanges`). The
-  Verifier sheet reads it.
+  Verifier sheet reads it. The open-PR lookup is a `gh pr list` (~3 s), so a
+  successful answer is kept for a minute per process (#65); a save writes
+  through (its own fresh check, and the PR it opens), so only a PR opened or
+  closed outside the dashboard waits that minute out. An unreadable list is
+  never kept and answers `pending: null`. With `?pending=skip` the lookup is
+  not made at all and `pending` is `null`: the agent card's Off line reads it
+  that way, on every cold load.
 - `POST /api/agents/verifier` `{ rules }` — save new verifier rules.
   `project-config --set-verifier --at origin/<baseBranch>` (the rules as JSON
   on stdin) replaces only the block's rules (`enabled`, `windowHours`,
@@ -674,7 +680,8 @@ Paths below are shown unscoped; each is also served under `/api/p/:project`.
   pending, configChanges }`: the sentinel's rules as `origin/<baseBranch>`'s
   `sentinel` block spells them, whether a roster loop has the sentinel role,
   the open rules PR (head `ralph-roster/sentinel-rules-*`), if any, and how a
-  save lands. The Sentinel sheet reads it.
+  save lands. The Sentinel sheet reads it; the open-PR lookup is cached and
+  skippable (`?pending=skip`, the agent card's read) as for the verifier.
 - `POST /api/agents/sentinel` `{ rules }` — save new sentinel rules, as the
   verifier's POST does: `project-config --set-sentinel --at origin/<baseBranch>`
   replaces only `enabled`, `lookbackHours`, `minEvents`, `minUsers`,
@@ -1915,8 +1922,9 @@ lineup and Jav blocks by, so the two cannot disagree. Neither runs loop code.
   card line `Off: disabled in config`.
 - `ui/agent-switch.tsx` — the On/Off switch at the top of the Sentinel and
   Verifier sheets, and the `Off: disabled in config` line on a sentinel's or
-  verifier's card (local only; it reads `/api/agents/sentinel` or
-  `/api/agents/verifier`, the base branch's rules the gate re-reads). A switch
+  verifier's card (local only; it reads `/api/agents/sentinel?pending=skip`
+  or `/api/agents/verifier?pending=skip`, the base branch's rules the gate
+  re-reads, without the open-PR lookup (#65)). A switch
   saves at once through the same POST as the rules, sending the base branch's
   rules with only `enabled` changed, so its commit reads `ralph: sentinel
   rules — enabled true → false`. Off, the gate keeps polling and does nothing
