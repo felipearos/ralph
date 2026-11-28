@@ -7,7 +7,7 @@
  * criteria no check-in could verify live. `.tsx` has no tests, so every
  * string this panel draws is decided here.
  */
-import { FOLLOWING_WOULD_BE, verifiers, type Dashboard, type FollowingWatchView, type FollowingWouldBe } from "../contracts";
+import { FOLLOWING_WOULD_BE, verifiers, type DashboardOverview, type FollowingWatchView, type FollowingWouldBe } from "../contracts";
 
 /** A watch still checking in. */
 export interface FollowingProgressRow {
@@ -167,7 +167,7 @@ const degraded = (problem: string, readAt: string | null): FollowingPanelView =>
  * no verifier nobody is following merges, and "nothing is being followed"
  * would read as all clear rather than as a question nobody is asking.
  */
-export function followingPanel(data: Dashboard, now: Date): FollowingPanelView | null {
+export function followingPanel(data: DashboardOverview, now: Date): FollowingPanelView | null {
   if (verifiers(data.loops).length === 0) return null;
   const read = data.following ?? null;
   if (read === null) return degraded("the adapter supplied no Following read", null);

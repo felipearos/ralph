@@ -7,14 +7,15 @@
  *
  * It reads each project's own snapshot (`/api/p/:id/loops`) through the
  * Query read layer (`floorRead`, `useDashboards`), the same entry the project
- * pages poll, so
+ * pages poll, and beside it the project's full frontier (`/api/p/:id/frontier`,
+ * `useFloorFrontiers`), whose tree and PRs that overview leaves out (#67), so
  * it adds no server route and no new process. A
  * project whose read fails keeps its last agents and is named in the header,
  * rather than vanishing and making the floor look quieter than it is.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { Dashboard, ProjectView } from "../contracts";
+import type { DashboardOverview, FrontierRead, ProjectView } from "../contracts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -33,7 +34,7 @@ import { AGENT_LOOK, Inbox, Matrix, Overview, Pipeline, ProjectCards, ROLE_TITLE
 import { InAppLink } from "./in-app-link";
 import { FLOOR_POLL_MS } from "./reads";
 import { Tip } from "./tip";
-import { useDashboards } from "./use-reads";
+import { useDashboards, useFloorFrontiers } from "./use-reads";
 
 /** How much of the timeline this browser keeps. */
 const HISTORY_WINDOW_MS = 2 * 3_600_000;
@@ -69,13 +70,16 @@ const TASK_WORD: Record<CellState, string> = {
 function useFloor(projects: readonly ProjectView[] | null): { reads: ProjectRead[]; failed: string[]; loaded: boolean } {
   const ids = (projects ?? []).map((project) => project.id);
   const { reads: snapshot } = useDashboards(ids);
+  // The tree and the PRs the cells draw are the full frontier's (#67), read at the floor's pace beside the overview.
+  const { reads: frontierReads } = useFloorFrontiers(ids);
   const key = ids.join("\n");
   // What the floor last drew per project, and whether it ever loaded. A
   // change to the project list rebinds every entry, and the Query layer
   // forgets an entry nobody has held for a minute (or never read), so without
   // these an added project could send the floor back to a skeleton: a blip
   // is not an empty floor.
-  const seen = useRef<Map<string, Dashboard>>(new Map());
+  const seen = useRef<Map<string, DashboardOverview>>(new Map());
+  const seenFrontier = useRef<Map<string, FrontierRead | null>>(new Map());
   const everLoaded = useRef(false);
   // Keyed on the store's snapshot, which keeps its identity until a read
   // changes: `Factory` and `useHistory` act on every new `reads`, and a fresh
@@ -88,7 +92,13 @@ function useFloor(projects: readonly ProjectView[] | null): { reads: ProjectRead
       const read = snapshot[index];
       const data = read === undefined || read.state === "loading" ? null : read.data;
       if (data !== null) seen.current.set(id, data);
-      return { id, dashboard: data ?? seen.current.get(id) ?? null };
+      const frontierRead = frontierReads[index];
+      // A failed or rebound frontier read keeps the project's last one, as the overview does;
+      // only an answer (a frontier, or a project with none) replaces it.
+      if (frontierRead?.state === "ready" || (frontierRead?.state === "error" && frontierRead.data !== null)) {
+        seenFrontier.current.set(id, frontierRead.data);
+      }
+      return { id, dashboard: data ?? seen.current.get(id) ?? null, frontier: seenFrontier.current.get(id) ?? null };
     });
     // No projects keeps the floor unloaded, as before the store.
     const settled = list.length > 0 && snapshot.length === list.length && snapshot.every((read) => read.state !== "loading");
@@ -98,7 +108,7 @@ function useFloor(projects: readonly ProjectView[] | null): { reads: ProjectRead
       failed: list.filter((_, index) => snapshot[index]?.state === "error"),
       loaded: list.length > 0 && everLoaded.current,
     };
-  }, [snapshot, key]);
+  }, [snapshot, frontierReads, key]);
 }
 
 function AgentMark({ agent, showProject }: { agent: AgentCell; showProject: boolean }) {

@@ -207,8 +207,9 @@ const ASK_ORDER = ["triaged for a person", "waits on its reporter", "stuck on a 
  */
 export function ticketAsks(reads: readonly ProjectRead[], nowMs: number): TicketAsk[] {
   const asks: TicketAsk[] = [];
-  for (const { id, dashboard } of reads) {
-    const view = dashboard?.frontier?.view;
+  for (const { id, dashboard, frontier } of reads) {
+    // The human and stuck tickets are read off the tree, which only the full frontier carries (#67).
+    const view = frontier?.view;
     if (!dashboard || !view) continue;
     const repoUrl = dashboard.loops.find((loop) => loop.repoUrl !== null)?.repoUrl ?? null;
     const byWhy = new Map<string, TicketAsk>();
@@ -314,13 +315,14 @@ export interface PipelineRow {
  */
 export function pipeline(reads: readonly ProjectRead[], nowMs: number): PipelineRow[] {
   const rows: PipelineRow[] = [];
-  for (const { id, dashboard } of reads) {
+  for (const { id, dashboard, frontier } of reads) {
     if (dashboard === null) continue;
-    const view = dashboard.frontier?.view ?? null;
+    // The tree and the PRs are the full frontier's (#67); the overview has neither.
+    const view = frontier?.view ?? null;
     const repoUrl = dashboard.loops.find((loop) => loop.repoUrl !== null)?.repoUrl ?? null;
     const pullUrl = (pr: number) => (repoUrl === null ? null : `${repoUrl}/pull/${pr}`);
     const loops = new Map(dashboard.loops.map((loop) => [loop.loop, loop]));
-    const prs = dashboard.frontier?.prs ?? [];
+    const prs = frontier?.prs ?? [];
     const openPr = new Map(prs.filter((pull) => pull.state !== "merged").map((pull) => [pull.issue, pull]));
     const columns = Object.fromEntries(STAGE_COLUMNS.map((column) => [column, [] as TicketChip[]])) as Record<StageColumn, TicketChip[]>;
     const seen = new Set<number>();

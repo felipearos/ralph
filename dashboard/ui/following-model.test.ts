@@ -7,7 +7,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { Dashboard, DashboardLoop, FollowingRead, FollowingWatchView, LoopRole } from "../contracts";
+import { overviewOf } from "../overview";
+import type { Dashboard, DashboardLoop, DashboardOverview, FollowingRead, FollowingWatchView, LoopRole } from "../contracts";
 import { followingPanel } from "./following-model";
 
 const NOW = new Date("2026-10-29T12:00:00.000Z");
@@ -45,7 +46,7 @@ const loop = (name: string, role: LoopRole): DashboardLoop => ({
   triage: null,
 });
 
-const dashboard = (loops: DashboardLoop[], following: FollowingRead | null = null): Dashboard => ({
+const fullDashboard = (loops: DashboardLoop[], following: FollowingRead | null = null): Dashboard => ({
   generatedAt: "2026-10-29T12:00:00.000Z",
   loops,
   reconciliation: { orphaned: [], prunable: [] },
@@ -56,6 +57,10 @@ const dashboard = (loops: DashboardLoop[], following: FollowingRead | null = nul
   following,
   learnings: null,
 });
+
+// The panel reads the overview (#67): the full body, projected the way `GET /api/loops` answers it.
+const dashboard = (loops: DashboardLoop[], following: FollowingRead | null = null): DashboardOverview =>
+  overviewOf(fullDashboard(loops, following));
 
 const watch = (over: Partial<FollowingWatchView> = {}): FollowingWatchView => ({
   pr: 2801,

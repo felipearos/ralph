@@ -37,6 +37,7 @@ import type {
   ControlView,
   Dashboard,
   DashboardLoop,
+  DashboardOverview,
   IssueHistoryView,
   IssueState,
   PresenceView,
@@ -118,11 +119,15 @@ import { snapshotStamp } from "./remote-model";
 import type { LiveStatus } from "./live-stream";
 import type { Read } from "./query-reads";
 import { POLL_MS } from "./reads";
+import { dataOf, recentRows } from "./full-lists-model";
 import {
   useBridgeStatus,
   useDashboard,
+  useFrontier,
+  useFullDashboard,
   useLiveStream,
   useLoopControl,
+  useLoopPanel,
   useProjectSetup,
   useProjects,
   useProjectsHealth,
@@ -767,7 +772,7 @@ function Stat({ label, value, tone = "neutral" }: { label: string; value: number
   );
 }
 
-function Summary({ data }: { data: Dashboard }) {
+function Summary({ data }: { data: DashboardOverview }) {
   const { loops } = data;
   const count = (tone: Tone) => loops.filter((entry) => toneOf(entry.loopStatus) === tone).length;
   // Tickets whose code is done and wait on a person: the one kind of stuck an
@@ -802,7 +807,7 @@ function Summary({ data }: { data: Dashboard }) {
   );
 }
 
-function Reconciliation({ data }: { data: Dashboard }) {
+function Reconciliation({ data }: { data: DashboardOverview }) {
   const rows: { kind: string; path: string; detail?: string }[] = [
     ...data.reconciliation.orphaned.map((path) => ({ kind: "orphaned", path })),
     ...data.reconciliation.prunable.map((path) => ({ kind: "prunable", path })),
@@ -862,7 +867,7 @@ function AgentCard({ entry, navigate, onSent }: { entry: DashboardLoop; navigate
 }
 
 /** The dashboard's routing sheet, opened from the top bar. */
-function RoutingSheet({ data }: { data: Dashboard | null }) {
+function RoutingSheet({ data }: { data: DashboardOverview | null }) {
   return (
     <Sheet>
       <SheetTrigger asChild>
@@ -897,7 +902,7 @@ function RoutingSheet({ data }: { data: Dashboard | null }) {
  * holds the verifier role (a project without one has nothing to configure),
  * and only locally.
  */
-function VerifierSheet({ data }: { data: Dashboard | null }) {
+function VerifierSheet({ data }: { data: DashboardOverview | null }) {
   // The remote dashboard serves no verifier route: the sheet would open on a 404.
   if (isRemote() || !(data?.loops ?? []).some((entry) => entry.role === "verifier")) return null;
   return (
@@ -925,7 +930,7 @@ function VerifierSheet({ data }: { data: Dashboard | null }) {
  * The sentinel's rules sheet, beside the verifier's: offered only when a loop
  * holds the sentinel role, and only locally.
  */
-function SentinelSheet({ data }: { data: Dashboard | null }) {
+function SentinelSheet({ data }: { data: DashboardOverview | null }) {
   // The remote dashboard serves no sentinel rules route: the sheet would open on a 404.
   if (isRemote() || !(data?.loops ?? []).some((entry) => entry.role === "sentinel")) return null;
   return (
@@ -969,6 +974,7 @@ function UsagePage({ repoUrls, navigate }: { repoUrls: Record<string, string | n
 
 /** One overview page, reading the dashboard feed the app polls for the sidebar too. */
 function Overview({
+  project,
   page,
   feed,
   setup,
@@ -976,8 +982,9 @@ function Overview({
   refreshSetup,
   navigate,
 }: {
+  project: string;
   page: Page;
-  feed: Feed<Dashboard>;
+  feed: Feed<DashboardOverview>;
   /** The project's setup status; a project that is not ready shows setup in place of agents. */
   setup: Feed<ProjectSetupView>;
   refresh: () => void;
@@ -1013,15 +1020,11 @@ function Overview({
     case "usage":
       return <UsagePage repoUrls={repoUrls} navigate={navigate} />;
     case "backlog":
-      return data ? (
-        <Backlog frontier={data.frontier} repoUrls={repoUrls} nowMs={new Date(data.generatedAt).getTime()} loops={data.loops} />
-      ) : (
-        <Skeleton className="h-64" />
-      );
+      return data ? <BacklogOverview project={project} data={data} repoUrls={repoUrls} /> : <Skeleton className="h-64" />;
     case "ci":
-      return data ? <CiHealthPage data={data} repoUrls={repoUrls} /> : <Skeleton className="h-64" />;
+      return <FullDashboardOverview project={project} draw={(full) => <CiHealthPage data={full} repoUrls={repoUrls} />} />;
     case "learnings":
-      return data ? <LearningsPanel data={data} /> : <Skeleton className="h-64" />;
+      return <FullDashboardOverview project={project} draw={(full) => <LearningsPanel data={full} />} />;
     case "evals":
       return <EvalsPage />;
     case "ownership":
@@ -1031,6 +1034,34 @@ function Overview({
     case "labels":
       return <LabelsPage />;
   }
+}
+
+/**
+ * The backlog page (#67): the overview has no tree and no PRs, so it reads
+ * the full frontier itself, polled only while it is on screen.
+ */
+function BacklogOverview({
+  project,
+  data,
+  repoUrls,
+}: {
+  project: string;
+  data: DashboardOverview;
+  repoUrls: Record<string, string | null>;
+}) {
+  const read = useFrontier(project).read;
+  if (read.state === "loading") return <Skeleton className="h-64" />;
+  // A failed first read draws as an unread frontier does; a failed poll keeps the last one.
+  return <Backlog frontier={read.data} repoUrls={repoUrls} nowMs={new Date(data.generatedAt).getTime()} loops={data.loops} />;
+}
+
+/**
+ * The CI and Learnings pages (#67): the overview leaves their lists out, so
+ * they read the full dashboard, polled only while one is on screen.
+ */
+function FullDashboardOverview({ project, draw }: { project: string; draw: (full: Dashboard) => React.ReactNode }) {
+  const full = dataOf(useFullDashboard(project).read);
+  return full ? draw(full) : <Skeleton className="h-64" />;
 }
 
 /* ---------------------------------------------------------------- detail */
@@ -1142,13 +1173,15 @@ function ControlRecord({ status, nowMs }: { status: ControlView | null; nowMs: n
 }
 
 function LoopDetail({
+  project,
   name,
   dashboard,
   onSent,
   navigate,
 }: {
+  project: string;
   name: string;
-  dashboard: Feed<Dashboard>;
+  dashboard: Feed<DashboardOverview>;
   onSent: () => void;
   navigate: (path: string) => void;
 }) {
@@ -1161,6 +1194,9 @@ function LoopDetail({
   }, [refreshControl, onSent]);
   // The loop's panel is its row of the dashboard feed the app already polls.
   const feed = feedOf(dashboard, (data) => data.loops.find((entry) => entry.loop === name) ?? null);
+  // The overview caps the loop's recent activity (#67); the feed below draws
+  // this full panel's rows, read only while this page is on screen.
+  const panel = useLoopPanel(project, name).read;
   const control = loopControl.read;
   const entry = feed.state === "loading" ? null : feed.data;
   // One read of the role's rules for the whole page, as `LoopCard` does.
@@ -1368,7 +1404,7 @@ function LoopDetail({
 
               <Section title="Recent activity" className="md:col-span-2">
                 <ActivityFeed
-                  recent={entry.presence.recent}
+                  recent={recentRows(panel, entry.presence)}
                   live={entry.presence.status === "running" && entry.presence.supervisor === "alive"}
                 />
               </Section>
@@ -1676,7 +1712,7 @@ function AppSidebar({
   onSent,
 }: {
   screen: Screen;
-  feed: Feed<Dashboard>;
+  feed: Feed<DashboardOverview>;
   /** Refreshes the feed after a loop action from the sidebar. */
   onSent: () => void;
   navigate: (path: string) => void;
@@ -2063,7 +2099,7 @@ function ProjectApp({
 /** What a page body needs from the project chrome around it. */
 interface ProjectPage {
   project: string;
-  feed: Feed<Dashboard>;
+  feed: Feed<DashboardOverview>;
   setup: Feed<ProjectSetupView>;
   refresh: () => void;
   refreshSetup: () => void;
@@ -2087,8 +2123,8 @@ export function AgentsPage(): React.ReactNode {
 
 /** One overview page under its own route, from what the project chrome polls. */
 function ProjectOverview({ page }: { page: Page }): React.ReactNode {
-  const { feed, setup, refresh, refreshSetup, navigate } = useProjectPage();
-  return <Overview page={page} feed={feed} setup={setup} refresh={refresh} refreshSetup={refreshSetup} navigate={navigate} />;
+  const { project, feed, setup, refresh, refreshSetup, navigate } = useProjectPage();
+  return <Overview project={project} page={page} feed={feed} setup={setup} refresh={refresh} refreshSetup={refreshSetup} navigate={navigate} />;
 }
 
 /** `/p/$project/notifications` */
@@ -2138,9 +2174,9 @@ export function LabelsOverviewPage(): React.ReactNode {
 
 /** `/p/$project/loops/$name`: one loop, named by the route's (decoded) param. */
 export function LoopPage(): React.ReactNode {
-  const { feed, refresh, navigate } = useProjectPage();
+  const { project, feed, refresh, navigate } = useProjectPage();
   const { name } = useParams({ from: "/p/$project/loops/$name" });
-  return <LoopDetail name={name} dashboard={feed} onSent={refresh} navigate={navigate} />;
+  return <LoopDetail project={project} name={name} dashboard={feed} onSent={refresh} navigate={navigate} />;
 }
 
 /** `/p/$project/settings` */

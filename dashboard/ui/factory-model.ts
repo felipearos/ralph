@@ -14,7 +14,7 @@
  *
  * Pure, so the lanes can be tested without a DOM or a server.
  */
-import type { Dashboard, DashboardLoop, FrontierTreeNode, LoopRole } from "../contracts";
+import type { DashboardLoop, DashboardOverview, FrontierRead, FrontierTreeNode, LoopRole } from "../contracts";
 import { since } from "./backlog-model";
 import { issueHref } from "./issue-link";
 
@@ -66,10 +66,15 @@ export interface Floor {
   agents: number;
 }
 
-/** One project's read: its snapshot, or null while it loads or when it failed. */
+/**
+ * One project's read: its overview, or null while it loads or when it failed,
+ * and its full frontier (#67), which the overview leaves the tree and the PRs
+ * out of: null until that read lands, drawn as a project with no frontier.
+ */
 export interface ProjectRead {
   id: string;
-  dashboard: Dashboard | null;
+  dashboard: DashboardOverview | null;
+  frontier: FrontierRead | null;
 }
 
 /** How far back a merge still counts as shipped on the floor. */
@@ -147,8 +152,8 @@ const walk = (nodes: readonly FrontierTreeNode[]): FrontierTreeNode[] =>
 
 const STATE_ORDER: Record<CellState, number> = { working: 0, waiting: 1, queued: 2, shipped: 3 };
 
-function coderCells(id: string, dashboard: Dashboard, repoUrl: string | null, nowMs: number): Cell[] {
-  const view = dashboard.frontier?.view;
+function coderCells(id: string, dashboard: DashboardOverview, frontier: FrontierRead | null, repoUrl: string | null, nowMs: number): Cell[] {
+  const view = frontier?.view;
   if (!view) return [];
   const issueUrl = (number: number) => issueHref(repoUrl, number);
   const working = new Set(dashboard.loops.filter(isRunning).map((loop) => loop.loop));
@@ -185,7 +190,7 @@ function coderCells(id: string, dashboard: Dashboard, repoUrl: string | null, no
   }
   // Shipped is read from the merged PRs, not the tree: the tree keeps closed
   // tickets only while their spec is open, and a day's merges outlive that.
-  for (const pull of dashboard.frontier?.prs ?? []) {
+  for (const pull of frontier?.prs ?? []) {
     if (pull.state !== "merged" || pull.mergedAt === null) continue;
     if (nowMs - Date.parse(pull.mergedAt) > SHIPPED_WINDOW_MS || cells.has(pull.issue)) continue;
     cells.set(pull.issue, {
@@ -202,7 +207,7 @@ function coderCells(id: string, dashboard: Dashboard, repoUrl: string | null, no
 }
 
 /** The triager's queue is counts, not tickets: one unnamed cell per ticket in each bucket. */
-function triagerCells(id: string, dashboard: Dashboard): Cell[] {
+function triagerCells(id: string, dashboard: DashboardOverview): Cell[] {
   const triage = dashboard.frontier?.view?.triage;
   if (!triage) return [];
   return Object.entries(triage).flatMap(([bucket, count]) =>
@@ -256,7 +261,7 @@ export function factoryFloor(projects: readonly ProjectRead[], nowMs: number): F
   const lanes = new Map<LoopRole, Lane>(
     ROLE_ORDER.map((role) => [role, { role, agents: 0, running: 0, agentCells: [], cells: [] }]),
   );
-  for (const { id, dashboard } of projects) {
+  for (const { id, dashboard, frontier } of projects) {
     if (dashboard === null) continue;
     const repoUrl = dashboard.loops.find((loop) => loop.repoUrl !== null)?.repoUrl ?? null;
     for (const loop of dashboard.loops) {
@@ -267,7 +272,7 @@ export function factoryFloor(projects: readonly ProjectRead[], nowMs: number): F
     }
     const byNumber = (a: Cell, b: Cell) =>
       (a.number ?? Number.MAX_SAFE_INTEGER) - (b.number ?? Number.MAX_SAFE_INTEGER) || STATE_ORDER[a.state] - STATE_ORDER[b.state];
-    lanes.get("coder")!.cells.push(...coderCells(id, dashboard, repoUrl, nowMs).sort(byNumber));
+    lanes.get("coder")!.cells.push(...coderCells(id, dashboard, frontier, repoUrl, nowMs).sort(byNumber));
     const held = heldCells(id, dashboard.loops, repoUrl);
     const triager = lanes.get("triager")!;
     triager.cells.push(...held.filter((cell) => cell.key.startsWith(`${id}:triager:`)), ...triagerCells(id, dashboard));

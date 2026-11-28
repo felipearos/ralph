@@ -7,7 +7,7 @@
  * honest shape, which is what lives here — `.tsx` has no tests, so every
  * decision this panel makes is made in this file.
  */
-import { TRIAGE_BUCKETS, triagers, type Dashboard, type TriageBucket, type TriageUnitView } from "../contracts";
+import { TRIAGE_BUCKETS, triagers, type DashboardOverview, type TriageBucket, type TriageUnitView } from "../contracts";
 
 /** One intake bucket on the panel. */
 export interface TriageBucketRow {
@@ -53,7 +53,7 @@ export interface TriagePanelView {
  * intake to show, and drawing one with a zero per bucket would read as a clear
  * backlog rather than as a question nobody is asking.
  */
-export function triagePanel(data: Dashboard): TriagePanelView | null {
+export function triagePanel(data: DashboardOverview): TriagePanelView | null {
   const rows = triagers(data.loops);
   if (rows.length === 0) return null;
   const view = data.frontier?.view ?? null;

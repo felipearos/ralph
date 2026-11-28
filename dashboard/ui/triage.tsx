@@ -5,7 +5,7 @@
  * Read-only, and absent entirely on a project with no triager. Every decision
  * it makes is in `triage-model.ts` — this file only draws.
  */
-import type { Dashboard } from "../contracts";
+import type { DashboardOverview } from "../contracts";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -60,7 +60,7 @@ function Writes({ row }: { row: TriagerRow }) {
   );
 }
 
-export function TriagePanel({ data, repoUrls }: { data: Dashboard; repoUrls: Record<string, string | null> }) {
+export function TriagePanel({ data, repoUrls }: { data: DashboardOverview; repoUrls: Record<string, string | null> }) {
   const panel = triagePanel(data);
   if (panel === null) return null;
   const waiting = triageWaiting(panel);

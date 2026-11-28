@@ -20,6 +20,9 @@ import type {
   BridgeStatusView,
   ControlView,
   Dashboard,
+  DashboardLoop,
+  DashboardOverview,
+  FrontierRead,
   GithubReposView,
   GuideView,
   HistoryView,
@@ -74,7 +77,10 @@ import {
   bridgeStatusRead,
   controlsRead,
   dashboardRead,
+  floorFrontierRead,
   floorRead,
+  frontierRead,
+  fullDashboardRead,
   githubReposRead,
   intakeMetricsRead,
   intakeRead,
@@ -86,6 +92,7 @@ import {
   modelUpdatesRead,
   loopControlRead,
   loopHistoryRead,
+  loopPanelRead,
   loopNotificationsRead,
   notificationsRead,
   projectSetupRead,
@@ -258,7 +265,7 @@ function shellProject(): string | null {
 }
 
 /** The project's dashboard snapshot, through the Query layer (#727). */
-export function useDashboard(project: string): Polled<Dashboard> {
+export function useDashboard(project: string): Polled<DashboardOverview> {
   return useReadOn(useQueryStore(), dashboardRead(project));
 }
 
@@ -267,8 +274,33 @@ export function useDashboard(project: string): Polled<Dashboard> {
  * like `useDashboard`: `floorRead` is `dashboardRead`'s URL, and both must
  * land on one entry or the current project would be read twice.
  */
-export function useDashboards(projects: readonly string[]): { reads: readonly Read<Dashboard>[]; refresh: () => void } {
+export function useDashboards(projects: readonly string[]): { reads: readonly Read<DashboardOverview>[]; refresh: () => void } {
   return useReadsOn(useQueryStore(), projects.map(floorRead));
+}
+
+/**
+ * The floor's full frontier of every project (#67): the overview leaves out
+ * the tree and the PRs its cells draw. Read at the floor's pace, like
+ * `useDashboards`, and on the backlog page's URL, so the current project's
+ * frontier is one store entry whichever page reads it.
+ */
+export function useFloorFrontiers(projects: readonly string[]): { reads: readonly Read<FrontierRead | null>[]; refresh: () => void } {
+  return useReadsOn(useQueryStore(), projects.map(floorFrontierRead));
+}
+
+/** One loop's full panel (#67), for the loop page's activity feed; polled only while that page is on screen. */
+export function useLoopPanel(project: string, loop: string): Polled<DashboardLoop> {
+  return useReadOn(useQueryStore(), loopPanelRead(project, loop));
+}
+
+/** The project's full frontier (#67), for the backlog page; polled only while it is on screen. */
+export function useFrontier(project: string): Polled<FrontierRead | null> {
+  return useReadOn(useQueryStore(), frontierRead(project));
+}
+
+/** The project's full dashboard (#67), for the CI and Learnings pages; polled only while one is on screen. */
+export function useFullDashboard(project: string): Polled<Dashboard> {
+  return useReadOn(useQueryStore(), fullDashboardRead(project));
 }
 
 /**
@@ -305,7 +337,14 @@ export function preloadPageReads(screen: Screen, project: string | null): void {
  */
 function liveReads(project: string, p: string | null, loops: readonly string[]): LiveReads {
   const reads: Record<string, string | readonly string[]> = {
-    dashboard: dashboardRead(project).url,
+    // The full lists (#67) project from the same snapshot as the overview,
+    // so its change refreshes them too; only a mounted page's entry fetches.
+    dashboard: [
+      dashboardRead(project).url,
+      frontierRead(project).url,
+      fullDashboardRead(project).url,
+      ...loops.map((loop) => loopPanelRead(project, loop).url),
+    ],
     controls: controlsRead(p).url,
     notifications: [notificationsRead(p).url, ...loops.map((loop) => loopNotificationsRead(p, loop).url)],
     agents: agentsRead(p).url,
