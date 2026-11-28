@@ -256,3 +256,14 @@ export function segments(text: string): Piece[] {
   if (last < text.length) pieces.push({ kind: "text", text: text.slice(last) });
   return pieces;
 }
+
+/**
+ * The feed's footer on how much the observer keeps. `total` is how many rows
+ * the loop has when the feed draws fewer: the overview's capped rows while the
+ * loop's full panel is still loading (#67), which must not read as everything.
+ */
+export function keptNote(shown: number, total: number = shown): string {
+  const kept = Math.min(Math.max(shown, total), 200);
+  if (total > shown) return `The observer keeps the latest ${kept} events; showing the newest ${shown} until the rest loads.`;
+  return `The observer keeps the latest ${kept} events.`;
+}

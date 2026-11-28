@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ActivityView } from "../contracts";
-import { applyFilter, durationOf, filterCounts, groupActivity, parseLabel, segments, shortenPath } from "./activity-model";
+import { applyFilter, durationOf, filterCounts, groupActivity, keptNote, parseLabel, segments, shortenPath } from "./activity-model";
 
 const at = (seconds: number): string => new Date(Date.UTC(2026, 8, 15, 12, 0, seconds)).toISOString();
 const row = (seconds: number, stage: string, label: string): ActivityView => ({
@@ -145,5 +145,16 @@ describe("durationOf", () => {
     expect(durationOf(at(0), at(45))).toBe("45s");
     expect(durationOf(at(0), at(80))).toBe("1m 20s");
     expect(durationOf(at(0), new Date(Date.parse(at(0)) + 7380_000).toISOString())).toBe("2h 3m");
+  });
+});
+
+describe("keptNote", () => {
+  it("says how many events the observer keeps, at most 200", () => {
+    expect(keptNote(12)).toBe("The observer keeps the latest 12 events.");
+    expect(keptNote(200, 200)).toBe("The observer keeps the latest 200 events.");
+  });
+
+  it("does not read the overview's capped rows as everything while the full list loads", () => {
+    expect(keptNote(5, 200)).toBe("The observer keeps the latest 200 events; showing the newest 5 until the rest loads.");
   });
 });

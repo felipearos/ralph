@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ActivityView, DashboardLoop, OverviewPresenceView } from "../contracts";
-import { dataOf, recentRows } from "./full-lists-model";
+import { dataOf, recentRows, recentTotal } from "./full-lists-model";
 
 const row = (n: number): ActivityView => ({ at: `2026-11-28T00:00:0${n}Z` }) as unknown as ActivityView;
 const capped = { recent: [row(8), row(9)], recentTotal: 10 } as unknown as OverviewPresenceView;
@@ -39,5 +39,13 @@ describe("dataOf", () => {
   it("is null while loading and the data otherwise", () => {
     expect(dataOf({ state: "loading" })).toBeNull();
     expect(dataOf({ state: "error", message: "x", status: null, data: 3 })).toBe(3);
+  });
+});
+
+describe("recentTotal", () => {
+  it("is the overview's recentTotal until the full panel lands, then the full list's length", () => {
+    expect(recentTotal({ state: "loading" }, capped)).toBe(10);
+    expect(recentTotal({ state: "ready", data: panel([row(0), row(1), row(2)]), at, snapshotAt: null }, capped)).toBe(3);
+    expect(recentTotal({ state: "error", message: "HTTP 404", status: 404, data: null }, capped)).toBe(10);
   });
 });

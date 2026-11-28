@@ -21,3 +21,12 @@ export function dataOf<T>(read: Read<T>): T | null {
 export function recentRows(panel: Read<DashboardLoop>, capped: OverviewPresenceView): ActivityView[] {
   return dataOf(panel)?.presence?.recent ?? capped.recent;
 }
+
+/**
+ * How many rows the observer keeps for the loop: the full list's length once
+ * it has landed, else the overview's `recentTotal`, so the feed's footer does
+ * not report the capped rows as everything there is.
+ */
+export function recentTotal(panel: Read<DashboardLoop>, capped: OverviewPresenceView): number {
+  return dataOf(panel)?.presence?.recent.length ?? capped.recentTotal;
+}

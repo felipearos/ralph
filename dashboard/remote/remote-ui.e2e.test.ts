@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 import type { JavView, ProjectPromptsView, ProjectSettingsView } from "../contracts";
+import { SNAPSHOT_SCHEMA } from "../contracts";
 import { findChromium } from "../e2e-chromium";
 import { bunPath } from "../fixtures";
 import { subprocessSuite } from "../../test-timeouts";
@@ -160,7 +161,7 @@ describe.skipIf(CHROMIUM === null)("the remote dashboard's page over a pushed sn
       ["poll-only", { wake: "poll-only" }, /^Commands may take up to 30 s$/, "warn"],
       ["offline", { live: false, seenSecondsAgo: 300 }, /^Machine offline since \d\d:\d\d( [AP]M)?\. Everything below is the last known state\.$/, "bad"],
       ["dashboard-down", { local: "dashboard-down" }, /^Machine up, local dashboard down$/, "bad"],
-      ["schema", { schema: 0 }, /^The machine runs an older ralph \(schema 0, app 1\); deploy ~\/ralph$/, "warn"],
+      ["schema", { schema: SNAPSHOT_SCHEMA - 1 }, new RegExp(`^The machine runs an older ralph \\(schema ${SNAPSHOT_SCHEMA - 1}, app ${SNAPSHOT_SCHEMA}\\); deploy ~/ralph$`), "warn"],
     ];
     for (const [name, row, text, tone] of states) {
       await drive("bridge", row);

@@ -3391,7 +3391,9 @@ export interface HandbackResult {
  * it whenever a contract a snapshot carries changes shape, so a machine on an
  * older `~/ralph` shows as one instead of as a broken page.
  */
-export const SNAPSHOT_SCHEMA = 1;
+// 2 since #67: the `dashboard` key is read from `/api/dashboard`, and an older
+// bridge reading `/api/loops` would push the capped overview under it.
+export const SNAPSHOT_SCHEMA = 2;
 
 /**
  * The `ralph.snapshot.project` the `_/` keys (`_/projects`, `_/health`) are

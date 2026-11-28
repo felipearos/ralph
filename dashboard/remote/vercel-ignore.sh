@@ -13,6 +13,7 @@ exec git diff --quiet HEAD^ HEAD -- \
   dashboard/ui \
   dashboard/command-requests.ts \
   dashboard/contracts.ts \
+  dashboard/overview.ts \
   dashboard/routes.ts \
   dashboard/route-table.ts \
   dashboard/remote \

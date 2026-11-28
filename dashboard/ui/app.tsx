@@ -119,7 +119,7 @@ import { snapshotStamp } from "./remote-model";
 import type { LiveStatus } from "./live-stream";
 import type { Read } from "./query-reads";
 import { POLL_MS } from "./reads";
-import { dataOf, recentRows } from "./full-lists-model";
+import { dataOf, recentRows, recentTotal } from "./full-lists-model";
 import {
   useBridgeStatus,
   useDashboard,
@@ -972,6 +972,11 @@ function UsagePage({ repoUrls, navigate }: { repoUrls: Record<string, string | n
   );
 }
 
+/** Where each loop's `#issue` and `#pr` link to, by loop name. */
+function repoUrlsOf(loops: readonly { loop: string; repoUrl: string | null }[]): Record<string, string | null> {
+  return Object.fromEntries(loops.map((entry) => [entry.loop, entry.repoUrl]));
+}
+
 /** One overview page, reading the dashboard feed the app polls for the sidebar too. */
 function Overview({
   project,
@@ -992,7 +997,7 @@ function Overview({
   navigate: (path: string) => void;
 }) {
   const data = feed.state === "loading" ? null : feed.data;
-  const repoUrls = Object.fromEntries((data?.loops ?? []).map((entry) => [entry.loop, entry.repoUrl]));
+  const repoUrls = repoUrlsOf(data?.loops ?? []);
 
   switch (page) {
     case "agents":
@@ -1022,7 +1027,7 @@ function Overview({
     case "backlog":
       return data ? <BacklogOverview project={project} data={data} repoUrls={repoUrls} /> : <Skeleton className="h-64" />;
     case "ci":
-      return <FullDashboardOverview project={project} draw={(full) => <CiHealthPage data={full} repoUrls={repoUrls} />} />;
+      return <FullDashboardOverview project={project} draw={(full) => <CiHealthPage data={full} repoUrls={repoUrlsOf(full.loops)} />} />;
     case "learnings":
       return <FullDashboardOverview project={project} draw={(full) => <LearningsPanel data={full} />} />;
     case "evals":
@@ -1405,6 +1410,7 @@ function LoopDetail({
               <Section title="Recent activity" className="md:col-span-2">
                 <ActivityFeed
                   recent={recentRows(panel, entry.presence)}
+                  total={recentTotal(panel, entry.presence)}
                   live={entry.presence.status === "running" && entry.presence.supervisor === "alive"}
                 />
               </Section>
