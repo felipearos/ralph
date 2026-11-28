@@ -10,6 +10,11 @@
  * keeps the data on screen instead of flashing to a skeleton. A URL nobody
  * reads stays cached for KEEP_ALIVE_MS, so going back to a page shows its data
  * at once, and `prefetch` reads one ahead of its reader (a hover before a click).
+ * A polling reader arriving on data younger than its interval (a route's
+ * prefetch, or a panel remounted by a redirect) waits out the rest of the
+ * interval instead of reading again: a cold load must not read a URL twice
+ * within milliseconds (#68). A refresh nobody heard marks the data stale, so
+ * the next reader reads at once.
  *
  * A hidden page does not poll (#725): a forgotten background tab must not
  * spawn adapter subprocesses all night. While hidden no poll timer is armed;
@@ -63,10 +68,13 @@ export interface ReadStore {
   /**
    * Subscribe; `intervalMs` null = one-shot (fetch once on first subscribe, again only on refresh). Returns unsubscribe.
    * The first subscribe reads even while the page is hidden; the polls after it wait until the page is visible.
+   * A polling first subscribe on ready data younger than its interval does not read: it arms the poll for
+   * the rest of the interval, so a prefetch or a remount on a cold load does not read the URL twice (#68).
    */
   subscribe(url: string, intervalMs: number | null, listener: () => void): () => void;
   /**
-   * Re-read now; if a read is in flight, queue exactly one more after it. Keeps current data (no flash to loading). No-op for a URL with no subscribers.
+   * Re-read now; if a read is in flight, queue exactly one more after it. Keeps current data (no flash to loading).
+   * A URL with no subscribers is not read, only marked stale: its next first subscriber reads at once.
    *
    * `refresh` and `livePoll` together are the seam the server's change stream
    * drives (#724, `live-stream.ts`): an event refreshes the read it names, and
@@ -309,6 +317,9 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
     // Nobody reads it (they left while it was on the wire): the newest data
     // stays cached for a returning reader, but nothing polls a URL nobody reads.
     if (entry.subscribers.size === 0) {
+      // A refresh queued behind this read means the data changed after it
+      // started: the next reader must read at once (#68).
+      if (entry.queued) entry.settledAt = null;
       entry.queued = false;
       return;
     }
@@ -458,7 +469,18 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
         hold(url, entry);
         // A read already on the wire (a prefetch, or one the last reader left
         // behind) is joined: its settle arms the poll.
-        if (!entry.inFlight) start(url, entry, false);
+        if (!entry.inFlight) {
+          // Ready data younger than the poll interval (the route's prefetch a
+          // moment ago, or this panel's own read before a redirect remounted
+          // it) is as fresh as the poll would keep it: wait out the rest of
+          // the interval rather than read the URL twice on a cold load (#68).
+          // An error, a skeleton, data a refresh marked stale, or a clock
+          // stepped back behind the settle reads now.
+          const interval = intervalMs === null ? null : intervalOf(entry);
+          const since = entry.settledAt === null ? null : deps.clock.now() - entry.settledAt;
+          if (interval !== null && since !== null && entry.read.state === "ready" && since >= 0 && since < interval) arm(url, entry, interval - since);
+          else start(url, entry, false);
+        }
       } else if (!entry.inFlight && !entry.hasTimer) {
         // Every earlier subscriber was one-shot; a polling one starts the timer.
         schedule(url, entry);
@@ -472,11 +494,11 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
         // shorter delay fires once as scheduled, and the next schedule uses
         // the remaining intervals. Rescheduling here would push a due read back.
         if (entry.subscribers.size > 0) return;
-        // Nobody reads it any more: stop polling and drop a queued refresh,
-        // but keep the data for KEEP_ALIVE_MS so a reader coming back within
-        // it sees it at once instead of a skeleton (#727).
+        // Nobody reads it any more: stop polling, but keep the data for
+        // KEEP_ALIVE_MS so a reader coming back within it sees it at once
+        // instead of a skeleton (#727). A queued refresh reads nothing now;
+        // the settle of the read on the wire marks the data stale (#68).
         cancelTimer(entry);
-        entry.queued = false;
         const release = entry.release;
         entry.release = null;
         release?.();
@@ -485,7 +507,17 @@ export function createQueryReads(deps: ReadStoreDeps): QueryReads {
 
     refresh(url) {
       const entry = entries.get(url);
-      if (entry === undefined || entry.subscribers.size === 0) return;
+      if (entry === undefined) return;
+      if (entry.subscribers.size === 0) {
+        // The change stream says this data changed, and nobody reads it now:
+        // the next reader must read at once, not wait out a fresh-looking
+        // interval (#68). A null settle is what `livePoll` already counts as
+        // overdue; it also lets a hover prefetch it again. A read on the wire
+        // started before the change: its settle marks the data stale instead.
+        if (entry.inFlight) entry.queued = true;
+        else entry.settledAt = null;
+        return;
+      }
       refreshEntry(url, entry);
     },
 
